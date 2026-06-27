@@ -13,7 +13,7 @@ base64 = "0.22"
 directories = "5"                                       # 跨平台配置目录（最近连接历史持久化）
 enigo = "0.6"
 futures-util = "0.3"
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }  # 客户端只做 JPEG 帧编解码，裁掉 png/gif/webp/tiff/exr/avif(rav1e) 等死重量
 protocol = { version = "0.1.0", path = "../protocol" }
 rand = "0.8"
 serde.workspace = true
