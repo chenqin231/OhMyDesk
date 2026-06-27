@@ -1,0 +1,159 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  /* 终端状态语义色：在线 / 离线 / 告警 */
+  --color-online: var(--online);
+  --color-online-foreground: var(--online-foreground);
+  --color-offline: var(--offline);
+  --color-offline-foreground: var(--offline-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  /* 信创终端管控平台 — 深色科技主题（默认且唯一） */
+  color-scheme: dark;
+  --background: #0e1117;
+  --foreground: #e6edf3;
+  --card: #161b22;
+  --card-foreground: #e6edf3;
+  --popover: #161b22;
+  --popover-foreground: #e6edf3;
+  --primary: #2f81f7;
+  --primary-foreground: #ffffff;
+  --secondary: #21262d;
+  --secondary-foreground: #e6edf3;
+  --muted: #1c2128;
+  --muted-foreground: #8b949e;
+  --accent: #21262d;
+  --accent-foreground: #e6edf3;
+  --destructive: #f85149;
+  --border: #2a313a;
+  --input: #30363d;
+  --ring: #2f81f7;
+
+  /* 终端状态语义色 */
+  --online: #3fb950;
+  --online-foreground: #d6ffe0;
+  --offline: #8b949e;
+  --offline-foreground: #c9d1d9;
+  --warning: #f85149;
+  --warning-foreground: #ffe3e1;
+
+  /* 数据可视化色板 */
+  --chart-1: #2f81f7;
+  --chart-2: #3fb950;
+  --chart-3: #58a6ff;
+  --chart-4: #d29922;
+  --chart-5: #f85149;
+
+  --radius: 0.5rem;
+
+  /* 侧边栏：比主背景更深，强调治理感 */
+  --sidebar: #0b0e13;
+  --sidebar-foreground: #c9d1d9;
+  --sidebar-primary: #2f81f7;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #161b22;
+  --sidebar-accent-foreground: #e6edf3;
+  --sidebar-border: #21262d;
+  --sidebar-ring: #2f81f7;
+}
+
+/* 平台为深色单一主题，.dark 与 :root 保持一致以兼容显式 dark 容器 */
+.dark {
+  color-scheme: dark;
+  --background: #0e1117;
+  --foreground: #e6edf3;
+  --card: #161b22;
+  --card-foreground: #e6edf3;
+  --popover: #161b22;
+  --popover-foreground: #e6edf3;
+  --primary: #2f81f7;
+  --primary-foreground: #ffffff;
+  --secondary: #21262d;
+  --secondary-foreground: #e6edf3;
+  --muted: #1c2128;
+  --muted-foreground: #8b949e;
+  --accent: #21262d;
+  --accent-foreground: #e6edf3;
+  --destructive: #f85149;
+  --border: #2a313a;
+  --input: #30363d;
+  --ring: #2f81f7;
+  --online: #3fb950;
+  --online-foreground: #d6ffe0;
+  --offline: #8b949e;
+  --offline-foreground: #c9d1d9;
+  --warning: #f85149;
+  --warning-foreground: #ffe3e1;
+  --chart-1: #2f81f7;
+  --chart-2: #3fb950;
+  --chart-3: #58a6ff;
+  --chart-4: #d29922;
+  --chart-5: #f85149;
+  --sidebar: #0b0e13;
+  --sidebar-foreground: #c9d1d9;
+  --sidebar-primary: #2f81f7;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #161b22;
+  --sidebar-accent-foreground: #e6edf3;
+  --sidebar-border: #21262d;
+  --sidebar-ring: #2f81f7;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}

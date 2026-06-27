@@ -1,0 +1,43 @@
+[package]
+name = "client"
+edition.workspace = true
+version.workspace = true
+
+# Wave 0 占位：保证 workspace 完整可编译。Wave 1 client-dev 在本文件内 cargo add 真实依赖
+# （slint / sysinfo / xcap / enigo / tokio-tungstenite / rand / image / base64 等）
+# + protocol = { path = "../protocol" }，并补 build.rs（slint_build::compile）。
+[dependencies]
+anyhow.workspace = true
+arboard = { version = "3", default-features = false }  # 剪贴板（复制 ID/密码）；default-features=false 仅留 X11/Win 后端，避开 wayland 依赖
+base64 = "0.22"
+directories = "5"                                       # 跨平台配置目录（最近连接历史持久化）
+enigo = "0.6"
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }  # 客户端只做 JPEG 帧编解码，裁掉 png/gif/webp/tiff/exr/avif(rav1e) 等死重量
+protocol = { version = "0.1.0", path = "../protocol" }
+rand = "0.8"
+serde.workspace = true
+serde_json.workspace = true
+slint = { version = "1.17", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software"] }
+sysinfo = "0.39"
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = { version = "1.23.4", features = ["v4"] }
+xcap = "0.9"
+
+# TLS 按目标分流（client 需连 wss://rc.guoziweb.com）：
+# - Windows：native-tls → SChannel（纯 Rust schannel 绑定，交叉编译零 C 依赖，不引 openssl）
+# - Linux/信创：rustls + webpki 内置根证书（守住「全栈 rustls 不用 openssl」硬约束）
+# 二者按 target 互斥启用，connect_async 自动据所启用后端协商 wss。
+[target.'cfg(windows)'.dependencies]
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+
+[target.'cfg(not(windows))'.dependencies]
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# tokio-tungstenite 启用 rustls 时 default-features=false（不带 provider）；
+# 这里显式只启 ring（openssl-free、loongarch 友好），让 rustls ClientConfig::builder() 自动用 ring。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
+[build-dependencies]
+slint-build = "1.17"

@@ -1,0 +1,46 @@
+# Rust
+/target
+**/target
+Cargo.lock.bak
+
+# ts-rs：#[ts(export)] 的默认产物（冗余，真实类型导出到 src/admin-web/src/lib/types/）
+src/protocol/bindings/
+
+# Node / 前端
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# 环境与密钥（数据不出网，严禁入库）
+.env
+.env.*
+*.key
+*.pem
+credentials.*
+
+# 杂项
+*.log
+.DS_Store
+
+# deb 打包产物
+dist-deb/
+
+# Windows 交叉编译产物
+dist-windows/
+
+# SQLite 数据文件（运行时生成）
+ohmydesk.db
+ohmydesk.db-*
+*.db
+*.db-wal
+*.db-shm
+
+# macOS 交叉编译产物
+dist-macos/
+
+# 开发对话记录与 v0 设计稿原型（不开源）
+chat/
+chat*.txt
+v0/
+v0_client/

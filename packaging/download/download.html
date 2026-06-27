@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OhMyDesk 客户端下载</title>
+<meta name="description" content="OhMyDesk 信创内网终端远程安全管控平台 — 客户端下载" />
+<style>
+  :root {
+    --bg: #0a0a0b; --card: #131316; --card2: #18181c; --border: #ffffff14;
+    --inset: #ffffff0a; --muted-bg: #1a1a1e;
+    --fg: #f4f4f5; --fg-muted: #9b9ba3; --fg-dim: #6b6b73;
+    --primary: #3b82f6; --primary-hover: #5b9bff; --primary-soft: #3b82f61f;
+    --emerald: #10b981; --amber: #f0b86e; --danger: #ef4444;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    -webkit-font-smoothing: antialiased; line-height: 1.5;
+    min-height: 100vh;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background: radial-gradient(circle at 50% -10%, #3b82f618, transparent 55%);
+  }
+  .wrap { position: relative; z-index: 1; max-width: 1040px; margin: 0 auto; padding: 56px 20px 72px; }
+  .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+  /* Hero */
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+  .logo { width: 40px; height: 40px; border-radius: 11px; background: var(--primary-soft);
+    border: 1px solid #3b82f640; display: grid; place-items: center; color: var(--primary);
+    font-weight: 800; font-size: 20px; }
+  .brand-name { font-size: 15px; font-weight: 700; }
+  .brand-sub { font-size: 12px; color: var(--fg-muted); margin-top: 1px; }
+  h1 { font-size: 30px; font-weight: 800; letter-spacing: -.02em; margin: 0 0 10px; }
+  .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; color: var(--fg-muted); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+    background: var(--primary-soft); color: var(--primary); font-weight: 600; }
+  .hero-cta { margin-top: 22px; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; border: 1px solid transparent;
+    border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer; text-decoration: none;
+    padding: 10px 18px; transition: background .12s, border-color .12s, color .12s; }
+  .btn svg { width: 16px; height: 16px; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-lg { padding: 13px 22px; font-size: 15px; border-radius: 11px; }
+  .btn-outline { background: var(--inset); color: var(--fg); border-color: var(--border); }
+  .btn-outline:hover { background: var(--muted-bg); }
+  .btn-ghost { background: transparent; color: var(--fg-muted); border-color: var(--border); }
+  .btn-ghost:hover { background: var(--inset); color: var(--fg); }
+  .btn[disabled] { opacity: .5; cursor: not-allowed; }
+
+  /* 卡片网格 */
+  .grid { margin-top: 40px; display: grid; gap: 16px; grid-template-columns: 1fr; }
+  @media (min-width: 720px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+  .card { display: flex; flex-direction: column; border: 1px solid var(--border);
+    background: var(--card); border-radius: var(--radius); padding: 22px;
+    transition: border-color .12s, background .12s; }
+  .card:hover { background: var(--card2); }
+  .card.rec { border-color: var(--primary); background: var(--primary-soft); }
+  .card.soon { border-style: dashed; background: var(--inset); }
+  .card-top { display: flex; align-items: flex-start; justify-content: space-between; }
+  .os-icon { width: 30px; height: 30px; color: var(--fg-muted); }
+  .card.rec .os-icon { color: var(--primary); }
+  .badge { font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px; display: inline-flex; align-items: center; gap: 4px; }
+  .badge-rec { background: var(--primary); color: #fff; }
+  .badge-soon { background: var(--muted-bg); color: var(--fg-dim); }
+  .os-name { margin-top: 14px; font-size: 18px; font-weight: 700; }
+  .os-spec { margin-top: 3px; font-size: 12px; color: var(--fg-muted); }
+  .os-req { margin-top: 8px; font-size: 12px; color: var(--fg-muted); }
+  .steps { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--fg-muted); }
+  .steps-title { font-weight: 600; color: var(--fg-dim); margin-bottom: 6px; }
+  .steps ol { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 5px; }
+  .steps code { background: var(--inset); border: 1px solid var(--border); border-radius: 5px;
+    padding: 1px 5px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--fg); }
+  .card-actions { margin-top: auto; padding-top: 18px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .bsize { font-size: 11px; opacity: .7; font-weight: 500; }
+
+  /* 系统支持表 */
+  .support { margin-top: 16px; border: 1px solid var(--border); background: var(--card); border-radius: var(--radius); padding: 24px; }
+  .support h2 { font-size: 17px; font-weight: 700; margin: 0 0 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--fg-muted); font-weight: 600; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 9px 8px; color: var(--fg-muted); border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  td.plat { color: var(--fg); font-weight: 500; }
+  footer { margin-top: 40px; text-align: center; font-size: 12px; color: var(--fg-dim); }
+  footer a { color: var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="logo">S</div>
+    <div>
+      <div class="brand-name">OhMyDesk</div>
+      <div class="brand-sub">信创内网终端远程安全管控平台</div>
+    </div>
+  </div>
+
+  <h1>客户端下载</h1>
+  <div class="meta">
+    <span class="pill mono">v0.1.0</span>
+    <span class="mono">2026-06-28</span>
+    <span>· 双击即以 9 位码注册为被控端，可在管理后台远程控制</span>
+  </div>
+  <div class="hero-cta" id="heroCta"></div>
+
+  <section class="grid" id="grid"></section>
+
+  <section class="support">
+    <h2>系统支持</h2>
+    <table>
+      <thead>
+        <tr><th>平台</th><th>最低版本</th><th>架构</th><th>备注</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="plat">Windows</td><td>10</td><td>x86_64</td><td>无需 WebView2，静态链接，开箱即用</td></tr>
+        <tr><td class="plat">Ubuntu / Debian</td><td>22.04 / 12</td><td>x86_64</td><td>需 X11 桌面会话</td></tr>
+        <tr><td class="plat">麒麟 Kylin</td><td>V10 SP1</td><td>x86_64</td><td>需 X11（非 Wayland）</td></tr>
+        <tr><td class="plat">统信 UOS</td><td>V20 (1070)</td><td>x86_64</td><td>需 X11（非 Wayland）</td></tr>
+        <tr><td class="plat">龙芯 / 鲲鹏飞腾</td><td>—</td><td>loongarch64 / aarch64</td><td>即将发布</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <footer>
+    OhMyDesk · 数据不出网 · 管理后台 <a href="/">rc.guoziweb.com</a>
+  </footer>
+</div>
+
+<script>
+  // 内联 SVG 图标（避免依赖图标库/字体，内网可用）
+  const ICON = {
+    windows: '<svg class="os-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5 10.5 4.4v7.1H3V5.5Zm0 13L10.5 19.6v-7H3v6.1Zm8.5 1.2L21 21V12.5h-9.5v7.2ZM11.5 4.2 21 3v8.5h-9.5V4.2Z"/></svg>',
+    linux: '<svg class="os-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
+    cpu: '<svg class="os-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>',
+    download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>',
+  };
+
+  // 下载目标矩阵
+  const CATALOG = [
+    {
+      id: "windows", os: "Windows", icon: "windows", arch: "x86_64",
+      available: true, req: "Windows 10 及以上 · 无需 WebView2/额外运行库（静态链接）",
+      downloads: [
+        { label: ".exe", url: "/downloads/ohmydesk-client-windows-x86_64.exe", size: "9.0 MB" },
+      ],
+      steps: [
+        "双击 <code>ohmydesk-client-windows-x86_64.exe</code> 运行。",
+        "若弹出蓝色 SmartScreen 提示，点「更多信息」→「仍要运行」。",
+        "程序自动以 9 位码注册为被控端，无需任何配置。",
+      ],
+    },
+    {
+      id: "linux", os: "Linux", icon: "linux", arch: "x86_64",
+      available: true, req: "Ubuntu 22.04+ / 麒麟 V10 / 统信 UOS V20（x86_64）· 需 X11",
+      downloads: [
+        { label: ".deb", url: "/downloads/ohmydesk-client_0.1.0_amd64.deb", size: "5.9 MB" },
+        { label: ".tar.gz", url: "/downloads/ohmydesk-client-linux-x86_64.tar.gz", size: "7.0 MB" },
+      ],
+      steps: [
+        ".deb 安装：<code>sudo dpkg -i ohmydesk-client_*.deb</code>，缺依赖则 <code>sudo apt-get -f install</code>；之后用菜单「OhMyDesk 终端」或命令 <code>ohmydesk-client-launch</code> 启动。",
+        ".tar.gz 免安装：解压后 <code>cd ohmydesk-client &amp;&amp; ./启动.sh</code>。",
+        "麒麟 / 统信请在 X11 会话下运行（非 Wayland）。",
+      ],
+    },
+    {
+      id: "xinchuang", os: "信创 龙芯 / ARM", icon: "cpu", arch: "loongarch64 / aarch64",
+      available: false, req: "龙芯 loongarch64 / 鲲鹏飞腾 aarch64 · 麒麟 / 统信",
+      downloads: [], steps: [],
+    },
+  ];
+
+  function detect() {
+    const ua = navigator.userAgent;
+    if (/Windows/i.test(ua)) return "windows";
+    if (/Linux|X11/i.test(ua)) return "linux";
+    return null;
+  }
+  const rec = detect();
+
+  function cardHtml(t) {
+    const recommended = t.available && t.id === rec;
+    const cls = !t.available ? "card soon" : recommended ? "card rec" : "card";
+    const badge = recommended
+      ? '<span class="badge badge-rec">推荐</span>'
+      : !t.available ? '<span class="badge badge-soon">' + ICON.clock + '即将发布</span>' : "";
+    const fmts = (t.downloads || []).map((d) => d.label).join(" / ");
+    const spec = t.arch + (fmts ? " · " + fmts : "");
+    const steps = t.steps.length
+      ? '<div class="steps"><div class="steps-title">首次运行</div><ol>' +
+        t.steps.map((s) => "<li>" + s + "</li>").join("") + "</ol></div>"
+      : "";
+    let actions;
+    if (t.available) {
+      const dls = t.downloads
+        .map((d, i) =>
+          '<a class="btn ' + (i === 0 ? "btn-primary" : "btn-outline") + '" href="' + d.url + '">' +
+          ICON.download + "下载 " + d.label + ' <span class="bsize">' + d.size + "</span></a>")
+        .join("");
+      const copy = '<button class="btn btn-ghost" data-copy="' + t.downloads[0].url + '">' + ICON.copy + "复制链接</button>";
+      actions = '<div class="card-actions">' + dls + copy + "</div>";
+    } else {
+      actions = '<div class="card-actions"><button class="btn btn-outline" disabled>即将发布</button></div>';
+    }
+    return (
+      '<div class="' + cls + '">' +
+      '<div class="card-top">' + ICON[t.icon] + badge + "</div>" +
+      '<div class="os-name">' + t.os + "</div>" +
+      '<div class="os-spec mono">' + spec + "</div>" +
+      '<div class="os-req">系统要求：' + t.req + "</div>" +
+      steps + actions +
+      "</div>"
+    );
+  }
+
+  document.getElementById("grid").innerHTML = CATALOG.map(cardHtml).join("");
+
+  // Hero 推荐按钮
+  const recT = CATALOG.find((t) => t.id === rec && t.available);
+  if (recT) {
+    document.getElementById("heroCta").innerHTML =
+      '<a class="btn btn-primary btn-lg" href="' + recT.downloads[0].url + '">' + ICON.download +
+      "为你推荐 · 下载 " + recT.os + " 版</a>";
+  }
+
+  // 复制链接（绝对地址）
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-copy]");
+    if (!btn) return;
+    const abs = location.origin + btn.getAttribute("data-copy");
+    navigator.clipboard?.writeText(abs).then(() => {
+      const old = btn.innerHTML;
+      btn.innerHTML = ICON.check + "已复制";
+      setTimeout(() => (btn.innerHTML = old), 1500);
+    });
+  });
+</script>
+</body>
+</html>

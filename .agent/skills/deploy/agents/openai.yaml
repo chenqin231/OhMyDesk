@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deploy"
+  short_description: "一键构建上传并运行 OhMyDesk Docker 镜像"
+  default_prompt: "Use $deploy to build, upload, and run the OhMyDesk Docker deployment on a server."
