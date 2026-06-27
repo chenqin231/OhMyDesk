@@ -46,10 +46,15 @@ function makeAgent(id, pw, infoObj, opts = {}) {
   return ws;
 }
 
-// ── 主控 admin ───────────────────────────────────────────────────
+// ── 主控 admin（需先登录拿 token，WS 带 ?token）─────────────────────
 let admin;
-function startAdmin() {
-  admin = new WebSocket(BASE);
+async function startAdmin() {
+  const r = await fetch("http://127.0.0.1:8765/api/login", { method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ user: "admin", pass: "OhMyDesk@2026" }) });
+  const { token } = await r.json();
+  info("admin 登录拿到 token");
+  admin = new WebSocket(`${BASE}?token=${encodeURIComponent(token)}`);
   admin.addEventListener("open", () => {
     send(admin, { type: "heartbeat", id: ADMIN, ram: { total: 0, used: 0 } }, ADMIN);
   });

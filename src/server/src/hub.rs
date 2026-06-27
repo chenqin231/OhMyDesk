@@ -165,8 +165,12 @@ impl Hub {
                 self.route_to_peer(session_id, &env);
             }
 
-            // ── 截图请求：落审计 + 广播全 agent ──────────────────────────────
+            // ── 截图请求：仅认证 admin 可发；落审计 + 广播全 agent ────────────
             Message::ScreenshotReq { req_id } => {
+                if !env.from.starts_with("admin-") {
+                    tracing::warn!("拒绝非 admin 的截图请求: from={}", env.from);
+                    return;
+                }
                 tracing::debug!("截图广播 req_id={req_id}");
                 self.audit
                     .log(req_id, &env.from, AuditType::Screenshot, "批量截图指令")

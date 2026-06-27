@@ -18,6 +18,13 @@ pub async fn handle_connect_request(
     password: Option<&str>,
     now: i64,
 ) {
+    // 鉴权闸：模式 A（管理端→终端）只允许已认证 admin 连接发起。
+    // admin 连接已在 WS 升级处用 token 校验过；非 admin 前缀发模式 A 一律拒绝（防伪造发起远控）。
+    if *mode == Mode::A && !from_id.starts_with("admin-") {
+        tracing::warn!("拒绝非 admin 的模式A远控发起: from={from_id}");
+        return;
+    }
+
     // 模式 B：先校验密码
     if *mode == Mode::B {
         let pw = password.unwrap_or("");
