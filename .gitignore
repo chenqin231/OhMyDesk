@@ -35,3 +35,12 @@ ohmydesk.db-*
 *.db
 *.db-wal
 *.db-shm
+
+# macOS 交叉编译产物
+dist-macos/
+
+# 开发对话记录与 v0 设计稿原型（不开源）
+chat/
+chat*.txt
+v0/
+v0_client/

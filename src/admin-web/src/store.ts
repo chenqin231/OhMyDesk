@@ -5,7 +5,6 @@ import type { AuditLog } from "@/lib/types/AuditLog";
 import type { Session } from "@/lib/types/Session";
 import type { Message } from "@/lib/types/Message";
 import { transport } from "@/lib/transport";
-import { makeSessions } from "@/lib/mock/data";
 
 // 截图缓存：req_id → { endpoint_id: base64 }
 export type ScreenshotCache = Record<string, Record<string, string>>;
@@ -48,7 +47,7 @@ const selfId = "admin-" + Math.random().toString(36).slice(2, 8);
 export const useStore = create<State>((set, get) => ({
   endpoints: [],
   auditLogs: [],
-  sessions: makeSessions(Math.floor(Date.now() / 1000)),
+  sessions: [],
   remoteSessionId: null,
   remoteTarget: "",
   remotePhase: "launch",
@@ -116,8 +115,11 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async fetchAudit(from, to, endpoint, result) {
-    const logs = await transport.fetchAudit({ from, to, endpoint, result });
-    set({ auditLogs: logs });
+    const [logs, sessions] = await Promise.all([
+      transport.fetchAudit({ from, to, endpoint, result }),
+      transport.fetchSessions(),
+    ]);
+    set({ auditLogs: logs, sessions });
   },
 
   async deleteEndpoints(ids) {

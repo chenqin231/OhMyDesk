@@ -78,10 +78,10 @@ cargo run -p server          # 监听 0.0.0.0:8765，审计落 ./ohmydesk.db
   # 构建 deb（先 cargo build -p client --release）
   bash packaging/deb/build-deb.sh        # 产出 dist-deb/ohmydesk-client_*.deb
   sudo dpkg -i dist-deb/ohmydesk-client_*.deb   # 缺依赖：sudo apt-get -f install
-  # 安装后：编辑 /etc/ohmydesk/client.env 设 OHMYDESK_SERVER=ws://<服务端IP>:8765/ws
+  # 默认连接 wss://rc.guoziweb.com/ws；内网部署可编辑 /etc/ohmydesk/client.env
   ohmydesk-client-launch                 # 或 应用菜单「OhMyDesk 终端」
   ```
-  开发期直接跑：`OHMYDESK_SERVER="ws://<IP>:8765/ws" cargo run -p client -- "张伟-财务部"`。
+  开发期默认连接 `wss://rc.guoziweb.com/ws`；如需本地服务端：`OHMYDESK_SERVER="ws://127.0.0.1:8765/ws" cargo run -p client -- "张伟-财务部"`。
   起 ≥2 个不同名实例即可在管理端看到多台终端。
 - **Windows 被控端**（从 Linux/WSL 交叉编译出 exe，远控 Windows 终端）：
   ```bash
@@ -93,7 +93,9 @@ cargo run -p server          # 监听 0.0.0.0:8765，审计落 ./ohmydesk.db
   自定义地址：`OHMYDESK_SERVER="wss://<域名>/ws" bash packaging/windows/build-windows.sh`。
 - **MCP Server**（stdio，供 Claude Desktop 等 MCP 客户端接入）：
   ```bash
-  OHMYDESK_API_BASE="http://<服务器IP>:8765" node src/mcp/dist/index.js
+  OHMYDESK_API_BASE="http://<服务器IP>:8765" \
+  OHMYDESK_API_TOKEN="<管理端登录JWT>" \
+  node src/mcp/dist/index.js
   ```
 
 > 开发期前端单独跑（vite :5173）时，需设 `VITE_WS_URL=ws://127.0.0.1:8765/ws` 指回 server；单一 URL 部署无需此变量（自动同源派生）。

@@ -28,7 +28,7 @@ export function ControlClient() {
   }
 
   return (
-    <div className="h-screen w-full overflow-hidden bg-background text-foreground">
+    <div className="h-full min-h-[calc(100vh-7rem)] w-full overflow-hidden bg-background text-foreground">
       {remotePhase === "launch" && (
         <div className="h-full overflow-auto">
           <LaunchPanel

@@ -7,6 +7,7 @@ import {
   makeAuditLogs,
   makeMockFrameBase64,
   makeMockScreenshotBase64,
+  makeSessions,
 } from "@/lib/mock/data";
 
 let activeSessionId: string | null = null;
@@ -167,6 +168,10 @@ export const mockTransport: Transport = {
     if (q.result) logs = logs.filter((l) => l.type === q.result);
 
     return logs;
+  },
+
+  async fetchSessions() {
+    return makeSessions(Math.floor(Date.now() / 1000));
   },
 
   async deleteEndpoints(_ids: string[]): Promise<void> {

@@ -90,8 +90,9 @@ pub fn wire_ui_callbacks(
                     ui.set_remote_status(msg.into());
                     return;
                 }
-                ui.set_remote_status("".into()); // 清旧错误，连接态走遮罩
-                // 记录最近连接（本地持久化）并刷新列表
+                // 清旧错误，连接态走遮罩。
+                ui.set_remote_status("".into());
+                // 记录最近连接（本地持久化）并刷新列表。
                 let list = history::record(&target);
                 ui.set_history(build_history_model(&list, net::now()));
                 let _ = tx.send(net::FromUi::StartRemote {
@@ -128,8 +129,11 @@ pub fn wire_ui_callbacks(
         let tx = from_ui_tx.clone();
         let sess = cur_session.clone();
         ui.on_on_pointer_button(move |x, y, btn, down| {
-            let _ = (x, y); // 移动事件先行，按钮事件不重复带坐标
             if let Some(sid) = sess.lock().unwrap().clone() {
+                let _ = tx.send(net::FromUi::Input {
+                    session_id: sid.clone(),
+                    event: protocol::InputEvent::MouseMove { x, y },
+                });
                 let _ = tx.send(net::FromUi::Input {
                     session_id: sid,
                     event: protocol::InputEvent::MouseButton {

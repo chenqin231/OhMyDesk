@@ -6,6 +6,23 @@ use uuid::Uuid;
 
 use crate::hub::Hub;
 
+const SELF_REMOTE_REJECT_REASON: &str = "您不能远程自己！";
+
+fn send_reject(hub: &Hub, to: &str, session_id: String, reason: &str, now: i64) {
+    let reject_env = Envelope {
+        from: "server".into(),
+        to: Some(to.to_string()),
+        ts: now,
+        payload: Message::Reject {
+            session_id,
+            reason: reason.to_string(),
+        },
+    };
+    if let Ok(json) = serde_json::to_string(&reject_env) {
+        hub.send_to(to, &json);
+    }
+}
+
 /// ConnectRequest A/B 鉴权路由：
 /// - 模式 B：密码错 → Reject 回主控 + 落 AuthFail 审计；
 /// - 密码正确(B) 或 模式 A：server 生成 session_id，建内存会话，
@@ -18,6 +35,20 @@ pub async fn handle_connect_request(
     password: Option<&str>,
     now: i64,
 ) {
+    if from_id == target {
+        let session_id = Uuid::new_v4().to_string();
+        hub.audit
+            .log(
+                &session_id,
+                from_id,
+                AuditType::Reject,
+                SELF_REMOTE_REJECT_REASON,
+            )
+            .await;
+        send_reject(hub, from_id, session_id, SELF_REMOTE_REJECT_REASON, now);
+        return;
+    }
+
     // 鉴权闸：模式 A（管理端→终端）只允许已认证 admin 连接发起。
     // admin 连接已在 WS 升级处用 token 校验过；非 admin 前缀发模式 A 一律拒绝（防伪造发起远控）。
     if *mode == Mode::A && !from_id.starts_with("admin-") {
@@ -34,18 +65,7 @@ pub async fn handle_connect_request(
             hub.audit
                 .log(&session_id, from_id, AuditType::AuthFail, "密码错误")
                 .await;
-            let reject_env = Envelope {
-                from: "server".into(),
-                to: Some(from_id.to_string()),
-                ts: now,
-                payload: Message::Reject {
-                    session_id,
-                    reason: "密码错误".into(),
-                },
-            };
-            if let Ok(json) = serde_json::to_string(&reject_env) {
-                hub.send_to(from_id, &json);
-            }
+            send_reject(hub, from_id, session_id, "密码错误", now);
             return;
         }
     }
@@ -166,5 +186,51 @@ pub async fn handle_session_end(hub: &Hub, session_id: &str, now: i64) {
             .await;
     } else {
         tracing::debug!("SessionEnd 收到但无对应活跃会话: {session_id}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use protocol::{EndpointInfo, Message};
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::{audit::AuditStore, registry::Registry, session::SessionStore};
+
+    fn test_hub() -> Hub {
+        Hub::new(
+            Arc::new(Registry::new()),
+            Arc::new(SessionStore::new()),
+            Arc::new(AuditStore::new(None)),
+        )
+    }
+
+    #[tokio::test]
+    async fn connect_request_rejects_remote_self() {
+        let hub = test_hub();
+        let mut info = EndpointInfo::sample();
+        info.id = "ep-self".into();
+        hub.reg.upsert(info, "123456".into(), 100);
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("ep-self".into(), tx);
+
+        handle_connect_request(&hub, "ep-self", &Mode::B, "ep-self", Some("123456"), 100).await;
+
+        let sent = rx.recv().await.expect("自连应向发起方返回拒绝消息");
+        let env: Envelope = serde_json::from_str(&sent).unwrap();
+        assert_eq!(env.to.as_deref(), Some("ep-self"));
+        match env.payload {
+            Message::Reject { reason, .. } => {
+                assert_eq!(reason, "您不能远程自己！");
+            }
+            other => panic!("自连应返回 Reject，实际为 {other:?}"),
+        }
+        assert!(
+            hub.sessions.active_sessions().is_empty(),
+            "自连不应创建活跃会话"
+        );
     }
 }

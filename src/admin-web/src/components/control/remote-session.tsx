@@ -7,6 +7,12 @@ import { frameSrc } from "@/lib/adapters/media";
 import { useStore } from "@/store";
 import type { InputEvent } from "@/lib/types/InputEvent";
 import { MODE_LABELS } from "@/components/control/launch-panel";
+import {
+  containedFrameRect,
+  pointerToFrameCoords,
+  remoteMouseButtonEvents,
+  shouldBlockRemoteContextMenu,
+} from "@/components/control/remote-geometry";
 
 type RemoteSessionProps = {
   targetName: string;
@@ -38,9 +44,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
       const el = containerRef.current;
       if (!el || !remoteFrame) return null;
       const rect = el.getBoundingClientRect();
-      const x = Math.round(((e.clientX - rect.left) / rect.width) * remoteFrame.w);
-      const y = Math.round(((e.clientY - rect.top) / rect.height) * remoteFrame.h);
-      return { x, y };
+      const displayRect = containedFrameRect(rect, remoteFrame);
+      return pointerToFrameCoords(e, displayRect, remoteFrame);
     },
     [remoteFrame],
   );
@@ -59,38 +64,56 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
     if (!el) return;
 
     function onMouseMove(e: MouseEvent) {
+      e.preventDefault();
       const coords = toFrameCoords(e);
       if (!coords) return;
       sendInput({ kind: "mouse_move", x: coords.x, y: coords.y });
     }
 
     function onMouseDown(e: MouseEvent) {
+      e.preventDefault();
       const coords = toFrameCoords(e);
       if (!coords) return;
-      sendInput({ kind: "mouse_button", button: e.button, down: true });
+      remoteMouseButtonEvents(coords, e.button, true).forEach(sendInput);
     }
 
     function onMouseUp(e: MouseEvent) {
-      sendInput({ kind: "mouse_button", button: e.button, down: false });
+      e.preventDefault();
+      const coords = toFrameCoords(e);
+      if (!coords) return;
+      remoteMouseButtonEvents(coords, e.button, false).forEach(sendInput);
+    }
+
+    function onContextMenu(e: MouseEvent) {
+      if (!shouldBlockRemoteContextMenu()) return;
+      e.preventDefault();
     }
 
     el.addEventListener("mousemove", onMouseMove);
     el.addEventListener("mousedown", onMouseDown);
     el.addEventListener("mouseup", onMouseUp);
+    el.addEventListener("contextmenu", onContextMenu);
     return () => {
       el.removeEventListener("mousemove", onMouseMove);
       el.removeEventListener("mousedown", onMouseDown);
       el.removeEventListener("mouseup", onMouseUp);
+      el.removeEventListener("contextmenu", onContextMenu);
     };
   }, [toFrameCoords, sendInput]);
 
-  // 键盘事件挂在 window（焦点无关）
+  // 键盘事件挂在 window（焦点无关）。
+  // 用 e.key（已按 Shift/CapsLock 解析出大小写与上档符，如 "A"/"!"/"/"），而非 e.code（物理键
+  // 位 "KeyA"/"Digit1"）——被控端注入侧对单字符直接走 Unicode，能正确还原所输入的字符；
+  // 具名功能键（"Enter"/"Backspace"/"ArrowUp"/"Shift"…）由被控端映射为对应 enigo Key。
+  // preventDefault 拦掉浏览器自身的按键行为（空格滚动、"/" 快速查找、F 键等），远控期间独占键盘。
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      sendInput({ kind: "key", code: e.code, down: true });
+      e.preventDefault();
+      sendInput({ kind: "key", code: e.key, down: true });
     }
     function onKeyUp(e: KeyboardEvent) {
-      sendInput({ kind: "key", code: e.code, down: false });
+      e.preventDefault();
+      sendInput({ kind: "key", code: e.key, down: false });
     }
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -101,7 +124,7 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   }, [sendInput]);
 
   return (
-    <div className="flex h-screen w-full flex-col bg-background">
+    <div className="flex h-full min-h-[calc(100vh-7rem)] w-full flex-col bg-background">
       {/* 顶部细工具栏 */}
       <header className="flex h-12 shrink-0 items-center justify-between gap-4 border-b border-border bg-card px-4">
         {/* 左：远程控制中 + 目标 */}
@@ -154,13 +177,13 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
       <main className="relative flex flex-1 items-center justify-center overflow-hidden bg-black p-3 md:p-6">
         <div
           ref={containerRef}
-          className="relative aspect-video w-full max-h-full max-w-[1600px] overflow-hidden rounded-lg ring-1 ring-border cursor-crosshair"
+          className="relative flex h-full w-full max-w-[1920px] items-center justify-center overflow-hidden rounded-lg ring-1 ring-border cursor-pointer"
         >
           {remoteFrame ? (
             <img
               src={frameSrc({ data: remoteFrame.data })}
               alt={`${targetName} 的远程桌面画面`}
-              className="absolute inset-0 size-full object-cover"
+              className="max-h-full max-w-full object-contain"
               draggable={false}
             />
           ) : (
