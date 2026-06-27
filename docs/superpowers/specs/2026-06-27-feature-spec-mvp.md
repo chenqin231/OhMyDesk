@@ -26,7 +26,7 @@ AuditLog { id, sessionId, ts, actorId, type(connect|auth_fail|reject|screenshot|
 ```
 
 ### 0.3 消息信封（WS）
-统一 `{ type, from, to, payload, ts }`。MVP 消息类型：
+统一 `{ from, to, ts, payload }`（`payload` 内部 tag `type` 判别消息，前端按 `env.payload.type`；对齐 protocol `Envelope`）。MVP 消息类型：
 `register / register_ack / heartbeat / endpoint_list / connect_request / auth_result / connect_ack / reject / frame / input / screenshot_req / screenshot_resp / session_end`
 
 ### 0.4 两种远程模式（贯穿 M2/M3/M4）
@@ -95,7 +95,7 @@ AuditLog { id, sessionId, ts, actorId, type(connect|auth_fail|reject|screenshot|
 |------|:---:|---|---|
 | **F-M4-1 连接记录落库** | P0 | 建会话/拒绝/结束时写一条：发起方、目标、模式、起止、时长、结果。 | 写 AuditLog(connect/reject/disconnect) |
 | **F-M4-2 操作记录落库** | P0 | 会话内关键事件落文本：发起截图、断开；键鼠**按会话聚合计数**（"输入操作 N 次"），不逐条爆量。 | 写 AuditLog(screenshot/input) |
-| **F-M4-3 审计列表查询** | P0 | 管理端审计页：列表 + 按终端/时间/结果筛选；点会话看其操作时间线。 | 读 SQLite |
+| **F-M4-3 审计列表查询** | P0 | 管理端审计页：列表 + 按终端/时间/结果筛选；点会话看其操作时间线。 | 读 MySQL |
 | **F-M4-4 鉴权失败留痕** | P1 | 模式 B 密码错误记 `auth_fail`，体现"未授权可追溯"。 | 写 AuditLog(auth_fail) |
 
 **MVP 验收**：完成 1 次远控后，审计页出现该连接记录（含起止/时长）+ 至少"发起截图/断开"等操作文本；可按终端筛选。
@@ -112,7 +112,7 @@ AuditLog { id, sessionId, ts, actorId, type(connect|auth_fail|reject|screenshot|
 | **F-M5-1 `list_endpoints`** | P0 | 列终端，支持 filter（在线/离线/按 OS·arch）。 | 内存注册表/HTTP |
 | **F-M5-2 `get_endpoint_detail`** | P0 | 单终端硬件画像。 | 注册表 |
 | **F-M5-3 `get_active_sessions`** | P0 | 当前进行中的远控会话（谁在控谁）。 | Session |
-| **F-M5-4 `query_audit_log`** | P0 | 查连接/操作审计（按终端/时间/结果）。 | SQLite |
+| **F-M5-4 `query_audit_log`** | P0 | 查连接/操作审计（按终端/时间/结果）。 | MySQL |
 | **F-M5-5 `get_screenshots`** | P1 | 取指定在线终端最近截图。 | 截图缓存 |
 | **F-M5-6 AI 自然语言问答** | P0 | 管理端内嵌 AI 助手框（或外部 Claude 连 MCP）：管理员问"几台麒麟在线""谁在控财务部电脑" → AI 调 MCP 工具作答。 | 经 MCP → 上述工具 |
 

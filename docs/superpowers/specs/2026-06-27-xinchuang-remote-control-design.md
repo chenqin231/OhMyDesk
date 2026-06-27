@@ -96,8 +96,8 @@ GitHub 上最接近答案的是 MeshCentral（6.8k★，Agent 反连 + 自托管
 
 - **星型拓扑**：服务端是唯一中枢，负责注册表、ID+密码鉴权、会话路由、帧转发、审计落库、MCP 暴露。
 - **Agent 反向连接**：被控端主动反连服务端（借鉴 MeshCentral），穿透内网防火墙、天然支持"一台控制台管一批终端"。
-- **无重型数据库**：终端注册表用内存 Map；审计记录用 SQLite（轻量持久化，演示更真实）。
-- **协议契约优先**：统一 JSON 信封 `{type, from, to, payload}`，三端共享 TS 类型，是全项目第一优先级产物。
+- **实时态在内存，历史态落库**：终端注册表用内存 Map；会话/审计历史用 **MySQL 8**（`sqlx`，`utf8mb4`）持久化；DB 连不上时审计 best-effort 降级，实时链路（注册/远控/截图）不受影响。
+- **协议契约优先**：统一 JSON 信封 `{from, to, ts, payload}`（`payload` 内部 tag `type` 判别消息），三端共享 TS 类型（`ts-rs` 导出），是全项目第一优先级产物。
 
 ## 6. 技术栈
 
@@ -119,10 +119,10 @@ GitHub 上最接近答案的是 MeshCentral（6.8k★，Agent 反连 + 自托管
 OhMyDesk/
 ├─ Cargo.toml           # workspace 根
 ├─ crates/protocol/     # 共享协议类型 (serde + ts-rs 导出 TS)
-├─ crates/server/       # axum WS Relay + SQLite 审计
+├─ crates/server/       # axum WS Relay + MySQL 审计 (sqlx)
 ├─ crates/client/       # Slint 桌面 Agent (被控 + 主控)
 ├─ apps/admin-web/      # React 管理端 (Vite + shadcn，浏览器)
-└─ apps/mcp/            # 独立 TS MCP Server (读 server SQLite/HTTP)
+└─ apps/mcp/            # 独立 TS MCP Server (读 server HTTP，不直连 DB)
 ```
 
 > 技术栈风险标注：① Slint 的 `.slint` DSL 与 sysinfo 最新 GPU API 在 Claude 语料盲区，已抓取最新文档生成项目 skill 缓解；② 信创真机（LoongArch）适配 demo 阶段仅交叉编译验证，不保证国产 GPU 利用率等细节；③ enigo 锁 X11 会话规避 Wayland bug。
@@ -190,12 +190,12 @@ assets/                   # logo、信创图标、截图
 
 - **Endpoint**：`id, name(使用人), ip, mac, os{name,type}, cpu{model,arch}, ram, gpu{model,vram}, online, lastSeen, password(临时)`
 - **Session**：`id, mode(A|B), fromId, toId, startAt, endAt, status`
-- **AuditLog**：`id, sessionId, ts, actorId, type(connect|screenshot|click|disconnect), text`
+- **AuditLog**：`id, sessionId, ts, actorId, type(connect|auth_fail|reject|screenshot|input|disconnect), text`（枚举与 protocol `AuditType` 一致，C-1；DB 列名 `event_type`，B-DB1）
 
 ## 8. 消息协议（WS 信封）
 
-统一信封 `{ type, from, to, payload, ts }`，关键 type：
-`register / heartbeat / endpoint_list / connect_request / connect_ack / auth_challenge / frame / mouse / screenshot_req / screenshot_resp / session_end`
+统一信封 `{ from, to, ts, payload }`（`payload` 内部 tag `type` 判别消息，前端按 `env.payload.type`），关键 type：
+`register / register_ack / heartbeat / endpoint_list / connect_request / auth_result / connect_ack / reject / frame / input / screenshot_req / screenshot_resp / session_end`
 
 ## 9. 开发规范（SOP — 规范）
 
@@ -228,14 +228,14 @@ assets/                   # logo、信创图标、截图
 |------|------|------|
 | P0(~1h) | Monorepo 脚手架 + protocol 协议 + server echo 跑通 | 高(地基) |
 | P1(~2h) | Admin 界面 + WS 接入 + 终端列表/态势(假数据起步) | 中 |
-| P2(~2h) | Tauri 客户端 + 注册上线 + 真实硬件上报 | **最高**(Tauri 集成) |
+| P2(~2h) | Slint 客户端 + 注册上线 + 真实硬件上报 | **最高**(Slint 集成) |
 | P3(~2h) | 远程控制闭环：模式 A + 模式 B + 授权 | 中 |
 | P4(~2h) | 批量截图 + 文本审计落库 | 中 |
 | P5(~1.5h) | MCP Server + AI 自然语言查询 | 中 |
 | P6(今晚) | 联调 + 视觉美化(深色/信创标识) | 低 |
 | P7(明早) | 彩排 2 遍 + 兜底预案 | 低 |
 
-**关键路径**：P0 → P2 优先（最高风险的 Tauri 集成尽早暴露）。
+**关键路径**：P0 → P2 优先（最高风险的 Slint 集成尽早暴露）。
 
 ## 13. 风险与缓解
 

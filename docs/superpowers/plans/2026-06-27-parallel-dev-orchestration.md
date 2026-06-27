@@ -30,7 +30,7 @@
 |------|------|------|-------|
 | **P-SRV5** | server `ServeDir` 托管 `apps/admin-web/dist` + SPA fallback（design §11「一个内网 URL 给评委」） | server | 收尾 |
 | **P-CLI4** | 截屏**等比缩放**（非写死 1280×720 拉伸）；`Frame` 带真实 `w/h`；注入按 `real_w/frame_w` 缩放（非写死 1280），否则非 16:9 屏坐标偏 | client | 4 |
-| **P-DOC1** | 文档钉死：**§7 第 3 条模式 B 演示走「Web 主控 + 密码校验 + 拒连」**；client→client 的 Slint 发起端 UI + 键鼠捕获列 **P1 可选**（避免误做浪费工时） | integrator | 4 |
+| **P-DOC1（用户裁决修正 2026-06-27）** | **§7 第 3 条模式 B = client→client（P0，F-M2-2/4/5）**：client 主控端 Slint 发起 UI + 贴帧 + 键鼠捕获**必做**（plan Task 4.6）；Web 主控降为 Slint 翻车**兜底**，非替代 | client+integrator | 4 |
 | **P-MCP1** | 锁 `@modelcontextprotocol/sdk` 版本，按该版核对 `tool`/`registerTool` 签名（最新版签名可能与计划示例不符，TS 侧最易翻车点） | mcp | 7 |
 | **P-MCP2** | `/api/endpoints` 契约 = 返回 `EndpointView[]` 裸数组，与 MCP `all.filter` 对齐 | server+mcp | 6/7 |
 
@@ -87,16 +87,16 @@
 
 ## 2. Agents Team 角色
 
-| Agent 角色 | 负责范围（crate/app） | 依赖 | 隔离 |
+| Agent 角色 | 负责范围（crate/app） | 依赖 | 工作模式（同一工作树） |
 |-----------|---------------------|------|------|
 | **protocol-owner** | `crates/protocol`（契约 + ts-rs 导出） | 无（地基） | 主线串行 |
-| **server-dev** | `crates/server` 全部 + `scripts/db/schema.sql` | protocol | worktree |
-| **client-dev** | `crates/client` 全部（Slint/采集/网络/截屏/注入） | protocol | worktree |
-| **frontend-dev** | `apps/admin-web`（v0 接入/store/ws/5 页） | protocol（TS 类型） | worktree |
-| **mcp-dev** | `apps/mcp`（5 tool） | protocol/HTTP 契约 | worktree |
+| **server-dev** | `crates/server` 全部 + `scripts/db/schema.sql` | protocol | 目录 owner |
+| **client-dev** | `crates/client` 全部（Slint/采集/网络/截屏/注入） | protocol | 目录 owner |
+| **frontend-dev** | `apps/admin-web`（v0 接入/store/ws/5 页） | protocol（TS 类型） | 目录 owner |
+| **mcp-dev** | `apps/mcp`（5 tool） | protocol/HTTP 契约 | 目录 owner |
 | **integrator** | 跨端联调 + 集成里程碑验收 + 收尾 + 文档残留 | 全部 | 主线 |
 
-> **隔离策略**：Wave 1 四线改不同目录、互不冲突，可用 `isolation: worktree` 并行写入；但本仓库是同一 Cargo workspace，跨 crate 编译需共享根 `Cargo.toml`——**建议四线在同一工作树按目录分工**（冲突面仅根 `Cargo.toml` 的 members/deps，由 protocol-owner 在 Wave 0 一次配齐），避免 worktree 合并开销。
+> **隔离策略（已定死单一方案）**：四线在**同一工作树按目录 owner 分工**（server=`crates/server`、client=`crates/client`、frontend=`apps/admin-web`、mcp=`apps/mcp`，互不交叉写入），**不使用 worktree 并行写入**。本仓库是同一 Cargo workspace，跨 crate 编译共享根 `Cargo.toml`，由 protocol-owner 在 Wave 0 一次配齐 members/deps。**Phase 4 远控链路跨端耦合高，Task 4.3/4.4/4.5/4.6 由 integrator 串行落地**，不拆多 agent 并行（消除跨 owner 任务冲突）。
 
 ---
 
@@ -124,7 +124,7 @@
 
 **② client-dev** — 实现计划 Phase 2 + Phase 4(client 侧)
 - Phase 2：asset.rs 采集、net.rs（**M-CLI1** mpsc 泵、**M-CLI2** 重连、**M-CLI3** helper）、最小 Slint UI。
-- Phase 4 client 侧：capture.rs（**P-CLI4** 等比缩放 + 真实 w/h）、inject.rs（坐标按 frame_w 缩放）、Slint 贴帧、授权弹窗联动。
+- Phase 4 client 侧：capture.rs（**P-CLI4** 等比缩放 + 真实 w/h）、inject.rs（坐标按 frame_w 缩放）、Slint 贴帧、授权弹窗联动；**client→client 主控端（Task 4.6，P-CLI5 P0）：Slint 发起面板 + 键鼠捕获回传**。
 - **里程碑产出**：client 能采真实硬件、反连注册、被控截屏推帧、收 input 注入（先用本地 server 桩或 server-dev 就绪后联调）。
 
 **③ frontend-dev** — 实现计划 Phase 3 + Phase 4/5/6 的 admin 页
@@ -144,7 +144,7 @@
 | 里程碑 | 集成内容 | 参与线 | 验收（§7） |
 |--------|---------|--------|-----------|
 | **I1 = M1** | client 反连注册 + admin 接 WS 收 endpoint_list 渲染真实终端 + 抽屉 | server+client+frontend | §7-1：2+ 台真实硬件+信创标识+离线 |
-| **I2 = M2** | 模式 A 远控闭环（授权→帧→注入→断开）；模式 B 密码校验+拒连（**P-DOC1**：Web 主控形态） | 三线 | §7-2、§7-3 |
+| **I2 = M2** | 模式 A 远控闭环（授权→帧→注入→断开）；模式 B = **client→client**（A 的 Slint 主控控 B：授权/密码校验/拒连/键鼠注入，P-DOC1 P0）；Web 主控为兜底 | 三线 | §7-2、§7-3 |
 | **I3 = M3+M4** | 一键批量截图墙；远控产生审计（**M-SRV4** input 计数）+ 审计页查询 | server+client+frontend | §7-4、§7-5 |
 | **I4 = M5** | mcp 换真实 server HTTP；AI 自然语言问答（录降级视频） | mcp+frontend | §7-6 |
 
@@ -178,7 +178,7 @@
 | 风险 | 触发 | 回退 |
 |------|------|------|
 | **server 瓶颈拖慢全线** | server-dev 未及时交付可联调骨架 | server 线最高优先；I1 联调可用 websocat 桩先验 client/admin 各自 |
-| **远控集成（I2）最高风险** | 帧/注入/坐标/会话状态多端耦合 | 预留缓冲；先单屏 x86 跑通再谈其他；模式 B 锁 Web 主控形态（P-DOC1） |
+| **远控集成（I2）最高风险** | 帧/注入/坐标/会话状态多端耦合；**client→client Slint 主控键鼠捕获是新风险点** | 预留缓冲；先模式 A（Web 主控）打通全链路（截屏/注入/会话/审计），再加 client 主控端（Task 4.6）；**Slint 主控翻车则 Web 主控兜底演示模式 B**（被控+server 链路一致，鉴权/拒连/审计照样达成） |
 | **协议中途要改** | 集成暴露契约缺陷 | 只走 protocol-owner 统一改 + 重导；Wave 0 尽量定全（W0-*） |
 | **MySQL 拖垮实时链路** | DB 连不上 | **M-SRV1** 已要求降级 None；演示前确认 docker 库起着 |
 | **MCP SDK 版本漂移** | npm 装最新签名不符 | **P-MCP1** 锁版本；I4 失败有录像兜底，且 M1-M4 不依赖 AI |
