@@ -110,16 +110,27 @@ pub(super) async fn handle_uplink(
                 password: Some(password),
             },
         },
-        FromUi::AuthDecision { session_id, accept } => Envelope {
-            from: self_id.to_string(),
-            to: None,
-            ts: now(),
-            payload: Message::AuthResult {
-                session_id,
-                ok: accept,
-                reason: if accept { None } else { Some("用户拒绝".into()) },
-            },
-        },
+        FromUi::AuthDecision { session_id, accept } => {
+            if accept {
+                // 被控端授权通过 → 进入被控态 + 启动截屏推帧（主控才有画面）。
+                // 关键：Start 必须挂在此「上行授权」处——被控端不会收到 AuthResult 下行回执
+                //（server 消费 AuthResult 后只把 ConnectAck 回给主控），挂下行分支等于永不触发。
+                session.lock().await.controlled = Some(session_id.clone());
+                CAPTURE_CTRL.send(CaptureCtrl::Start {
+                    session_id: session_id.clone(),
+                });
+            }
+            Envelope {
+                from: self_id.to_string(),
+                to: None,
+                ts: now(),
+                payload: Message::AuthResult {
+                    session_id,
+                    ok: accept,
+                    reason: if accept { None } else { Some("用户拒绝".into()) },
+                },
+            }
+        }
         FromUi::Input { session_id, event } => Envelope {
             from: self_id.to_string(),
             to: None,
@@ -220,5 +231,38 @@ mod tests {
             }
             _ => panic!("payload 类型错误"),
         }
+    }
+
+    /// Bug 修复回归：被控端「同意」（上行 AuthDecision accept）必须 → 进入被控态 +
+    /// 启动截屏推帧（CAPTURE_CTRL.Start）。此前错挂在永不到达的下行 AuthResult 分支，致主控黑屏。
+    #[tokio::test]
+    async fn auth_accept_uplink_enters_controlled_and_starts_capture() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let session = Arc::new(tokio::sync::Mutex::new(SessionCtx::default()));
+        let (cap_tx, mut cap_rx) = mpsc::unbounded_channel::<CaptureCtrl>();
+        CAPTURE_CTRL.init(cap_tx);
+
+        handle_uplink(
+            FromUi::AuthDecision {
+                session_id: "sess-9".into(),
+                accept: true,
+            },
+            "ep-victim",
+            &tx,
+            &session,
+        )
+        .await;
+
+        // ① 进入被控态（截屏循环据此判活）
+        assert_eq!(session.lock().await.controlled.as_deref(), Some("sess-9"));
+        // ② 启动截屏推帧信号
+        match cap_rx.try_recv() {
+            Ok(CaptureCtrl::Start { session_id }) => assert_eq!(session_id, "sess-9"),
+            other => panic!("应收到 CAPTURE_CTRL.Start，实际 {other:?}"),
+        }
+        // ③ 仍发出 AuthResult ok=true
+        let s = rx.recv().await.unwrap();
+        assert!(s.contains("\"type\":\"auth_result\""));
+        assert!(s.contains("\"ok\":true"));
     }
 }

@@ -16,12 +16,21 @@ pub fn wire_ui_callbacks(
     for accept in [true, false] {
         let tx = from_ui_tx.clone();
         let sess = ctrl_session.clone();
+        let ui_weak = ui.as_weak();
         let cb = move || {
             let sid = sess.lock().unwrap().clone().unwrap_or_default();
             let _ = tx.send(net::FromUi::AuthDecision {
                 session_id: sid,
                 accept,
             });
+            // 本地即时切 UI（回调在 UI 线程，可直接 set）：被控端收不到授权回执，
+            // 不本地切则授权框永不消失。同意 → 关框 + 进入"被控中"；拒绝 → 仅关框。
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_auth_pending(false);
+                if accept {
+                    ui.set_being_controlled(true);
+                }
+            }
         };
         if accept {
             ui.on_auth_accept(cb);

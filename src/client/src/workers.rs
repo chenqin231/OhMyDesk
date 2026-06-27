@@ -53,7 +53,12 @@ pub async fn consume_screenshot(
     from_ui_tx: tokio::sync::mpsc::UnboundedSender<net::FromUi>,
 ) {
     while let Some((req_id, requester)) = rx.recv().await {
-        let r = tokio::task::spawn_blocking(|| capture::Capturer::new().and_then(|c| c.frame())).await;
+        // OHMYDESK_FAKE_CAPTURE=1：真实截屏不可用的环境用占位帧，保证批量截图链路可演示。
+        let r = if capture::fake_capture_enabled() {
+            Ok(capture::placeholder_frame(0))
+        } else {
+            tokio::task::spawn_blocking(|| capture::Capturer::new().and_then(|c| c.frame())).await
+        };
         match r {
             Ok(Ok((b64, w, h))) => {
                 tracing::info!(
@@ -88,6 +93,7 @@ pub async fn consume_capture(
     {
         let active = active.clone();
         std::thread::spawn(move || {
+            let fake = capture::fake_capture_enabled();
             let mut capturer: Option<capture::Capturer> = None;
             let mut seq: u64 = 0;
             loop {
@@ -96,20 +102,30 @@ pub async fn consume_capture(
                     Some(s) => s,
                     None => continue, // 未在被控态，空转
                 };
-                // 懒构造截屏器（依赖 X11；失败则停推帧，避免刷屏告警）
-                if capturer.is_none() {
-                    match capture::Capturer::new() {
-                        Ok(c) => capturer = Some(c),
-                        Err(e) => {
-                            tracing::warn!("截屏器构造失败（无显示器/X11？）：{e}，推帧禁用");
-                            *active.lock().unwrap() = None;
-                            continue;
+                // 取一帧：fake 模式走占位帧（WSLg 等无法真实截屏的环境验证链路）；否则真实截屏。
+                let frame = if fake {
+                    seq += 1;
+                    capture::placeholder_frame(seq)
+                } else {
+                    // 懒构造截屏器（依赖 X11；失败则停推帧，避免刷屏告警）
+                    if capturer.is_none() {
+                        match capture::Capturer::new() {
+                            Ok(c) => capturer = Some(c),
+                            Err(e) => {
+                                tracing::warn!("截屏器构造失败（无显示器/X11？）：{e}，推帧禁用；WSLg 可设 OHMYDESK_FAKE_CAPTURE=1 验链路");
+                                *active.lock().unwrap() = None;
+                                continue;
+                            }
                         }
                     }
-                }
-                match capturer.as_ref().unwrap().frame() {
-                    Ok((data, w, h)) => {
+                    let f = capturer.as_ref().unwrap().frame();
+                    if f.is_ok() {
                         seq += 1;
+                    }
+                    f
+                };
+                match frame {
+                    Ok((data, w, h)) => {
                         if from_ui_tx
                             .send(net::FromUi::Frame {
                                 session_id: sid,
