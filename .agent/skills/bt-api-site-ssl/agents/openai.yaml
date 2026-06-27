@@ -1,0 +1,4 @@
+interface:
+  display_name: "BT API Site SSL"
+  short_description: "SSH 登录服务器后用宝塔 API 配置域名与证书"
+  default_prompt: "Use $bt-api-site-ssl to configure a BT Panel site, reverse proxy, and SSL certificate after SSH login."
