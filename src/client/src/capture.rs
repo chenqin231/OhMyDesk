@@ -73,6 +73,34 @@ pub fn encode_frame(img: &RgbaImage) -> anyhow::Result<(String, u32, u32)> {
     Ok((STANDARD.encode(buf.get_ref()), w, h))
 }
 
+/// 降级占位帧（仅 `OHMYDESK_FAKE_CAPTURE=1` 时启用）：真实截屏不可用的环境（如 WSLg 的
+/// X GetImage 限制）下，生成**可辨识的合成测试图案**（随 seq 移动的亮竖条 + 渐变 + 网格），
+/// 用于在开发机验证「授权 → 画面 → 操作 → 断开」整条链路。**非真实屏幕**，真机 X11 默认不启用。
+pub fn placeholder_frame(seq: u64) -> anyhow::Result<(String, u32, u32)> {
+    let (w, h) = (1280u32, 720u32);
+    let bar = (seq.wrapping_mul(16) % w as u64) as u32; // 竖条位置随 seq 移动，证明帧在刷新
+    let img = RgbaImage::from_fn(w, h, |x, y| {
+        let base_r = (x * 90 / w) as u8;
+        let base_b = (y * 160 / h) as u8 + 60;
+        let grid = if x % 64 == 0 || y % 64 == 0 { 40 } else { 0 };
+        let moving = if x.abs_diff(bar) < 6 { 200 } else { 0 };
+        image::Rgba([
+            base_r.saturating_add(moving).saturating_add(grid),
+            40u8.saturating_add(moving).saturating_add(grid),
+            base_b.saturating_add(grid),
+            255,
+        ])
+    });
+    encode_frame(&img)
+}
+
+/// 是否启用降级占位帧（环境变量开关，默认关）。
+pub fn fake_capture_enabled() -> bool {
+    std::env::var("OHMYDESK_FAKE_CAPTURE")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +152,17 @@ mod tests {
             }
             Err(e) => println!("枚举屏 {rw}x{rh} OK；抓屏失败（WSLg GetImage 限制，真机无此问题）：{e}"),
         }
+    }
+
+    #[test]
+    fn 占位帧_可解码为_1280x720_rgba() {
+        // 主控贴帧前会 JPEG→RgbaImage 解码（ui_glue::decode_frame_rgba）；占位帧须走通同款路径。
+        let (b64, w, h) = placeholder_frame(7).unwrap();
+        assert_eq!((w, h), (1280, 720));
+        let raw = STANDARD.decode(&b64).unwrap();
+        assert_eq!(&raw[..2], &[0xFF, 0xD8], "应为 JPEG");
+        let img = image::load_from_memory(&raw).unwrap().to_rgba8();
+        assert_eq!((img.width(), img.height()), (1280, 720), "解码后尺寸应一致");
     }
 
     #[test]

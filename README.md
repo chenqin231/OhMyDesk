@@ -78,10 +78,15 @@ cargo run -p server          # 监听 0.0.0.0:8765
 ```
 
 - **管理端**：浏览器开 `http://<服务器IP>:8765/`（UI、API、WS 同源）。
-- **客户端 Agent**（需 X11 显示）：
+- **客户端 Agent**（需 X11 显示）——**推荐 .deb 安装**（终端用户无需懂命令行）：
   ```bash
-  OHMYDESK_SERVER="ws://<服务器IP>:8765/ws" cargo run -p client -- "张伟-财务部"
+  # 构建 deb（先 cargo build -p client --release）
+  bash packaging/deb/build-deb.sh        # 产出 dist-deb/ohmydesk-client_*.deb
+  sudo dpkg -i dist-deb/ohmydesk-client_*.deb   # 缺依赖：sudo apt-get -f install
+  # 安装后：编辑 /etc/ohmydesk/client.env 设 OHMYDESK_SERVER=ws://<服务端IP>:8765/ws
+  ohmydesk-client-launch                 # 或 应用菜单「OhMyDesk 终端」
   ```
+  开发期直接跑：`OHMYDESK_SERVER="ws://<IP>:8765/ws" cargo run -p client -- "张伟-财务部"`。
   起 ≥2 个不同名实例即可在管理端看到多台终端。
 - **MCP Server**（stdio，供 Claude Desktop 等 MCP 客户端接入）：
   ```bash
@@ -106,6 +111,11 @@ cargo run -p server          # 监听 0.0.0.0:8765
 | M4 审计落库 | 真实 MySQL 落审计 4 条 + 会话 1 条（含终态 UPDATE） | 通过 |
 
 手工（浏览器/真机）逐条验收见 [docs/06-测试/手工验收清单.md](docs/06-测试/手工验收清单.md)。
+
+## 已知环境限制：截屏
+
+- **WSL/WSLg 无法真实截屏**：WSLg 的 X server 不完整支持 X GetImage，全屏抓图报 `xcb protocol error`；远控画面/批量截图会取不到真实屏幕。**真实信创 X11 物理机无此问题**。
+- 在 WSL 上验证「授权→画面→操作→断开」**整条链路**时，设 `OHMYDESK_FAKE_CAPTURE=1` 用合成占位帧（移动竖条+渐变，明确标记为占位、非真实屏幕）。真机部署默认留空走真实截屏。
 
 ## 安全约束
 
