@@ -23,13 +23,14 @@ pub(super) struct SessionCtx {
 pub(super) async fn connect_once(
     server_url: &str,
     info: &EndpointInfo,
-    password: &str,
+    password: &Arc<std::sync::Mutex<String>>,
     to_ui: &mpsc::UnboundedSender<ToUi>,
     from_ui: &mut mpsc::UnboundedReceiver<FromUi>,
 ) -> anyhow::Result<()> {
     let (ws, _) = connect_async(server_url).await?;
     let (mut write, mut read) = ws.split();
     let id = info.id.clone();
+    let cur_pw = || password.lock().unwrap().clone();
 
     // ── M-CLI1：mpsc 出站泵 —— write 只被本任务独占 ──
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
@@ -42,21 +43,22 @@ pub(super) async fn connect_once(
     });
 
     // 注册（出站泵发，不直接碰 write）
+    let reg_pw = cur_pw();
     let reg = Envelope {
         from: id.clone(),
         to: None,
         ts: now(),
         payload: Message::Register {
             info: Box::new(info.clone()),
-            password: password.to_string(),
+            password: reg_pw.clone(),
         },
     };
     out_tx.send(serde_json::to_string(&reg)?)?;
     let _ = to_ui.send(ToUi::Registered {
         id: id.clone(),
-        password: password.to_string(),
+        password: reg_pw.clone(),
     });
-    tracing::info!("已注册 id={id} password={password}");
+    tracing::info!("已注册 id={id} password={reg_pw}");
 
     // ── 心跳任务：只持 out_tx（克隆），绝不持 write ──
     let hb_tx = out_tx.clone();
@@ -106,6 +108,24 @@ pub(super) async fn connect_once(
             // 上行：UI 动作
             act = from_ui.recv() => {
                 match act {
+                    // 刷新密码：就地重生成 + 重发 Register（server upsert 覆盖），并回推 UI 展示。
+                    Some(FromUi::RefreshPassword) => {
+                        let newpw = format!("{:06}", super::rand_6());
+                        *password.lock().unwrap() = newpw.clone();
+                        let reg = Envelope {
+                            from: id.clone(),
+                            to: None,
+                            ts: now(),
+                            payload: Message::Register {
+                                info: Box::new(info.clone()),
+                                password: newpw.clone(),
+                            },
+                        };
+                        if let Ok(s) = serde_json::to_string(&reg) {
+                            let _ = out_tx.send(s);
+                        }
+                        let _ = to_ui.send(ToUi::Registered { id: id.clone(), password: newpw });
+                    }
                     Some(a) => handle_uplink(a, &id, &out_tx, &session).await,
                     None => break Ok(()), // UI 关闭
                 }

@@ -11,6 +11,7 @@
 mod asset;
 mod capture;
 mod geom;
+mod history;
 mod inject;
 mod net;
 mod ui_glue;
@@ -34,8 +35,7 @@ fn main() -> anyhow::Result<()> {
     lock_x11_session();
 
     let user = std::env::args().nth(1).unwrap_or_else(|| "演示终端".into());
-    let server_url =
-        std::env::var("OHMYDESK_SERVER").unwrap_or_else(|_| "ws://127.0.0.1:8765/ws".into());
+    let server_url = std::env::var("OHMYDESK_SERVER").unwrap_or_else(|_| default_server_url());
 
     let info = asset::collect(&user);
     let self_id = info.id.clone();
@@ -47,7 +47,9 @@ fn main() -> anyhow::Result<()> {
     );
 
     let ui = AppWindow::new()?;
-    ui.set_self_id(self_id.into());
+    ui.set_self_id(ui_glue::group_digits(&self_id).into());
+    // 最近连接历史（本地持久化）初始填充
+    ui.set_history(ui_glue::build_history_model(&history::load(), net::now()));
 
     // net ↔ UI 双向通道
     let (to_ui_tx, to_ui_rx) = tokio::sync::mpsc::unbounded_channel::<net::ToUi>();
@@ -88,6 +90,10 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn default_server_url() -> String {
+    "wss://rc.guoziweb.com/ws".into()
+}
+
 /// 锁 X11 会话（项目硬约束：xcap/enigo 在 Wayland 不可靠）。WSL2 等环境残留的 WAYLAND_DISPLAY
 /// 会让 xcap 选 wayland 后端 panic（UnsupportedVersion），故进程级强制 X11：清 WAYLAND_DISPLAY +
 /// 标记 session 为 x11 + 软渲染兜底，让 xcap/winit 统一走 X11。真实信创 X11 机本无此变量。
@@ -102,5 +108,15 @@ fn lock_x11_session() {
     // 软渲染兜底（防环境残留 GPU 后端被选中）。
     if std::env::var("SLINT_BACKEND").is_err() {
         std::env::set_var("SLINT_BACKEND", "winit-software");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 客户端默认服务器地址_所有平台指向公网中转() {
+        assert_eq!(default_server_url(), "wss://rc.guoziweb.com/ws");
     }
 }

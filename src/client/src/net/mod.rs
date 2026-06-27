@@ -32,7 +32,10 @@ pub enum ToUi {
     /// 注册成功，携本机 id + 明文密码（展示给用户报给主控方）。
     Registered { id: String, password: String },
     /// 收到远程控制请求（被控端弹授权框）。requester 为请求方展示名，session_id 为 server 分配的会话。
-    ControlRequest { requester: String, session_id: String },
+    ControlRequest {
+        requester: String,
+        session_id: String,
+    },
     /// 会话已建立为被控态（授权通过 / 对端 ack）。
     BeingControlled { peer_name: String },
     /// 主控发起结果：收到对端首帧前的 ack。
@@ -78,6 +81,8 @@ pub enum FromUi {
     },
     /// 主动断开当前会话。
     Disconnect { session_id: String },
+    /// 刷新本机临时密码：重新生成并重发 Register（server DashMap 按 id upsert 覆盖旧密码）。
+    RefreshPassword,
 }
 
 // ── M-CLI3：工具函数 ──────────────────────────────────────────────
@@ -110,7 +115,8 @@ pub async fn run(
     to_ui: mpsc::UnboundedSender<ToUi>,
     mut from_ui: mpsc::UnboundedReceiver<FromUi>,
 ) {
-    let password = format!("{:06}", rand_6());
+    // 密码用 Arc<Mutex> 共享：刷新时 connect_once 内就地更新，重连后续轮沿用最新值。
+    let password = std::sync::Arc::new(std::sync::Mutex::new(format!("{:06}", rand_6())));
     loop {
         match conn::connect_once(&server_url, &info, &password, &to_ui, &mut from_ui).await {
             Ok(()) => tracing::warn!("连接正常关闭，3s 后重连"),
