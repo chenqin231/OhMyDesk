@@ -121,6 +121,56 @@ export const mockTransport: Transport = {
       return;
     }
 
+    // 远程命令执行（mock 回执：echo 命令 + 退出码 0）
+    if (payload.type === "exec_request") {
+      const { session_id, exec_id, command } = payload;
+      setTimeout(() => {
+        onEnvelope({
+          from: "server",
+          to: internal._selfId ?? "admin",
+          ts: BigInt(Math.floor(Date.now() / 1000)),
+          payload: {
+            type: "exec_result",
+            session_id,
+            exec_id,
+            exit_code: 0,
+            stdout: `[mock] $ ${command}\nOhMyDesk mock shell\n`,
+            stderr: "",
+            truncated: false,
+            duration_ms: 42,
+          },
+        });
+      }, 400);
+      return;
+    }
+
+    // 文件取回（mock 回流一个小文本文件）
+    if (payload.type === "file_pull_request") {
+      const { session_id, transfer_id, path } = payload;
+      const content = `mock file for ${path}\n`;
+      const name = path.split(/[\\/]/).pop() || "file.txt";
+      setTimeout(() => {
+        onEnvelope({
+          from: "server",
+          to: internal._selfId ?? "admin",
+          ts: BigInt(Math.floor(Date.now() / 1000)),
+          payload: { type: "file_open", session_id, transfer_id, name, size: BigInt(content.length), dir: "pull" },
+        });
+        onEnvelope({
+          from: "server",
+          to: internal._selfId ?? "admin",
+          ts: BigInt(Math.floor(Date.now() / 1000)),
+          payload: { type: "file_chunk", session_id, transfer_id, seq: 0n, data: btoa(content), last: true },
+        });
+      }, 400);
+      return;
+    }
+
+    // 文件下发 / 传输错误：mock 直接消费（被控端落盘，前端无回执）
+    if (payload.type === "file_open" || payload.type === "file_chunk" || payload.type === "file_error") {
+      return;
+    }
+
     if (payload.type === "screenshot_req") {
       const { req_id } = payload;
       const nowSec2 = Math.floor(Date.now() / 1000);

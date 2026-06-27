@@ -13,6 +13,7 @@ import {
   remoteMouseButtonEvents,
   shouldBlockRemoteContextMenu,
 } from "@/components/control/remote-geometry";
+import { RemoteTools } from "@/components/control/remote-tools";
 
 type RemoteSessionProps = {
   targetName: string;
@@ -173,6 +174,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
         </div>
       </header>
 
+      {/* 主体：远程画面 + 右侧命令/文件工具栏 */}
+      <div className="flex min-h-0 flex-1">
       {/* G-1：主体远程画面，<img src=data:image/jpeg;base64,> 消费 frame */}
       <main className="relative flex flex-1 items-center justify-center overflow-hidden bg-black p-3 md:p-6">
         <div
@@ -201,6 +204,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
           {/* O-2 裁决：删除"会话录制中"标记 */}
         </div>
       </main>
+        <RemoteTools />
+      </div>
     </div>
   );
 }
