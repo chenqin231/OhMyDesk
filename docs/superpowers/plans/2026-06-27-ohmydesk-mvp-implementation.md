@@ -4,7 +4,7 @@
 
 **Goal:** 在死线（2026-06-28 中午）前打通 feature spec §7 的 6 条 MVP 验收闭环：终端资产可视、A/B 两模式远控、批量截图墙、文本审计、MCP+AI 查询。
 
-**Architecture:** 星型拓扑 + Agent 反连。服务端 Relay（axum + tokio）是唯一中枢，持内存注册表 + SQLite 文本审计，按 WS 统一信封路由帧/输入/指令。Agent（Slint + Rust）反连注册、上报硬件、被控截屏、主控注入。管理端（React + v0 生成 UI）走 WS 接同一信封。MCP Server（TS 薄层）读服务端 HTTP/SQLite 把管控数据暴露给 AI。
+**Architecture:** 星型拓扑 + Agent 反连。服务端 Relay（axum + tokio）是唯一中枢，持内存注册表 + MySQL 文本审计（sqlx），按 WS 统一信封路由帧/输入/指令。Agent（Slint + Rust）反连注册、上报硬件、被控截屏、主控注入。管理端（React + v0 生成 UI）走 WS 接同一信封。MCP Server（TS 薄层）读服务端 HTTP 把管控数据暴露给 AI。
 
 **Tech Stack:** Rust（protocol/server/client）+ React/Vite/shadcn（admin-web）+ TS @modelcontextprotocol/sdk（mcp）。协议单一事实源 = `crates/protocol`，用 `ts-rs` 导出 TS 类型。客户端库 API 一律按 `rust-remote-control-stack` skill 的 reference 写（Slint 1.17 / xcap 0.9 / enigo 0.6 / sysinfo 0.39）。
 
@@ -30,7 +30,8 @@ OhMyDesk/
 │  │     ├─ registry.rs            # 内存注册表（DashMap）+ 在线超时
 │  │     ├─ hub.rs                 # WS 连接管理 + 信封路由 + 广播
 │  │     ├─ session.rs             # 会话建立/鉴权(A/B)/结束
-│  │     ├─ audit.rs               # SQLite 文本审计：连接/操作落库 + 查询
+│  │     ├─ audit.rs               # MySQL 文本审计：连接/操作落库 + 查询
+│  │     ├─ db.rs                  # MySQL 连接池（sqlx MySqlPool）
 │  │     └─ http.rs                # 给 MCP 的只读 HTTP（/api/endpoints 等）
 │  └─ client/                      # Slint Agent：被控 + 主控
 │     ├─ Cargo.toml
@@ -417,7 +418,7 @@ tracing-subscriber = { workspace = true }
 dashmap = "6"
 futures-util = "0.3"
 tower-http = { version = "0.6", features = ["fs", "cors"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "mysql"] }
 ```
 
 - [ ] **Step 2: 写最小 axum + WS echo**
@@ -1247,13 +1248,50 @@ git commit -m "feat(batch): 截图墙 UI 接数据，M3 闭环"
 
 **目标：** 远控产生连接记录 + 操作记录（键鼠聚合计数）；管理端可查询筛选。
 
-### Task 6.1：SQLite 审计存储 + 聚合计数（纯逻辑 TDD）
+### Task 6.1：MySQL 审计存储 + 聚合计数（纯逻辑 TDD）
 
 **Files:**
+- Create: `scripts/db/schema.sql`（MySQL 建表）
+- Create: `crates/server/src/db.rs`（sqlx 连接池）
 - Create: `crates/server/src/audit.rs`
 - Modify: `crates/server/src/hub.rs`/`session.rs`（事件落库）
 
-- [ ] **Step 1: 写失败测试（输入聚合计数）**
+> 数据库规范见 `.agent/user.md` §C：MySQL 8 + sqlx，`utf8mb4`，`DATABASE_URL`，时间戳 `BIGINT`，表名/字段 snake_case。
+
+- [ ] **Step 1: 建表脚本 `scripts/db/schema.sql`**
+
+```sql
+CREATE TABLE IF NOT EXISTS endpoints (
+  id VARCHAR(64) PRIMARY KEY, name VARCHAR(128), ip VARCHAR(64), mac VARCHAR(32),
+  os_name VARCHAR(128), os_kind VARCHAR(16), cpu_model VARCHAR(128), cpu_arch VARCHAR(16),
+  last_seen BIGINT
+) DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS sessions (
+  id VARCHAR(64) PRIMARY KEY, mode CHAR(1), from_id VARCHAR(64), to_id VARCHAR(64),
+  start_at BIGINT, end_at BIGINT, status VARCHAR(16)
+) DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id VARCHAR(64) PRIMARY KEY, session_id VARCHAR(64), ts BIGINT,
+  actor_id VARCHAR(64), type VARCHAR(16), text TEXT,
+  INDEX idx_session (session_id), INDEX idx_ts (ts)
+) DEFAULT CHARSET=utf8mb4;
+```
+
+- [ ] **Step 2: `db.rs` 连接池 + 启动建表**
+
+```rust
+use sqlx::mysql::MySqlPoolOptions;
+pub type Db = sqlx::MySqlPool;
+
+pub async fn connect() -> anyhow::Result<Db> {
+    let url = std::env::var("DATABASE_URL")?;     // mysql://user:pass@127.0.0.1/ohmydesk
+    let pool = MySqlPoolOptions::new().max_connections(5).connect(&url).await?;
+    sqlx::raw_sql(include_str!("../../../scripts/db/schema.sql")).execute(&pool).await?;
+    Ok(pool)
+}
+```
+
+- [ ] **Step 3: 写失败测试（输入聚合计数，纯逻辑不依赖 DB）**
 
 ```rust
 #[test]
@@ -1264,24 +1302,24 @@ fn input_events_aggregate_count() {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败 → 实现 audit.rs**
+- [ ] **Step 4: 运行确认失败 → 实现 `audit.rs`**
 
-`AuditStore`（rusqlite 建表 `audit_log(id,session_id,ts,actor_id,type,text)`）；`InputAggregator`（会话内累加，断开时落一条聚合 text）；写入 connect/reject/screenshot/disconnect/auth_fail。
+`InputAggregator`（会话内累加，断开时落一条聚合 text，纯逻辑）；`AuditStore { db: Db }` 用 `sqlx::query("INSERT INTO audit_logs ...").bind(..).execute(&db)` 写审计；会话起止写 `sessions`；写入 connect/reject/screenshot/disconnect/auth_fail。`endpoints` 资产台账落库为 P1（不影响 demo）。
 
-- [ ] **Step 3: 运行确认通过**
+- [ ] **Step 5: 运行确认通过**
 
 Run: `cargo test -p server`
-Expected: PASS
+Expected: PASS（聚合计数纯逻辑测试通过；DB 写入靠下方端到端冒烟验证）
 
-- [ ] **Step 4: 事件接入落库**
+- [ ] **Step 6: 事件接入落库**
 
-会话建立/拒绝/结束、发起截图、输入聚合，在 hub/session 对应分支调 `AuditStore::write`。
+会话建立/拒绝/结束、发起截图、输入聚合，在 hub/session 对应分支调 `AuditStore` 写库。
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
-git add crates/server/src/audit.rs crates/server/src/hub.rs crates/server/src/session.rs
-git commit -m "feat(audit): SQLite 文本审计 + 输入聚合计数"
+git add scripts/db/schema.sql crates/server/src/db.rs crates/server/src/audit.rs crates/server/src/hub.rs crates/server/src/session.rs
+git commit -m "feat(audit): MySQL 文本审计 + 输入聚合计数"
 ```
 
 ### Task 6.2：审计查询 HTTP + 审计页 UI

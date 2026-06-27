@@ -83,7 +83,7 @@ GitHub 上最接近答案的是 MeshCentral（6.8k★，Agent 反连 + 自托管
 ┌──────────────┐                ┌──────────────────────────────┐
 │ Web 管理端    │◄──── WS ──────►│      内网服务端 (Relay)        │
 │ React + Vite  │ 控制/截图/审计  │  ① WS 中转 + 终端注册表(内存)   │
-│ 态势/资产/批量 │                │  ② 审计存储 (SQLite 文本)      │
+│ 态势/资产/批量 │                │  ② 审计存储 (MySQL 文本)       │
 │ 截图/审计/AI   │                │  ③ MCP Server (官方 TS SDK)    │◄── AI
 └──────────────┘                └──────────────┬───────────────┘
                                                 │ WS 注册/被控/截图
@@ -109,8 +109,8 @@ GitHub 上最接近答案的是 MeshCentral（6.8k★，Agent 反连 + 自托管
 | 服务端 Relay | **Rust** + `axum` + `tokio` + `tokio-tungstenite`(WS) | 与客户端同栈、共享协议；原生性能；`rustls` 纯 Rust TLS 避免 openssl 交叉编译坑 |
 | 共享协议 | Rust crate（`serde`），`ts-rs` 生成管理端 TS 类型 | 单一事实源，Rust↔TS 类型自动一致 |
 | 管理端 Web | React + Vite + Tailwind + shadcn/ui + Lucide（浏览器限制保留 TS） | 上帝视角大屏，Claude 最熟，死线最稳 |
-| MCP Server | 独立 TS 薄层（`@modelcontextprotocol/sdk`），读 server 的 SQLite/HTTP | TS SDK 最成熟，与主体 Rust 解耦 |
-| 审计存储 | SQLite（`rusqlite` 或 `sqlx`） | 文本审计轻量持久化 |
+| MCP Server | 独立 TS 薄层（`@modelcontextprotocol/sdk`），读 server HTTP（不直连 DB） | TS SDK 最成熟，与主体 Rust 解耦 |
+| 数据库 | **MySQL 8**（`sqlx` 异步，`utf8mb4`，`DATABASE_URL`） | 会话/审计历史持久化；实时态在内存不落库；正式产品形态（利于立项/软著） |
 | 网络扩展预留 | `quinn`(QUIC)、`webrtc-rs` | 未来传输/画质加速 |
 | 信创目标 | `loongarch64-unknown-linux-gnu` / `aarch64` 交叉编译（TLS 用 rustls），参考 RustDesk | 麒麟/统信 + 龙芯/鲲鹏/飞腾 |
 
@@ -126,6 +126,65 @@ OhMyDesk/
 ```
 
 > 技术栈风险标注：① Slint 的 `.slint` DSL 与 sysinfo 最新 GPU API 在 Claude 语料盲区，已抓取最新文档生成项目 skill 缓解；② 信创真机（LoongArch）适配 demo 阶段仅交叉编译验证，不保证国产 GPU 利用率等细节；③ enigo 锁 X11 会话规避 Wayland bug。
+
+## 6.1 代码目录结构（前端 / 后端 / 客户端）
+
+> 三端目录均按「一文件一关注点」组织，后端 Rust、前端 React、客户端 Slint 各自独立清晰。详细文件职责见实现计划「文件结构」节。
+
+**后端 —— 服务端 Relay（`crates/server`）**
+```
+crates/server/src/
+├─ main.rs        # 启动：axum router + WS 升级 + 静态托管
+├─ hub.rs         # WS 连接管理 + 信封路由 + 广播
+├─ registry.rs    # 内存终端注册表 + 在线超时
+├─ session.rs     # 会话建立 / 鉴权(A/B) / 结束
+├─ audit.rs       # MySQL 文本审计：落库 + 键鼠聚合计数
+├─ db.rs          # MySQL 连接池（sqlx MySqlPool）
+└─ http.rs        # 只读 HTTP for MCP（/api/endpoints|sessions|audit）
+```
+
+**后端 —— 共享协议（`crates/protocol`，单一事实源）**
+```
+crates/protocol/src/lib.rs   # 实体 + 信封 + 消息枚举 + 信创标识；ts-rs 导出 TS
+```
+
+**客户端 —— Slint Agent（`crates/client`）**
+```
+crates/client/
+├─ build.rs          # slint_build::compile
+├─ ui/app.slint      # 被控提示条 + 授权弹窗 + 主控贴帧窗口
+└─ src/
+   ├─ main.rs        # 启动 + UI 事件循环 + tokio runtime
+   ├─ asset.rs       # sysinfo 硬件采集 → EndpointInfo
+   ├─ net.rs         # 反连 WS + 注册 + 心跳 + 收发信封
+   ├─ capture.rs     # xcap 截屏 → JPEG → base64
+   └─ inject.rs      # enigo 键鼠注入（被控端执行）
+```
+
+**前端 —— 管理端 Web（`apps/admin-web`，pnpm）**
+```
+apps/admin-web/src/
+├─ main.tsx / App.tsx
+├─ lib/
+│  ├─ ws.ts          # WS 客户端 + 信封收发
+│  └─ types/         # ts-rs 生成的 TS 类型（勿手改）
+├─ store.ts          # 终端/会话/审计状态（zustand）
+├─ components/ui/    # shadcn 组件（v0 产物落位）
+└─ pages/
+   ├─ Assets.tsx     # M1 终端资产
+   ├─ Grid.tsx       # M3 批量监控 / 截图墙
+   ├─ Remote.tsx     # M2 远程控制
+   ├─ Audit.tsx      # M4 会话审计
+   └─ Assistant.tsx  # M5 AI 助手
+```
+
+**MCP Server（`apps/mcp`）与脚本资源**
+```
+apps/mcp/src/index.ts     # 5 个只读 tool，读 server HTTP
+scripts/db/schema.sql     # MySQL 建表：endpoints / sessions / audit_logs
+scripts/deploy/           # systemd / 构建发布
+assets/                   # logo、信创图标、截图
+```
 
 ## 7. 数据模型（核心实体）
 
@@ -157,9 +216,10 @@ OhMyDesk/
 ## 11. 部署（SOP — 部署）
 
 - **服务端**：Rust 编译单二进制，systemd 守护，固定端口，纯内网监听
+- **数据库**：MySQL 8（生产内网实例；本地 `docker run mysql:8` 起库），建表脚本 `scripts/db/schema.sql`，连接走 `DATABASE_URL`
 - **管理端**：构建静态资源，由服务端同端口托管（一个内网 URL 给评委）
-- **客户端**：`tauri build` 出包；**兜底**：打包翻车则浏览器全屏运行模拟客户端
-- **MCP**：独立 TS 进程，读 server 的 SQLite，stdio/SSE 暴露给内网 AI 客户端
+- **客户端**：Slint 编译单二进制（信创软渲染，关 GPU 默认特性）；**兜底**：打包翻车则浏览器全屏运行模拟客户端
+- **MCP**：独立 TS 进程，读 server HTTP（`/api/*`），stdio/SSE 暴露给内网 AI 客户端
 - **部署目标机**：工作区挂载的 `/data/mxd/mxdserver079/scripts` 可纳入部署脚本（待确认是否为目标机）
 
 ## 12. 死线时间盒（今 6/27 下午 → 明 6/28 中午）
@@ -179,7 +239,7 @@ OhMyDesk/
 
 ## 13. 风险与缓解
 
-1. **Tauri 集成翻车**（最易死线翻车）：客户端工程直接用 Vite+React+Tauri 模板，不整段粘 v0 代码（v0 常带 Next.js 专属写法）。
+1. **Slint 集成翻车**（最易死线翻车）：客户端 GUI 用 Slint 软渲染（Cargo 关默认特性留 `backend-winit + renderer-software`），API 先查 skill `rust-remote-control-stack`；v0 产物仅用于管理端 Web，**不进 Slint 客户端**（技术栈不兼容）。
 2. **批量截图带宽**：base64 膨胀 ~33%，全屏每秒几百 KB；内置降级（720p + JPEG quality 0.6 + 截图按需触发非持续流）。
 3. **MCP + AI 现场翻车**：AI 自然语言查询依赖 Claude API；预置降级——断网时切播录好的查询脚本，且 M1-M4 不依赖 AI 仍是完整 demo。
 4. **信创真实性存疑**：诚实标注 demo 用模拟，不谎称真机适配；话术强调"架构为信创内网而生"。
