@@ -922,13 +922,16 @@ git commit -m "feat(client): 最小 Slint UI（被控提示条 + 授权弹窗）
 ### Task 3.1：admin-web 脚手架 + WS 客户端
 
 **Files:**
-- Create: `apps/admin-web/`（Vite React+TS 模板 + Tailwind + shadcn）
+- Create: `apps/admin-web/`（Vite React+TS，**基于 `v0/` 原型整套迁移**，非空脚手架）
 - Create: `apps/admin-web/src/lib/ws.ts`
 - Create: `apps/admin-web/src/store.ts`
 
-- [ ] **Step 1: 建 Vite 工程**
+> **接入策略见 skill `v0-to-project`**：`v0/` 是完整 Next.js 原型，UI 层 90%+ 已就绪（深色 token 零返工）。本 Task = 把它迁成 Vite 工程并接数据，**不是从零搭 UI**。三个暗坑：① UI 底座是 **Base UI（`@base-ui/react`）非 Radix**，`components/ui/` 连依赖整套搬，**不要 `shadcn add` 重拉**；② **Tailwind v4**（配置内联 CSS，无 `tailwind.config.js`），admin-web 直接建 v4；③ `next/font`(Geist) **字体本地化**（内网无 Google CDN）。
 
-Run: `cd apps/admin-web && npm create vite@latest . -- --template react-ts && npm i`，按 shadcn 文档初始化 Tailwind + shadcn。
+- [ ] **Step 1: 建 Vite 工程并迁移原型**
+
+Run: `pnpm create vite apps/admin-web --template react-ts && cd apps/admin-web && pnpm i`，装 Tailwind v4（`pnpm add tailwindcss @tailwindcss/vite`）+ `@base-ui/react`。
+迁移：`v0/app/*/page.tsx` → `src/pages/{Assets,Grid,Remote,Audit,Assistant}.tsx`（去 `"use client"`、app router → react-router 路由表）；`v0/components/` → `src/components/`（`ui/` 整套含 Base UI）；`v0/app/globals.css` → `src/index.css`（几乎原样，含深色 token）；`v0/lib/*` 的展示字典保留、mock 删除。
 
 - [ ] **Step 2: WS 客户端（用 ts-rs 生成的类型）**
 
@@ -951,7 +954,7 @@ zustand/简单 state：收到 `payload.type === "endpoint_list"` → setEndpoint
 
 - [ ] **Step 4: 冒烟**
 
-Run: server + 2 client 起着，`npm run dev`，浏览器看 console 收到列表。
+Run: server + 2 client 起着，`pnpm dev`，浏览器看 console 收到列表。
 Expected: 浏览器收到 2 台真实终端
 
 - [ ] **Step 5: 提交**
