@@ -182,6 +182,10 @@ impl Hub {
 
             // ── 会话结束（委托 handlers）──────────────────────────────────────
             Message::SessionEnd { session_id } => {
+                // 先把结束通知转发给对端：被控端据此清除"正在被远程控制"态并停推帧。
+                // 必须在 handle_session_end 之前——后者 end_session 会移除会话，
+                // route_to_peer 依赖会话仍在册才能查到对端（Bug：断开后被控端横幅常驻）。
+                self.route_to_peer(session_id, &env);
                 handlers::handle_session_end(self, session_id, now).await;
             }
 
@@ -209,4 +213,67 @@ pub fn now_sec() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::SessionStore;
+    use protocol::{Mode, Session, SessionStatus};
+
+    fn test_hub() -> Hub {
+        Hub::new(
+            Arc::new(Registry::new()),
+            Arc::new(SessionStore::new()),
+            Arc::new(AuditStore::new(None)),
+        )
+    }
+
+    /// Bug 回归：主控发 SessionEnd 时，server 必须把结束通知转发给被控端，
+    /// 否则被控端永不清除"正在被远程控制"态（断开后横幅常驻）。
+    #[tokio::test]
+    async fn session_end_forwarded_to_controlled_peer() {
+        let hub = test_hub();
+        let (admin_tx, mut admin_rx) = mpsc::unbounded_channel::<String>();
+        let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-1".into(), admin_tx);
+        hub.add_client("ep-victim".into(), victim_tx);
+
+        let sid = "sess-1".to_string();
+        hub.sessions.insert(Session {
+            id: sid.clone(),
+            mode: Mode::A,
+            from_id: "admin-1".into(),
+            to_id: "ep-victim".into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        // 主控（admin）发起 SessionEnd
+        let env = Envelope {
+            from: "admin-1".into(),
+            to: None,
+            ts: 200,
+            payload: Message::SessionEnd {
+                session_id: sid.clone(),
+            },
+        };
+        hub.handle(env, 200).await;
+
+        // 被控端必须收到一条 SessionEnd
+        let got = victim_rx
+            .try_recv()
+            .expect("被控端应收到 SessionEnd 结束通知");
+        let env: Envelope = serde_json::from_str(&got).unwrap();
+        match env.payload {
+            Message::SessionEnd { session_id } => assert_eq!(session_id, sid),
+            other => panic!("被控端收到的应为 SessionEnd，实际 {other:?}"),
+        }
+        // 主控自己不应收到回发（它就是发起方）
+        assert!(
+            admin_rx.try_recv().is_err(),
+            "结束通知不应回发给发起方 admin"
+        );
+    }
 }

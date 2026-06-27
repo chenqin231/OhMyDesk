@@ -8,6 +8,10 @@
 //!
 //! 模块分工：[`ui_glue`] UI 回调 + ToUi 消费；[`workers`] X11 后台 worker；[`net`] 网络。
 
+// Windows release 走 GUI 子系统：否则默认控制台子系统会先弹一个 cmd 黑窗再开 GUI。
+// 仅 release 生效，debug 保留控制台以便看 tracing 日志；非 Windows 平台此属性为 no-op。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod asset;
 mod capture;
 mod geom;
