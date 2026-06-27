@@ -14,6 +14,39 @@
 
 ---
 
+## 🔒 评审裁决回流（TDD 执行强制约束 — 单一事实源）
+
+> 整合 [三方一致性分析](../specs/2026-06-27-tripartite-consistency-analysis.md) + [并行编排](2026-06-27-parallel-dev-orchestration.md) §0 的全部裁决，**本 plan 现为唯一 TDD 入口**。执行任何 Task 前先对照本清单；协议层裁决（A-1/C-1/W0-3）已落入 Phase 0 代码，server/client 必修项已就地标注。
+
+**协议层（Phase 0，已落代码）**
+- **A-1**：`EndpointInfo` 补 `department: Option<String>`（B 端管理 + M5「谁在控财务部电脑」）。
+- **C-1**：audit type 统一为 `connect|auth_fail|reject|screenshot|input|disconnect`（删 design 的 `click`、原型的 `transfer`/`error`）；新增 `AuditLog`/`Session` 实体并 ts-rs 导出。
+- **W0-3**：`#[serde(tag="type")]` 是内部 tag，type 在 `payload` 内，前端按 `env.payload.type` 判别。
+
+**server（Phase 1/6）**
+- **B-DB1**：`audit_logs` 列名用 `event_type`（`type` 是 MySQL 保留字）。
+- **M-SRV1**：DB 连接失败降级 `Option<Db>=None`，审计 best-effort，**实时链路 M1/M2/M3 不受 DB 影响**。
+- **M-SRV2**：router 挂 `CorsLayer::permissive()`（admin :5173 跨端口 fetch）。
+- **M-SRV3**：`http.rs` 的 `State` 同时持 `Arc<Hub>`+`Db`；`/api/endpoints` 读注册表、`/api/audit|sessions` 读 DB。
+- **M-SRV4**：hub 转发 `Input` 时对 session aggregator `bump()`（否则审计输入计数恒 0）。
+- **P-MCP2**：`/api/endpoints` 返回 `EndpointView[]` 裸数组。
+
+**client（Phase 2/4）**
+- **M-CLI1**：`net.rs` 用 mpsc 出站泵（**不**把 `write` move 进心跳 task）。
+- **M-CLI2**：断线重连循环（断开 sleep 3s 重连重注册）。
+- **M-CLI3**：补 `rand_6()`/`now()`/`cur_ram()` + `rand` 依赖。
+- **P-CLI4**：截屏等比缩放 + `Frame` 带真实 `w/h`，注入按 `frame_w` 缩放。
+
+**frontend（Phase 3/4，详见 [mock-api-contract](../specs/2026-06-27-mock-api-contract-and-adapters.md)）**
+- **砍 O-1/O-2/O-3**：删 `transfer`、录制标记、临时密码展示。
+- **补 G-1~G-5**：帧渲染 canvas、键鼠回传、模式B拒连态、审计时间筛选、AI 真实/降级。
+- **适配层 D-1~D-8** + **Transport 抽象**：`adapters/*` 消化漂移，mock/real 同形状切换、集成零改组件。
+
+**mcp（Phase 7）**：**P-MCP1** 锁 SDK 版本，核对 `tool`/`registerTool` 签名。
+**收尾**：**P-DOC1** 模式B走 Web 主控；**P-SRV5** ServeDir 托管 admin/dist；**C-2/C-3/C-4** 清理 design 残留（SQLite/Tauri/§8 消息类型）。
+
+---
+
 ## 文件结构（Cargo workspace + 前端子目录）
 
 ```
@@ -165,7 +198,8 @@ use ts_rs::TS;
 #[ts(export)]
 pub struct EndpointInfo {
     pub id: String,
-    pub name: String,        // 使用人
+    pub name: String,                // 使用人
+    pub department: Option<String>,  // 部门（裁决 A-1：B 端管理 / 「谁在控财务部电脑」）
     pub ip: String,
     pub mac: String,
     pub os: OsInfo,
@@ -217,7 +251,7 @@ pub fn xinchuang_label(os: &OsInfo, cpu: &CpuInfo) -> String {
 impl EndpointInfo {
     pub fn sample() -> Self {
         EndpointInfo {
-            id: "ep-001".into(), name: "财务-张伟".into(),
+            id: "ep-001".into(), name: "张伟".into(), department: Some("财务部".into()),
             ip: "10.0.0.21".into(), mac: "AA:BB:CC:00:00:21".into(),
             os: OsInfo { name: "麒麟 V10".into(), kind: OsKind::Kylin },
             cpu: CpuInfo { model: "Loongson 3A5000".into(), cores: 4, arch: CpuArch::LoongArch },
@@ -268,6 +302,14 @@ fn input_event_tagged() {
     let json = serde_json::to_string(&e).unwrap();
     assert!(json.contains("\"kind\":\"mouse_move\""));
 }
+
+#[test]
+fn audit_type_field_rename_and_snake() {
+    let log = AuditLog { id: "a1".into(), session_id: "s1".into(), ts: 0,
+        actor_id: "admin".into(), kind: AuditType::AuthFail, text: "密码错误".into() };
+    let json = serde_json::to_string(&log).unwrap();
+    assert!(json.contains("\"type\":\"auth_fail\""));   // 字段名 type、值 snake_case（裁决 C-1）
+}
 ```
 
 - [ ] **Step 2: 运行确认失败**
@@ -292,7 +334,7 @@ pub struct Envelope {
 #[serde(rename_all = "lowercase")]
 pub enum Mode { A, B }
 
-/// WS 统一消息体；`#[serde(tag="type")]` 让 JSON 顶层带 type 判别字段
+/// WS 统一消息体；`#[serde(tag="type")]` 内部 tag——type 在 payload 对象内（非信封顶层），前端按 `env.payload.type` 判别，Rust 按枚举变体匹配（裁决 W0-3）
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -331,6 +373,42 @@ pub struct EndpointView {
     pub last_seen: i64,
     pub xinchuang: String,
 }
+
+// ── 会话与审计实体（ts-rs 导出给前端审计页 + mock；裁决 C-1 audit type 统一）──
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Session {
+    pub id: String,
+    pub mode: Mode,
+    pub from_id: String,
+    pub to_id: String,
+    pub start_at: i64,
+    pub end_at: Option<i64>,
+    pub status: SessionStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStatus { Active, Ended, Rejected }
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AuditLog {
+    pub id: String,
+    pub session_id: String,
+    pub ts: i64,
+    pub actor_id: String,
+    #[serde(rename = "type")]
+    pub kind: AuditType,   // Rust 关键字 type → 用 kind + serde rename；DB 列名 event_type(B-DB1)
+    pub text: String,
+}
+
+/// 裁决 C-1：统一为 feature-spec 集合（删 design 的 click、原型的 transfer/error）
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditType { Connect, AuthFail, Reject, Screenshot, Input, Disconnect }
 ```
 
 - [ ] **Step 4: 运行确认通过**
@@ -362,8 +440,11 @@ mod ts_export {
     use ts_rs::TS;
     #[test]
     fn export_all() {
-        EndpointInfo::export_all_to("../../apps/admin-web/src/lib/types").unwrap();
-        Envelope::export_all_to("../../apps/admin-web/src/lib/types").unwrap();
+        let dir = "../../apps/admin-web/src/lib/types";
+        EndpointInfo::export_all_to(dir).unwrap();   // 带出 OsInfo/CpuInfo/RamInfo/GpuInfo/枚举
+        Envelope::export_all_to(dir).unwrap();       // 带出 Message/InputEvent/EndpointView/Mode
+        AuditLog::export_all_to(dir).unwrap();       // 审计页/mock 需要（不在 Envelope 链上，须显式）
+        Session::export_all_to(dir).unwrap();        // 同上（带出 SessionStatus）
     }
 }
 ```
@@ -371,7 +452,7 @@ mod ts_export {
 - [ ] **Step 2: 运行导出**
 
 Run: `cargo test -p protocol export_all`
-Expected: PASS，且 `apps/admin-web/src/lib/types/` 下生成 `EndpointInfo.ts`/`Envelope.ts`/`Message.ts` 等
+Expected: PASS，且生成 `EndpointInfo.ts`/`Envelope.ts`/`Message.ts`/`InputEvent.ts`/`EndpointView.ts`/`AuditLog.ts`/`AuditType.ts`/`Session.ts`/`SessionStatus.ts` 等全部依赖类型
 
 - [ ] **Step 3: 验证生成文件存在**
 
@@ -1275,7 +1356,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 ) DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS audit_logs (
   id VARCHAR(64) PRIMARY KEY, session_id VARCHAR(64), ts BIGINT,
-  actor_id VARCHAR(64), type VARCHAR(16), text TEXT,
+  actor_id VARCHAR(64), event_type VARCHAR(16), text TEXT,   -- event_type：type 是 MySQL 保留字（裁决 B-DB1）
   INDEX idx_session (session_id), INDEX idx_ts (ts)
 ) DEFAULT CHARSET=utf8mb4;
 ```
@@ -1294,6 +1375,8 @@ pub async fn connect() -> anyhow::Result<Db> {
 }
 ```
 
+> **M-SRV1 降级**：`main.rs` 用 `db::connect().await.ok()` 得 `Option<Db>`——连不上则 `None`；`AuditStore` 持 `Option<Db>`、`None` 时写操作 no-op + 告警 log，**实时链路 M1/M2/M3 不依赖 DB**。
+
 - [ ] **Step 3: 写失败测试（输入聚合计数，纯逻辑不依赖 DB）**
 
 ```rust
@@ -1307,7 +1390,7 @@ fn input_events_aggregate_count() {
 
 - [ ] **Step 4: 运行确认失败 → 实现 `audit.rs`**
 
-`InputAggregator`（会话内累加，断开时落一条聚合 text，纯逻辑）；`AuditStore { db: Db }` 用 `sqlx::query("INSERT INTO audit_logs ...").bind(..).execute(&db)` 写审计；会话起止写 `sessions`；写入 connect/reject/screenshot/disconnect/auth_fail。`endpoints` 资产台账落库为 P1（不影响 demo）。
+`InputAggregator`（会话内累加，断开时落一条聚合 text，纯逻辑）；`AuditStore { db: Option<Db> }`（M-SRV1）用 `sqlx::query("INSERT INTO audit_logs (...,event_type,text) ...").bind(..).execute(&db)` 写审计；会话起止写 `sessions`；写入 `connect/auth_fail/reject/screenshot/input/disconnect`（列名 `event_type`，对齐 `AuditType` 枚举 C-1）。`endpoints` 资产台账落库为 P1。
 
 - [ ] **Step 5: 运行确认通过**
 
@@ -1316,7 +1399,7 @@ Expected: PASS（聚合计数纯逻辑测试通过；DB 写入靠下方端到端
 
 - [ ] **Step 6: 事件接入落库**
 
-会话建立/拒绝/结束、发起截图、输入聚合，在 hub/session 对应分支调 `AuditStore` 写库。
+会话建立/拒绝/结束、发起截图落审计；**M-SRV4：server hub 转发 `Message::Input` 时对该 session 的 `InputAggregator.bump()`，`session_end` 落一条聚合 text**（否则审计输入计数恒 0）。
 
 - [ ] **Step 7: 提交**
 
@@ -1334,10 +1417,13 @@ git commit -m "feat(audit): MySQL 文本审计 + 输入聚合计数"
 - [ ] **Step 1: server 加只读 HTTP 查询**
 
 axum 加 `/api/audit?endpoint=&from=&to=&result=` 返回 `AuditLog[]`；同时加 `/api/endpoints`、`/api/sessions`（供 Phase 7 MCP 复用）。
+- **M-SRV3**：http router 的 `State` **同时持 `Arc<Hub>`+`Option<Db>`**——`/api/endpoints` 读注册表 `reg.views()`、`/api/audit|sessions` 读 DB（否则 MCP `list_endpoints` 拿不到实时终端）。
+- **P-MCP2**：`/api/endpoints` 返回 **`EndpointView[]` 裸数组**（与 MCP `all.filter` 对齐）。
+- **M-SRV2**：router 挂 `CorsLayer::permissive()`（admin dev :5173 跨端口 fetch `/api/*`，否则浏览器审计页 CORS 报错）。
 
-- [ ] **Step 2: 审计页接数据**
+- [ ] **Step 2: 审计页接数据（v0 提示词 4 产物）**
 
-Audit.tsx：列表 + 筛选器 fetch `/api/audit`；点记录看操作时间线。
+Audit.tsx：列表 + 筛选器 fetch `/api/audit` → `AuditLog[]`，**前端用 `adapters/audit.ts` 聚合成会话视图 + timeline**（D-7）；补时间范围筛选逻辑（原型有 UI 无逻辑，G-4）；点记录看时间线。
 
 - [ ] **Step 3: 手动验证**
 
