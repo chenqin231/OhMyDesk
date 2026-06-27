@@ -11,20 +11,22 @@ use super::{now, CaptureCtrl, FromUi, ToUi, CAPTURE_CTRL, INJECT_TX, SCREENSHOT_
 /// 处理一条下行消息。
 pub(super) async fn handle_downlink(
     text: &str,
-    self_id: &str,
+    _self_id: &str,
     out_tx: &mpsc::UnboundedSender<String>,
     to_ui: &mpsc::UnboundedSender<ToUi>,
     session: &Arc<tokio::sync::Mutex<SessionCtx>>,
 ) -> anyhow::Result<()> {
     let env: Envelope = serde_json::from_str(text)?;
     match env.payload {
-        // 被控端收到控制请求 → 通知 UI 弹授权框
-        Message::ConnectRequest { target, .. } if target == self_id => {
-            // protocol 的 ConnectRequest 不带 session_id；用请求方 from 作临时关联键，
-            // 被控端授权时按此回传，server 端按连接/会话关联校正（集成期对齐）。
+        // 被控端收到 server 转发的来控通知 → 通知 UI 弹授权框。
+        // server 已生成会话并分配真 session_id（I2 时序：主控 ConnectRequest → server 建会话 →
+        // 推 IncomingControl 给被控端），被控端授权时按此真 session_id 回 AuthResult。
+        Message::IncomingControl {
+            session_id, from, ..
+        } => {
             let _ = to_ui.send(ToUi::ControlRequest {
-                requester: env.from.clone(),
-                session_id: env.from.clone(),
+                requester: from,
+                session_id,
             });
         }
         // 鉴权结果（server 下发）：被控端据此进入被控态并回 ConnectAck 由 server 处理

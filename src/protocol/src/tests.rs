@@ -80,6 +80,25 @@ fn audit_type_field_rename_and_snake() {
 }
 
 #[test]
+fn incoming_control_tagged() {
+    let env = Envelope {
+        from: "server".into(),
+        to: Some("ep-2".into()),
+        ts: 0,
+        payload: Message::IncomingControl {
+            session_id: "s-1".into(),
+            from: "ep-1".into(),
+            mode: Mode::B,
+        },
+    };
+    let json = serde_json::to_string(&env).unwrap();
+    assert!(json.contains("\"type\":\"incoming_control\""));
+    assert!(json.contains("\"session_id\":\"s-1\""));
+    let back: Envelope = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back.payload, Message::IncomingControl { .. }));
+}
+
+#[test]
 fn export_all() {
     let dir = "../admin-web/src/lib/types";
     EndpointInfo::export_all_to(dir).unwrap(); // 带出 OsInfo/CpuInfo/RamInfo/GpuInfo/枚举
