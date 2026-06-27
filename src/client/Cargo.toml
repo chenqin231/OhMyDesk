@@ -7,3 +7,22 @@ version.workspace = true
 # （slint / sysinfo / xcap / enigo / tokio-tungstenite / rand / image / base64 等）
 # + protocol = { path = "../protocol" }，并补 build.rs（slint_build::compile）。
 [dependencies]
+anyhow.workspace = true
+base64 = "0.22"
+enigo = "0.6"
+futures-util = "0.3"
+image = "0.25"
+protocol = { version = "0.1.0", path = "../protocol" }
+rand = "0.8"
+serde_json.workspace = true
+slint = { version = "1.17", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software"] }
+sysinfo = "0.39"
+tokio = { workspace = true, features = ["full"] }
+tokio-tungstenite = "0.24"
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = { version = "1.23.4", features = ["v4"] }
+xcap = "0.9"
+
+[build-dependencies]
+slint-build = "1.17"
