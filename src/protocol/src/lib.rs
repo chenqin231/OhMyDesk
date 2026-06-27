@@ -169,6 +169,13 @@ pub enum Message {
         target: String,
         password: Option<String>,
     },
+    /// server → 被控端：有主控发起控制，携带 server 生成的 session_id；
+    /// 被控端授权后回 AuthResult 带此 session_id（解 task#8 时序缺口，统一会话 id 来源）。
+    IncomingControl {
+        session_id: String,
+        from: String,
+        mode: Mode,
+    },
     AuthResult {
         session_id: String,
         ok: bool,

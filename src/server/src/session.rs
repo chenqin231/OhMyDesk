@@ -52,7 +52,7 @@ impl SessionStore {
         }
     }
 
-    #[allow(dead_code)]
+    /// 插入新会话（ConnectRequest 鉴权通过后调用）
     pub fn insert(&self, session: Session) {
         self.sessions.insert(
             session.id.clone(),
@@ -61,6 +61,13 @@ impl SessionStore {
                 aggregator: InputAggregator::new(),
             },
         );
+    }
+
+    /// 返回会话的发起方 id（handle_auth_result 用于定位主控推 ConnectAck）
+    pub fn initiator_of(&self, session_id: &str) -> Option<String> {
+        self.sessions
+            .get(session_id)
+            .map(|s| s.meta.from_id.clone())
     }
 
     /// 对某会话的输入计数器 +1（M-SRV4）
@@ -94,6 +101,19 @@ impl SessionStore {
     #[allow(dead_code)]
     pub fn contains(&self, session_id: &str) -> bool {
         self.sessions.contains_key(session_id)
+    }
+
+    /// 返回会话中 sender 的对端 id（Frame/Input 按 session 路由）：
+    /// sender=主控(from_id) → 被控(to_id)；sender=被控(to_id) → 主控(from_id)
+    pub fn peer_of(&self, session_id: &str, sender: &str) -> Option<String> {
+        let s = self.sessions.get(session_id)?;
+        if s.meta.from_id == sender {
+            Some(s.meta.to_id.clone())
+        } else if s.meta.to_id == sender {
+            Some(s.meta.from_id.clone())
+        } else {
+            None
+        }
     }
 }
 
@@ -153,5 +173,40 @@ mod tests {
     fn session_store_end_nonexistent_returns_none() {
         let store = SessionStore::new();
         assert!(store.end_session("nonexistent", 0, SessionStatus::Ended).is_none());
+    }
+
+    #[test]
+    fn initiator_of_returns_correct_from() {
+        let store = SessionStore::new();
+        let sess = Session {
+            id: "s-002".into(),
+            mode: Mode::A,
+            from_id: "admin-1".into(),
+            to_id: "ep-001".into(),
+            start_at: 0,
+            end_at: None,
+            status: SessionStatus::Active,
+        };
+        store.insert(sess);
+        assert_eq!(store.initiator_of("s-002"), Some("admin-1".into()));
+        assert_eq!(store.initiator_of("nonexistent"), None);
+    }
+
+    #[test]
+    fn initiator_of_returns_none_after_end() {
+        let store = SessionStore::new();
+        let sess = Session {
+            id: "s-003".into(),
+            mode: Mode::B,
+            from_id: "ep-002".into(),
+            to_id: "ep-001".into(),
+            start_at: 0,
+            end_at: None,
+            status: SessionStatus::Active,
+        };
+        store.insert(sess);
+        store.end_session("s-003", 100, SessionStatus::Ended);
+        // 会话已移除，initiator_of 应返回 None
+        assert_eq!(store.initiator_of("s-003"), None);
     }
 }

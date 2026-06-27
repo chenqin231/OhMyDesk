@@ -108,6 +108,15 @@ impl Hub {
         }
     }
 
+    /// 按 session 对端路由：Frame/Input 上行 to:None，server 据 session_id 查对端转发
+    fn route_to_peer(&self, session_id: &str, env: &Envelope) {
+        if let Some(peer) = self.sessions.peer_of(session_id, &env.from) {
+            if let Ok(json) = serde_json::to_string(env) {
+                self.send_to(&peer, &json);
+            }
+        }
+    }
+
     /// 处理一条入站信封；now 为秒级 Unix 时间戳
     pub async fn handle(&self, env: Envelope, now: i64) {
         match &env.payload {
@@ -147,13 +156,13 @@ impl Hub {
                 ok,
                 reason,
             } => {
-                handlers::handle_auth_result(self, session_id, *ok, reason.as_deref()).await;
+                handlers::handle_auth_result(self, session_id, *ok, reason.as_deref(), now).await;
             }
 
-            // ── Input 转发 + M-SRV4 bump() ───────────────────────────────────
+            // ── Input：主控→被控，bump 计数(M-SRV4) + 按 session 对端路由 ──────
             Message::Input { session_id, .. } => {
                 self.sessions.bump_input(session_id);
-                self.forward_by_to(&env);
+                self.route_to_peer(session_id, &env);
             }
 
             // ── 截图请求：落审计 + 广播全 agent ──────────────────────────────
@@ -172,16 +181,20 @@ impl Hub {
                 handlers::handle_session_end(self, session_id, now).await;
             }
 
-            // ── Frame/ConnectAck/Reject/ScreenshotResp：定向转发 ─────────────
-            Message::Frame { .. }
-            | Message::ConnectAck { .. }
-            | Message::Reject { .. }
-            | Message::ScreenshotResp { .. } => {
+            // ── Frame：被控→主控，按 session 对端路由 ─────────────────────────
+            Message::Frame { session_id, .. } => {
+                self.route_to_peer(session_id, &env);
+            }
+
+            // ── ConnectAck/Reject/ScreenshotResp：按 to 定向转发 ──────────────
+            Message::ConnectAck { .. } | Message::Reject { .. } | Message::ScreenshotResp { .. } => {
                 self.forward_by_to(&env);
             }
 
-            // RegisterAck / EndpointList 由 server 发出，不处理客户端发来的
-            Message::RegisterAck { .. } | Message::EndpointList { .. } => {}
+            // server 单向发出的消息，不处理客户端发来的
+            Message::RegisterAck { .. }
+            | Message::EndpointList { .. }
+            | Message::IncomingControl { .. } => {}
         }
     }
 }
