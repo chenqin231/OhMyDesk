@@ -36,6 +36,7 @@
 - **M-CLI2**：断线重连循环（断开 sleep 3s 重连重注册）。
 - **M-CLI3**：补 `rand_6()`/`now()`/`cur_ram()` + `rand` 依赖。
 - **P-CLI4**：截屏等比缩放 + `Frame` 带真实 `w/h`，注入按 `frame_w` 缩放。
+- **P-CLI5（client→client 主控 = P0，用户裁决）**：模式 B 是需求 F-M2-2/4/5 的 **P0**——client 作主控端需 Slint **发起面板**（target id + 密码 + 连接）+ **贴帧显示** + **本地键鼠捕获回传**。Web 主控仅作 Slint 主控翻车时的**演示兜底**，非替代（实现见 Phase 4 Task 4.6）。
 
 **frontend（Phase 3/4，详见 [mock-api-contract](../specs/2026-06-27-mock-api-contract-and-adapters.md)）**
 - **砍 O-1/O-2/O-3**：删 `transfer`、录制标记、临时密码展示。
@@ -43,7 +44,8 @@
 - **适配层 D-1~D-8** + **Transport 抽象**：`adapters/*` 消化漂移，mock/real 同形状切换、集成零改组件。
 
 **mcp（Phase 7）**：**P-MCP1** 锁 SDK 版本，核对 `tool`/`registerTool` 签名。
-**收尾**：**P-DOC1** 模式B走 Web 主控；**P-SRV5** ServeDir 托管 admin/dist；**C-2/C-3/C-4** 清理 design 残留（SQLite/Tauri/§8 消息类型）。
+**收尾**：**P-SRV5** ServeDir 托管 admin/dist；**C-2/C-3/C-4** 清理 design 残留（SQLite/Tauri/§8 消息类型）。
+> **P-DOC1 修正（用户裁决推翻评审降级）**：模式 B = **client→client（P0，F-M2-2/4/5）**，Slint 主控端必做（发起+贴帧+键鼠捕获，Task 4.6）；Web 主控降为 Slint 翻车兜底。原「Web 主控演示替代」作废。
 
 ---
 
@@ -387,6 +389,9 @@ pub struct Session {
     pub status: SessionStatus,
 }
 
+/// 终态语义（Wave 0 钉死，避免四线理解不一）：status 只记会话**最终结果**——
+/// 拒因细分（密码错 `auth_fail` vs 被控点拒 `reject`）不进 status，查 `AuditLog.kind`；
+/// `Active`=进行中，`Ended`=正常结束，`Rejected`=未建立（含两种拒因）
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
@@ -974,7 +979,7 @@ slint-build = "1.17"
 - [ ] **Step 2: build.rs + app.slint（被控提示条 + 授权弹窗 + 主控贴帧位）**
 
 `build.rs`：`fn main(){ slint_build::compile("ui/app.slint").unwrap(); }`
-`ui/app.slint`：按 `slint.md` §2 语法做窗口，含 `in property <string> peer_name`、`in property <bool> being_controlled`、`callback auth_accept()` / `auth_reject()`、`in-out property <image> frame`（主控贴帧用）。提示条文案"⚠ 此终端正在被 {peer_name} 远程"。
+`ui/app.slint`：按 `slint.md` §2 语法做窗口，含 `in property <string> peer_name`、`in property <bool> being_controlled`、`callback auth_accept()` / `auth_reject()`、`in-out property <image> frame`（主控贴帧用）；**client→client 主控端**再加发起面板（`in-out property <string> target_id` / `target_password`、`callback connect_b()`）+ 主控画面区键鼠事件回调（`callback on_pointer(x,y,btn,down)` / `on_key(code,down)`，Task 4.6 接 net 发 `Input`）。提示条文案"⚠ 此终端正在被 {peer_name} 远程"。
 
 - [ ] **Step 3: main.rs 起 UI 事件循环 + 后台 tokio**
 
@@ -1134,14 +1139,17 @@ impl Capturer {
         let mon = Monitor::all()?.into_iter().next().ok_or_else(|| anyhow::anyhow!("no monitor"))?;
         Ok(Capturer { mon })
     }
-    /// 截一帧 → 缩到 720p → JPEG q60 → base64
+    /// 截一帧 → **等比缩放**（长边≤1280，不拉伸）→ JPEG q60 → base64；返回真实缩放后 w/h（裁决 P-CLI4）
     pub fn frame(&self) -> anyhow::Result<(String, u32, u32)> {
         let img = self.mon.capture_image()?;          // RgbaImage
-        let resized = image::imageops::resize(&img, 1280, 720, image::imageops::FilterType::Triangle);
+        let (sw, sh) = (img.width(), img.height());
+        let scale = (1280.0 / sw as f32).min(720.0 / sh as f32).min(1.0);   // 等比，不放大
+        let (w, h) = ((sw as f32 * scale) as u32, (sh as f32 * scale) as u32);
+        let resized = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
         let mut buf = std::io::Cursor::new(Vec::new());
         let rgb = image::DynamicImage::ImageRgba8(resized).to_rgb8();
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 60).encode_image(&rgb)?;
-        Ok((STANDARD.encode(buf.get_ref()), 1280, 720))
+        Ok((STANDARD.encode(buf.get_ref()), w, h))    // 真实缩放后尺寸，注入侧据此换算（非写死 1280×720）
     }
 }
 ```
@@ -1172,9 +1180,9 @@ git commit -m "feat(client): xcap 截屏 → 720p JPEG → base64 推帧"
 
 Remote.tsx：WS 收 `frame` → `<img src={"data:image/jpeg;base64,"+data}>` 或 canvas drawImage；顶部工具栏显示目标名/状态/断开。
 
-- [ ] **Step 2: Slint 端贴帧（客户端→客户端模式 B 主控）**
+- [ ] **Step 2: Slint 端贴帧（client→client 模式 B 主控，P0 — 用户裁决必做）**
 
-按 `slint.md` §4：base64 解码 → JPEG 解码为 RGBA → `SharedPixelBuffer::<Rgba8Pixel>` → `Image::from_rgba8` → `invoke_from_event_loop` set 到 `frame` 属性。
+按 `slint.md` §4：base64 解码 → JPEG 解码为 RGBA → `SharedPixelBuffer::<Rgba8Pixel>` → `Image::from_rgba8` → `invoke_from_event_loop` set 到 `frame` 属性。**这是 client→client 主控画面渲染（F-M2-4 P0），非可选**；发起 UI + 键鼠捕获见 Task 4.6。
 
 - [ ] **Step 3: 手动验证画面**
 
@@ -1204,10 +1212,11 @@ use protocol::InputEvent;
 
 pub struct Injector { enigo: Enigo, scale_x: f32, scale_y: f32 }
 impl Injector {
-    pub fn new(real_w: u32, real_h: u32) -> anyhow::Result<Self> {
-        // 帧是 1280x720，真实屏是 real_w×real_h；注入要还原到真实坐标
+    /// frame_w/frame_h = 实际帧尺寸（等比缩放后，从 Frame 消息取），real_w/real_h = 被控真实屏；
+    /// 注入按 real/frame 还原真实坐标——**不写死 1280×720**，否则非 16:9 屏坐标偏（裁决 P-CLI4）
+    pub fn new(real_w: u32, real_h: u32, frame_w: u32, frame_h: u32) -> anyhow::Result<Self> {
         Ok(Injector { enigo: Enigo::new(&Settings::default())?,
-            scale_x: real_w as f32 / 1280.0, scale_y: real_h as f32 / 720.0 })
+            scale_x: real_w as f32 / frame_w as f32, scale_y: real_h as f32 / frame_h as f32 })
     }
     pub fn apply(&mut self, ev: &InputEvent) -> anyhow::Result<()> {
         match ev {
@@ -1231,11 +1240,11 @@ impl Injector {
 
 - [ ] **Step 2: Web 端捕获并回传**
 
-Remote.tsx：画面区监听 mousemove/click/keydown，坐标换算成帧内 1280×720 坐标，发 `Input{session_id,event}`。
+Remote.tsx：画面区监听 mousemove/click/keydown，坐标按 `<img>`/canvas 实际渲染尺寸换算成**帧内坐标（用 Frame 携带的 w/h，非写死 1280×720）**，发 `Input{session_id,event}`。
 
 - [ ] **Step 3: 被控端收 input 调注入**
 
-net 层收 `Input` → `Injector::apply`（注入器在会话开始时按真实屏尺寸构造）。
+net 层收 `Input` → `Injector::apply`（注入器在会话开始时按 `real_w/real_h`（本机真实屏）+ 首帧 `frame_w/frame_h` 构造）。
 
 - [ ] **Step 4: 手动验证操作生效**
 
@@ -1270,11 +1279,40 @@ Expected: feature spec §7 第 2、3 条达成
 - [ ] **Step 4: 提交**
 
 ```bash
-git add -A
+git add crates/client/src/main.rs crates/server/src/session.rs apps/admin-web/src/pages/Remote.tsx
 git commit -m "feat(remote): 会话结束 + 授权弹窗联动，A/B 闭环达成"
 ```
 
-**Phase 4 验收：** feature spec §7 第 2、3 条（A/B 远控闭环 + 密码错拒连）。
+### Task 4.6：client 主控端 —— 模式 B 发起 + Slint 键鼠捕获（client→client，P0）
+
+**Files:**
+- Modify: `crates/client/src/main.rs`（主控发起 UI 联动 + 键鼠捕获 → Input）
+- Modify: `crates/client/src/net.rs`（发 `ConnectRequest{mode:B}`；主控画面 Input 出站）
+- Modify: `crates/client/ui/app.slint`（发起面板 + 画面区事件回调，见 Task 2.3）
+
+> client→client 的被控端（截屏 4.2 / 注入 4.4 / 授权 4.5）与 server 路由（4.1 check_password/reject）**已在前序 Task 具备**；本 Task 只补 **client 作主控端** 的发起 + 画面消费 + 键鼠回传。被控端代码两模式共用，故增量仅主控端表现层。
+
+- [ ] **Step 1: 主控发起模式 B**
+
+app.slint 发起面板填 target_id + 密码 → `connect_b()` 回调 → net 发 `Envelope{from:本机id, to:目标id, payload:ConnectRequest{mode:B, target, password:Some(..)}}`；收 `reject` 弹"密码错/被拒"，收 `connect_ack`/首个 `frame` 进主控态。
+
+- [ ] **Step 2: Slint 键鼠捕获 → Input**
+
+主控画面区（贴帧的 `Image`）监听 Slint pointer/key 事件 → 坐标按 Image 渲染尺寸换算成帧内坐标（用 Frame 的 `w/h`）→ 经 **M-CLI1 的 mpsc 出站泵**发 `Input{session_id,event}`（复用同一出站通道，不另开 sink）。
+
+- [ ] **Step 3: 手动验证 client→client 闭环**
+
+Run: server + client A（主控）+ client B（被控）。A 输入 B 的 ID+密码 → B 弹授权 → 同意 → A 的 Slint 窗口显示 B 桌面 → A 在画面点击/打字 → B 对应响应；A 输错密码 → 被拒。
+Expected: feature spec §7 第 3 条以 **client→client 真形态**达成（Web 主控为兜底路径）。
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add crates/client/src/main.rs crates/client/src/net.rs crates/client/ui/app.slint
+git commit -m "feat(remote): client→client 模式B 主控端（发起+Slint键鼠捕获）"
+```
+
+**Phase 4 验收：** feature spec §7 第 2、3 条（A/B 远控闭环 + 密码错拒连）；**模式 B 以 client→client 真形态达成**（Task 4.6），Web 主控为翻车兜底。
 
 ---
 
@@ -1453,7 +1491,7 @@ git commit -m "feat(audit): 审计查询 HTTP + 审计页，M4 闭环"
 - [ ] **Step 1: 建 MCP 工程**
 
 ```bash
-mkdir -p apps/mcp/src && cd apps/mcp && npm init -y && npm i @modelcontextprotocol/sdk zod
+mkdir -p apps/mcp/src && cd apps/mcp && pnpm init && pnpm add @modelcontextprotocol/sdk zod
 ```
 
 - [ ] **Step 2: 实现 server + tool（读 Phase 6 的 HTTP）**
@@ -1527,7 +1565,7 @@ git commit -m "feat(mcp): AI 自然语言问答，M5 闭环"
 - [ ] **联调全链路**：6 条 §7 验收逐条跑通一遍
 - [ ] **视觉美化**：深色主题 + 信创标识统一
 - [ ] **彩排 2 遍 + 兜底预案**：客户端打包翻车→浏览器模拟；AI 断网→播录像
-- [ ] **修文档残留**：design §11/§13 的 "tauri" 字样改为 Slint
+- [ ] **核验文档残留已清**：design 的 SQLite/Tauri/§8 消息类型残留已在评审第二轮（C-2/C-3/C-4）清理，收尾仅复核 protocol↔design 一致
 - [ ] **最终 commit + push**
 
 ---
@@ -1538,7 +1576,7 @@ git commit -m "feat(mcp): AI 自然语言问答，M5 闭环"
 |---|---|
 | 1. 2+ 台真实硬件 + 信创标识 + 离线 | Phase 2（采集/注册/心跳）+ Phase 3（列表） |
 | 2. 模式 A 授权→画面→操作→断开 | Phase 4（4.1 鉴权 / 4.2 推帧 / 4.3 渲染 / 4.4 注入 / 4.5 结束） |
-| 3. 模式 B + 密码错拒连 | Phase 4.1（check_password）+ 4.5 |
+| 3. 模式 B + 密码错拒连（**client→client P0**） | Phase 4.1（check_password）+ 4.5 + **4.6（client 主控端）** |
 | 4. 一键批量截图墙 | Phase 5 |
 | 5. 审计记录 + 操作文本 + 筛选 | Phase 6 |
 | 6. AI 查实时数据 | Phase 7 |
@@ -1548,6 +1586,6 @@ git commit -m "feat(mcp): AI 自然语言问答，M5 闭环"
 **已知取舍（务实降标，非 placeholder）：**
 - IO/硬件/UI（WS、xcap、enigo、Slint、React 页）用集成冒烟 + 手动验证，不写模拟单测——这是 design §10 明确的降标策略。
 - v0 生成的 UI 组件代码不在本计划逐行展开（来自提示词包 + skill 模板），计划只规定"接哪份数据、达成哪条验收"。
-- Slint 主控贴帧（Task 4.3 Step 2）是模式 B 客户端→客户端才需要；若时间紧，模式 B 可先只跑通鉴权+审计，主控画面用 Web 端演示。
+- **模式 B = client→client 是 P0（F-M2-2/4/5，用户裁决）**：client 主控端（Slint 发起+贴帧+键鼠捕获，Task 4.3 Step2 + Task 4.6）必做。**风险兜底**：Slint 主控若现场翻车，用 Web 主控演示模式 B 的鉴权/拒连/审计（被控端 + server 链路完全一致），保 demo 不空——兜底≠替代 P0 目标。
 
 *下一步：选择执行方式（subagent-driven / inline），按 Phase 顺序推进，每 Task 跑通即 commit。*

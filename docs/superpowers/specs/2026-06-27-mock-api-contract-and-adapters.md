@@ -250,7 +250,7 @@ export const frameSrc      = (f: { data: string }) => `data:image/jpeg;base64,${
 | 里程碑 | 集成 = 把各线 `VITE_USE_MOCK→0` / 连真实 server | 验收 |
 |--------|------|------|
 | I1 = M1 | client 注册 + admin `realTransport` 收 endpoint_list | §7-1 |
-| I2 = M2 | 远控闭环（帧/注入/AB/拒连），P-DOC1 模式B走 Web 主控 | §7-2/3 |
+| I2 = M2 | 远控闭环（帧/注入/AB/拒连）；模式B = **client→client（P0，P-DOC1 修正）**，Web 主控兜底 | §7-2/3 |
 | I3 = M3+M4 | 批量截图真实 + 审计真实（input 计数 M-SRV4） | §7-4/5 |
 | I4 = M5 | mcp 切真实 server HTTP + AI 问答 | §7-6 |
 

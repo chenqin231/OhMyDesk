@@ -1,5 +1,7 @@
 # 需求 × 原型 × 设计 — 三方一致性分析
 
+> ⚠️ **历史分析快照（2026-06-27）**：本文裁决已**全部回流**进 `plans/ohmydesk-mvp-implementation.md`（单一 TDD 入口）+ `parallel-dev-orchestration.md` + `review/`。C-1~C-4 / A-1 / O·G·D 系列均已落实，文中 SQLite/Tauri/旧消息类型描述为**当时快照**，现状以 plan/design/protocol 为准，**勿据本文回改**。
+>
 > **目的**：把三个事实源放一起做三角对照，暴露分歧、给出裁决与收敛行动。
 > **三方**：
 > - **需求** = `2026-06-27-feature-spec-mvp.md`（M1–M5 / F-Mx-n / §7 验收）
