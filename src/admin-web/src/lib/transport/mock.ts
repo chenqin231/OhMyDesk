@@ -169,6 +169,10 @@ export const mockTransport: Transport = {
     return logs;
   },
 
+  async deleteEndpoints(_ids: string[]): Promise<void> {
+    // mock：无持久注册表，no-op（接口占位）
+  },
+
   disconnect() {
     const internal = mockTransport as _MockInternal;
     (internal._timers ?? []).forEach(clearInterval);

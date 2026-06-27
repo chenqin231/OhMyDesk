@@ -72,6 +72,12 @@ impl Registry {
     pub fn get_info(&self, id: &str) -> Option<EndpointInfo> {
         self.map.get(id).map(|e| e.info.clone())
     }
+
+    /// 删除终端记录（管理端手动清理离线/冗余）。返回是否存在并删除。
+    /// 注意：删除在线 agent 后，其心跳 touch 不会重建（仅刷新已存在项）；下次重连 Register 才会重新出现。
+    pub fn remove(&self, id: &str) -> bool {
+        self.map.remove(id).is_some()
+    }
 }
 
 // ── 单元测试（TDD 红绿步骤） ──────────────────────────────────────────────────
@@ -107,6 +113,17 @@ mod tests {
         reg.touch("ep-001", 1016);
         let views = reg.views(1016);
         assert!(views[0].online);
+    }
+
+    #[test]
+    fn remove_删除终端记录() {
+        let reg = Registry::new();
+        reg.upsert(EndpointInfo::sample(), "123456".into(), 1000);
+        assert_eq!(reg.views(1000).len(), 1);
+        assert!(reg.remove("ep-001"), "删除已存在终端返回 true");
+        assert_eq!(reg.views(1000).len(), 0, "删除后列表为空");
+        assert!(!reg.remove("ep-001"), "重复删除返回 false");
+        assert!(!reg.remove("nonexist"), "删除不存在终端返回 false");
     }
 
     #[test]

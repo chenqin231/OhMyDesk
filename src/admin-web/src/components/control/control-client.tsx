@@ -12,6 +12,7 @@ import { useStore } from "@/store";
 export function ControlClient() {
   const remotePhase = useStore((s) => s.remotePhase);
   const remoteRejectReason = useStore((s) => s.remoteRejectReason);
+  const remoteTarget = useStore((s) => s.remoteTarget);
   const startRemote = useStore((s) => s.startRemote);
   const endRemote = useStore((s) => s.endRemote);
   const resetRemote = useStore((s) => s.resetRemote);
@@ -39,7 +40,7 @@ export function ControlClient() {
 
       {remotePhase === "connecting" && (
         <ConnectingCard
-          targetName={targetName}
+          targetName={targetName || remoteTarget}
           mode={mode}
           onCancel={resetRemote}
         />
@@ -51,7 +52,7 @@ export function ControlClient() {
       )}
 
       {remotePhase === "connected" && (
-        <RemoteSession targetName={targetName} mode={mode} onDisconnect={endRemote} />
+        <RemoteSession targetName={targetName || remoteTarget} mode={mode} onDisconnect={endRemote} />
       )}
 
       {/* 被控端视角：授权请求弹窗（可单独预览） */}
