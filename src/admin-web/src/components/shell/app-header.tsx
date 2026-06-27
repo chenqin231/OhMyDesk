@@ -1,10 +1,11 @@
-import { Bot } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Bot, LogOut } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { useAuthStore } from "@/store/auth";
 
 type AppHeaderProps = {
   title: string;
@@ -13,6 +14,15 @@ type AppHeaderProps = {
 };
 
 export function AppHeader({ title, online = 0, total = 0 }: AppHeaderProps) {
+  const navigate = useNavigate();
+  const user = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
+
+  function handleLogout() {
+    logout();
+    navigate("/login", { replace: true });
+  }
+
   return (
     <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur">
       <SidebarTrigger className="text-muted-foreground" />
@@ -45,6 +55,26 @@ export function AppHeader({ title, online = 0, total = 0 }: AppHeaderProps) {
           render={<Link to="/assistant" />}
         >
           <Bot />
+        </Button>
+
+        <Separator orientation="vertical" className="h-5" />
+
+        {/* 当前登录用户 */}
+        {user && (
+          <span className="hidden text-sm text-muted-foreground sm:inline">
+            {user}
+          </span>
+        )}
+
+        {/* 退出登录 */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-1.5 text-muted-foreground hover:text-foreground"
+          onClick={handleLogout}
+        >
+          <LogOut />
+          退出登录
         </Button>
       </div>
     </header>

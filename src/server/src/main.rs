@@ -2,19 +2,21 @@
 //! 端口：8765（WS + HTTP 合一）
 
 mod audit;
+mod auth;
 mod db;
 mod handlers;
 mod hub;
 mod http;
 mod registry;
 mod session;
+mod settings;
 
 use std::sync::Arc;
 
 use axum::{
     extract::{
-        ws::{Message as WsMsg, WebSocket, WebSocketUpgrade},
-        State,
+        ws::{CloseFrame, Message as WsMsg, WebSocket, WebSocketUpgrade},
+        Query, State,
     },
     response::Response,
     routing::get,
@@ -22,13 +24,16 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use protocol::Envelope;
+use serde::Deserialize;
 use tower_http::services::ServeDir;
 
 use audit::AuditStore;
+use auth::Auth;
 use hub::{now_sec, Hub};
 use http::{router as http_router, HttpState};
 use registry::Registry;
 use session::SessionStore;
+use settings::SettingsStore;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -40,7 +45,25 @@ async fn main() -> anyhow::Result<()> {
     // ── 共享状态构造 ─────────────────────────────────────────────────────────
     let reg = Arc::new(Registry::new());
     let sessions = Arc::new(SessionStore::new());
-    let audit = Arc::new(AuditStore::new(db));
+    let audit = Arc::new(AuditStore::new(db.clone()));
+    let settings = Arc::new(SettingsStore::new(db));
+
+    // ── 鉴权：JWT secret 取环境（缺省随机，重启失效 token）；凭据取持久化或写死默认 ──
+    let secret = std::env::var("OHMYDESK_JWT_SECRET")
+        .map(String::into_bytes)
+        .unwrap_or_else(|_| {
+            tracing::warn!("OHMYDESK_JWT_SECRET 未设置，使用随机密钥（重启后已登录失效）");
+            format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4()).into_bytes()
+        });
+    let (loaded_user, loaded_hash) = match settings.load_credential().await {
+        Some((u, h)) => (Some(u), Some(h)),
+        None => (None, None),
+    };
+    let auth = Arc::new(Auth::new(secret, loaded_user, loaded_hash));
+    tracing::info!(
+        "管理平台登录账号 {}（默认密码见 auth::DEFAULT_PASS，可在系统设置页修改）",
+        auth.current_user()
+    );
 
     let hub = Arc::new(Hub::new(
         Arc::clone(&reg),
@@ -51,6 +74,8 @@ async fn main() -> anyhow::Result<()> {
     let http_state = HttpState {
         hub: Arc::clone(&hub),
         audit: Arc::clone(&audit),
+        auth: Arc::clone(&auth),
+        settings: Arc::clone(&settings),
     };
 
     // ── 静态托管 admin-web/dist（P-SRV5：单一内网 URL 同时供 UI + API + WS）──────
@@ -68,7 +93,10 @@ async fn main() -> anyhow::Result<()> {
     // M-SRV2 CORS 已在 http_router 内层挂好，WS 端点额外挂一层供 admin-web。
     let app = Router::new()
         .route("/ws", get(ws_handler))
-        .with_state(hub) // WS handler State = Arc<Hub>
+        .with_state(WsState {
+            hub: Arc::clone(&hub),
+            auth: Arc::clone(&auth),
+        }) // WS handler State = WsState（中枢 + 鉴权）
         .merge(http_router(http_state))
         .nest_service("/assets", assets_dir)
         .fallback(move || {
@@ -86,15 +114,48 @@ async fn main() -> anyhow::Result<()> {
 
 // ── WS 连接处理 ───────────────────────────────────────────────────────────────
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(hub): State<Arc<Hub>>,
-) -> Response {
-    ws.on_upgrade(move |sock| handle_socket(sock, hub))
+/// WS 路由状态：中枢 + 鉴权（admin 连接需 ?token=<jwt>）。
+#[derive(Clone)]
+struct WsState {
+    hub: Arc<Hub>,
+    auth: Arc<Auth>,
 }
 
-async fn handle_socket(socket: WebSocket, hub: Arc<Hub>) {
+#[derive(Deserialize)]
+struct WsQuery {
+    token: Option<String>,
+}
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    Query(q): Query<WsQuery>,
+    State(st): State<WsState>,
+) -> Response {
+    // admin 连接需带有效 token；agent（终端）连接无需。
+    let token_present = q.token.is_some();
+    let authed = q
+        .token
+        .as_deref()
+        .and_then(|t| st.auth.validate(t))
+        .is_some();
+    ws.on_upgrade(move |sock| handle_socket(sock, st.hub, authed, token_present))
+}
+
+async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_present: bool) {
     let (mut sink, mut stream) = socket.split();
+
+    // 带了 token 但校验失败（如已过期）→ 立即以 close code 1008(Policy Violation) 关闭。
+    // admin-web 监听该 code → 清登录态跳登录页（token 过期自动重新登录）。
+    if token_present && !authed {
+        let _ = sink
+            .send(WsMsg::Close(Some(CloseFrame {
+                code: 1008,
+                reason: "token 无效或已过期".into(),
+            })))
+            .await;
+        return;
+    }
+
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     // 出站泵：从 mpsc 收消息后写到 WS sink
@@ -126,6 +187,11 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>) {
         // 首条消息登记连接 id
         if my_id.is_none() {
             let id = env.from.clone();
+            // 鉴权闸：admin 连接必须带有效 token，否则丢弃（防公网未授权操控内网终端）。
+            if id.starts_with("admin-") && !authed {
+                tracing::warn!("拒绝未认证 admin 连接: {id}");
+                break;
+            }
             my_id = Some(id.clone());
             hub.add_client(id.clone(), tx.clone());
             // admin 连上立即推一次终端列表

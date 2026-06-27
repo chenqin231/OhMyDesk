@@ -14,3 +14,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   actor_id VARCHAR(64), event_type VARCHAR(16), text TEXT,   -- event_type：type 是 MySQL 保留字（裁决 B-DB1）
   INDEX idx_session (session_id), INDEX idx_ts (ts)
 ) DEFAULT CHARSET=utf8mb4;
+
+-- 管理平台配置（key-value）：admin_user / admin_pass_hash 等可在系统设置页修改
+CREATE TABLE IF NOT EXISTS settings (
+  k VARCHAR(64) PRIMARY KEY, v TEXT
+) DEFAULT CHARSET=utf8mb4;

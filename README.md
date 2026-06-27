@@ -95,6 +95,14 @@ cargo run -p server          # 监听 0.0.0.0:8765
 
 > 开发期前端单独跑（vite :5173）时，需设 `VITE_WS_URL=ws://127.0.0.1:8765/ws` 指回 server；单一 URL 部署无需此变量（自动同源派生）。
 
+### 管理平台登录（公网暴露必备）
+
+浏览器打开后需登录才能进入。**默认账号 `admin` / 默认密码 `OhMyDesk@2026`**，登录后在「系统设置」页可改账号密码（存 MySQL `settings` 表持久化）。
+
+- 鉴权：JWT(HS256)。`/api/*` 需 `Authorization: Bearer <token>`；`/ws` 的 admin 连接需 `?token=<jwt>`（无/失效 token 以 close 1008 拒绝）。终端 Agent 注册无需登录。
+- 模式 A 远控、批量截图、终端列表**只对已登录 admin 开放**——攻击者即使连上 WS 也拿不到列表、发不动远控。
+- 部署 env（codex 容器注入）：`OHMYDESK_JWT_SECRET`（签名密钥，**生产务必设固定值**，否则重启踢登录）；凭据改动落 DB，无需 env。
+
 ## 验证状态（截至当前提交）
 
 | 层 | 验证方式 | 结果 |

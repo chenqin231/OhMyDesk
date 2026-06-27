@@ -32,6 +32,7 @@ type State = {
 
   // actions
   initTransport: () => void;
+  disconnectTransport: () => void;
   sendEnvelope: (payload: Message) => void;
   fetchAudit: (from?: number, to?: number, endpoint?: string, result?: string) => Promise<void>;
   requestBatchScreenshot: () => void;
@@ -96,6 +97,10 @@ export const useStore = create<State>((set, get) => ({
 
     // 预加载审计数据
     get().fetchAudit();
+  },
+
+  disconnectTransport() {
+    transport.disconnect();
   },
 
   sendEnvelope(payload) {

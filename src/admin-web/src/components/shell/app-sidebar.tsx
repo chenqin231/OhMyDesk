@@ -13,10 +13,12 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { navItems } from "@/components/shell/nav-config";
+import { navItems, systemNavItems } from "@/components/shell/nav-config";
+import { useAuthStore } from "@/store/auth";
 
 export function AppSidebar() {
   const { pathname } = useLocation();
+  const user = useAuthStore((s) => s.user);
 
   return (
     <Sidebar collapsible="icon">
@@ -66,20 +68,44 @@ export function AppSidebar() {
             })}
           </SidebarMenu>
         </SidebarGroup>
+
+        {/* 系统级入口 */}
+        <SidebarGroup>
+          <SidebarGroupLabel>系统</SidebarGroupLabel>
+          <SidebarMenu>
+            {systemNavItems.map((item) => {
+              const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+              return (
+                <SidebarMenuItem key={item.key}>
+                  <SidebarMenuButton
+                    isActive={isActive}
+                    tooltip={item.title}
+                    render={<Link to={item.href} />}
+                  >
+                    <item.icon />
+                    <span>{item.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              );
+            })}
+          </SidebarMenu>
+        </SidebarGroup>
       </SidebarContent>
 
       {/* 当前管理员 */}
       <SidebarFooter className="border-t border-sidebar-border">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg">
+            <SidebarMenuButton size="lg" render={<Link to="/settings" />}>
               <Avatar className="size-8 rounded-md">
                 <AvatarFallback className="rounded-md bg-secondary text-xs">
-                  管理
+                  {user ? user.slice(0, 2).toUpperCase() : "管理"}
                 </AvatarFallback>
               </Avatar>
               <div className="grid flex-1 text-left leading-tight">
-                <span className="truncate text-sm font-medium">张审平</span>
+                <span className="truncate text-sm font-medium">
+                  {user ?? "管理员"}
+                </span>
                 <span className="truncate text-xs text-muted-foreground">
                   超级管理员
                 </span>
