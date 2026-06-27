@@ -19,9 +19,10 @@ type MonitorCardProps = {
   screenshotData: string | null;  // base64，null 表示未截图
   onZoom: () => void;
   onCapture: () => void;
+  onRemoteControl: () => void;
 };
 
-export function MonitorCard({ id: _id, user, ip, osKey, state, screenshotData, onZoom, onCapture }: MonitorCardProps) {
+export function MonitorCard({ id: _id, user, ip, osKey, state, screenshotData, onZoom, onCapture, onRemoteControl }: MonitorCardProps) {
   const domestic = OS_DOMESTIC[osKey];
   const monogram = OS_MONOGRAM[osKey];
   const osName = OS_LABEL[osKey];
@@ -95,7 +96,7 @@ export function MonitorCard({ id: _id, user, ip, osKey, state, screenshotData, o
             <Maximize2 data-icon="inline-start" />
             放大
           </Button>
-          <Button size="sm">
+          <Button size="sm" onClick={onRemoteControl}>
             <MonitorUp data-icon="inline-start" />
             远程控制
           </Button>

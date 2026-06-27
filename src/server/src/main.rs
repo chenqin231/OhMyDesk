@@ -79,13 +79,15 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ── 静态托管 admin-web/dist（P-SRV5：单一内网 URL 同时供 UI + API + WS）──────
-    //   vite 产物全在 dist/assets 下，挂 nest_service("/assets")；index.html 读一次缓存。
-    //   未命中 /ws、/api、/assets 的路径（含 / 与 /audit /grid 等前端路由）一律 fallback
+    //   vite 产物全在 dist/static 下（assetsDir=static），挂 nest_service("/static")；
+    //   index.html 读一次缓存。**不能挂 /assets**——会和 SPA 路由 /assets（终端资产页）撞名，
+    //   导致刷新 /assets 被静态服务拦截返回 404。
+    //   未命中 /ws、/api、/static 的路径（含 / 与 /assets /audit 等前端路由）一律 fallback
     //   回 index.html(200) —— 用 axum 原生 fallback 而非 ServeDir not_found_service
     //   （后者会把状态强戳成 404，破坏 SPA 深链/刷新语义）。
     let web_dir = std::env::var("OHMYDESK_WEB_DIR")
         .unwrap_or_else(|_| "src/admin-web/dist".to_string());
-    let assets_dir = ServeDir::new(format!("{web_dir}/assets"));
+    let static_dir = ServeDir::new(format!("{web_dir}/static"));
     let index_body = std::fs::read_to_string(format!("{web_dir}/index.html")).unwrap_or_default();
 
     // ── axum Router：
@@ -98,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
             auth: Arc::clone(&auth),
         }) // WS handler State = WsState（中枢 + 鉴权）
         .merge(http_router(http_state))
-        .nest_service("/assets", assets_dir)
+        .nest_service("/static", static_dir)
         .fallback(move || {
             let body = index_body.clone();
             async move { axum::response::Html(body) }

@@ -66,6 +66,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/me", get(me))
         .route("/api/settings/credential", post(change_credential))
         .route("/api/endpoints", get(list_endpoints))
+        .route("/api/endpoints/delete", post(delete_endpoints))
         .route("/api/sessions", get(list_sessions))
         .route("/api/audit", get(query_audit))
         .layer(CorsLayer::permissive()) // M-SRV2：允许 admin dev :5173 跨端口
@@ -127,6 +128,23 @@ async fn change_credential(
 async fn list_endpoints(State(s): State<HttpState>, _user: AuthUser) -> impl IntoResponse {
     let views = s.hub.reg.views(now_sec());
     Json(views)
+}
+
+#[derive(Deserialize)]
+struct DeleteEndpointsReq {
+    ids: Vec<String>,
+}
+
+/// POST /api/endpoints/delete（需登录）→ 从注册表删除指定终端（单个/批量），
+/// 删完推送最新 endpoint_list 给所有 admin（列表即时刷新）。返回实际删除条数。
+async fn delete_endpoints(
+    State(s): State<HttpState>,
+    _user: AuthUser,
+    Json(req): Json<DeleteEndpointsReq>,
+) -> impl IntoResponse {
+    let deleted = req.ids.iter().filter(|id| s.hub.reg.remove(id)).count();
+    s.hub.push_list(now_sec()); // 广播刷新后的列表给所有 admin
+    (StatusCode::OK, Json(json!({ "deleted": deleted })))
 }
 
 async fn list_sessions(State(s): State<HttpState>, _user: AuthUser) -> impl IntoResponse {

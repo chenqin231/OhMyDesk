@@ -95,6 +95,19 @@ export const realTransport: Transport = {
     return res.json() as Promise<AuditLog[]>;
   },
 
+  async deleteEndpoints(ids: string[]): Promise<void> {
+    const token = getToken();
+    const res = await fetch(apiUrl("/api/endpoints/delete"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ ids }),
+    });
+    if (res.status === 401) onUnauthorized();
+  },
+
   disconnect() {
     ws?.close();
     ws = null;

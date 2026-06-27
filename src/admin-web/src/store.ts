@@ -22,6 +22,7 @@ type State = {
   sessions: Session[];
   // 当前远控会话状态
   remoteSessionId: string | null;
+  remoteTarget: string;           // 当前远控目标展示名（连接中/控制中卡片显示）
   remotePhase: "launch" | "connecting" | "connected" | "rejected";
   remoteFrame: ActiveFrame | null;
   remoteRejectReason: string | null;
@@ -35,8 +36,9 @@ type State = {
   disconnectTransport: () => void;
   sendEnvelope: (payload: Message) => void;
   fetchAudit: (from?: number, to?: number, endpoint?: string, result?: string) => Promise<void>;
+  deleteEndpoints: (ids: string[]) => Promise<void>;
   requestBatchScreenshot: () => void;
-  startRemote: (mode: "a" | "b", target: string, password: string | null) => void;
+  startRemote: (mode: "a" | "b", target: string, password: string | null, name?: string) => void;
   endRemote: () => void;
   resetRemote: () => void;
 };
@@ -48,6 +50,7 @@ export const useStore = create<State>((set, get) => ({
   auditLogs: [],
   sessions: makeSessions(Math.floor(Date.now() / 1000)),
   remoteSessionId: null,
+  remoteTarget: "",
   remotePhase: "launch",
   remoteFrame: null,
   remoteRejectReason: null,
@@ -117,14 +120,25 @@ export const useStore = create<State>((set, get) => ({
     set({ auditLogs: logs });
   },
 
+  async deleteEndpoints(ids) {
+    await transport.deleteEndpoints(ids);
+    // 乐观移除（server 删完也会 push 最新 endpoint_list 兜底）
+    set((s) => ({ endpoints: s.endpoints.filter((e) => !ids.includes(e.info.id)) }));
+  },
+
   requestBatchScreenshot() {
     const reqId = "req-" + Date.now();
     set({ activeReqId: reqId });
     get().sendEnvelope({ type: "screenshot_req", req_id: reqId });
   },
 
-  startRemote(mode, target, password) {
-    set({ remotePhase: "connecting", remoteRejectReason: null, remoteFrame: null });
+  startRemote(mode, target, password, name) {
+    set({
+      remotePhase: "connecting",
+      remoteTarget: name ?? target,
+      remoteRejectReason: null,
+      remoteFrame: null,
+    });
     get().sendEnvelope({
       type: "connect_request",
       mode,

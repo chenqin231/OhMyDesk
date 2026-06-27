@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Camera, Grid2x2, Grid3x3, RotateCw } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -23,6 +24,8 @@ export function MonitorGrid() {
   const endpoints = useStore((s) => s.endpoints);
   const screenshots = useStore((s) => s.screenshots);
   const requestBatchScreenshot = useStore((s) => s.requestBatchScreenshot);
+  const startRemote = useStore((s) => s.startRemote);
+  const navigate = useNavigate();
 
   const nowSec = Math.floor(Date.now() / 1000);
   const onlineRows = endpoints
@@ -111,6 +114,10 @@ export function MonitorGrid() {
               screenshotData={data}
               onZoom={() => openZoom({ id: t.id, user: t.user, ip: t.ip, osKey: t.osKey })}
               onCapture={handleBatchCapture}
+              onRemoteControl={() => {
+                startRemote("a", t.id, null, t.user);
+                navigate("/remote");
+              }}
             />
           );
         })}

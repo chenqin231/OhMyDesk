@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { Monitor, MoreHorizontal, RefreshCw, Search, Terminal as TerminalIcon } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Monitor, MoreHorizontal, RefreshCw, Search, Terminal as TerminalIcon, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,11 +52,15 @@ const OS_LABELS: Record<OsFilter, string> = {
 
 export function TerminalAssets() {
   const endpoints = useStore((s) => s.endpoints);
+  const startRemote = useStore((s) => s.startRemote);
+  const deleteEndpoints = useStore((s) => s.deleteEndpoints);
+  const navigate = useNavigate();
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [os, setOs] = useState<OsFilter>("all");
   const [selected, setSelected] = useState<TerminalRow | null>(null);
   const [open, setOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -79,6 +84,44 @@ export function TerminalAssets() {
   function openDetail(t: TerminalRow) {
     setSelected(t);
     setOpen(true);
+  }
+
+  // 发起模式 A 远控：目标取终端 id，跳 /remote 进入「连接中→控制中」会话视图。
+  function handleRemote(id: string, name?: string) {
+    startRemote("a", id, null, name);
+    navigate("/remote");
+  }
+
+  // ── 多选 + 删除（清理离线/冗余终端记录）──────────────────────────────
+  const allSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
+
+  function toggleAll() {
+    setSelectedIds((prev) => {
+      const n = new Set(prev);
+      if (allSelected) rows.forEach((r) => n.delete(r.id));
+      else rows.forEach((r) => n.add(r.id));
+      return n;
+    });
+  }
+
+  function toggleOne(id: string) {
+    setSelectedIds((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+
+  async function handleDelete(ids: string[]) {
+    if (!ids.length) return;
+    if (!window.confirm(`确定删除选中的 ${ids.length} 台终端记录？仅清理资产列表，不影响会话/审计历史。`)) return;
+    await deleteEndpoints(ids);
+    setSelectedIds((prev) => {
+      const n = new Set(prev);
+      ids.forEach((id) => n.delete(id));
+      return n;
+    });
   }
 
   return (
@@ -125,14 +168,45 @@ export function TerminalAssets() {
         </div>
       </div>
 
+      {/* 批量操作栏：选中 ≥1 台时出现 */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/40 px-4 py-2">
+          <span className="text-sm text-foreground">
+            已选 <span className="font-mono font-semibold">{selectedIds.size}</span> 台终端
+          </span>
+          <Button
+            size="sm"
+            variant="destructive"
+            className="h-8 gap-1.5"
+            onClick={() => handleDelete([...selectedIds])}
+          >
+            <Trash2 className="size-3.5" />
+            批量删除
+          </Button>
+          <Button size="sm" variant="ghost" className="h-8" onClick={() => setSelectedIds(new Set())}>
+            取消选择
+          </Button>
+        </div>
+      )}
+
       {/* 数据表格 */}
       <div className="overflow-hidden rounded-lg border border-border bg-card">
         <Table>
           <TableHeader>
             <TableRow className="border-border hover:bg-transparent">
+              <TableHead className="w-10">
+                <input
+                  type="checkbox"
+                  className="size-4 cursor-pointer accent-primary align-middle"
+                  aria-label="全选"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                />
+              </TableHead>
               <TableHead className="w-24">状态</TableHead>
               <TableHead>使用人</TableHead>
               <TableHead>IP 地址</TableHead>
+              <TableHead>MAC 地址</TableHead>
               <TableHead>操作系统</TableHead>
               <TableHead>CPU 架构</TableHead>
               <TableHead>CPU 型号</TableHead>
@@ -148,6 +222,15 @@ export function TerminalAssets() {
                 onClick={() => openDetail(t)}
                 className="cursor-pointer border-border"
               >
+                <TableCell onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    className="size-4 cursor-pointer accent-primary align-middle"
+                    aria-label={`选择 ${t.user}`}
+                    checked={selectedIds.has(t.id)}
+                    onChange={() => toggleOne(t.id)}
+                  />
+                </TableCell>
                 <TableCell>
                   <StatusBadge status={t.status} />
                 </TableCell>
@@ -158,6 +241,7 @@ export function TerminalAssets() {
                   </div>
                 </TableCell>
                 <TableCell className="font-mono text-sm text-foreground">{t.ip}</TableCell>
+                <TableCell className="font-mono text-sm text-muted-foreground">{t.mac}</TableCell>
                 <TableCell>
                   <OsCell osKey={t.osKey} osName={t.osName} />
                 </TableCell>
@@ -175,6 +259,7 @@ export function TerminalAssets() {
                       size="sm"
                       disabled={t.status === "offline"}
                       className="h-8 gap-1.5"
+                      onClick={() => handleRemote(t.id, t.user)}
                     >
                       <TerminalIcon className="size-3.5" />
                       远程控制
@@ -195,7 +280,13 @@ export function TerminalAssets() {
                         <DropdownMenuItem>重置连接密码</DropdownMenuItem>
                         <DropdownMenuItem>采集系统日志</DropdownMenuItem>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem variant="destructive">隔离该终端</DropdownMenuItem>
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onClick={() => handleDelete([t.id])}
+                        >
+                          <Trash2 className="size-4" />
+                          删除该终端
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
@@ -204,7 +295,7 @@ export function TerminalAssets() {
             ))}
             {rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={9} className="h-32 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={11} className="h-32 text-center text-sm text-muted-foreground">
                   {endpoints.length === 0 ? "正在加载终端列表…" : "未找到匹配的终端"}
                 </TableCell>
               </TableRow>
@@ -219,7 +310,12 @@ export function TerminalAssets() {
         {(status !== "all" || os !== "all" || keyword) && <span>（已筛选）</span>}
       </p>
 
-      <TerminalDetailSheet terminal={selected} open={open} onOpenChange={setOpen} />
+      <TerminalDetailSheet
+        terminal={selected}
+        open={open}
+        onOpenChange={setOpen}
+        onRemoteControl={(id) => handleRemote(id, selected?.user)}
+      />
     </div>
   );
 }
