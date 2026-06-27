@@ -67,6 +67,15 @@ pub enum FromUi {
         h: u32,
         seq: u64,
     },
+    /// 被控端批量截图回发：收 ScreenshotReq 截一帧后回流给请求方（admin）。
+    /// requester=请求方 id（出站时填信封 to，server 据此 forward_by_to 路由）。
+    ScreenshotResp {
+        req_id: String,
+        requester: String,
+        data: String,
+        w: u32,
+        h: u32,
+    },
     /// 主动断开当前会话。
     Disconnect { session_id: String },
 }

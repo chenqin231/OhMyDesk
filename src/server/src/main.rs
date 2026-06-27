@@ -22,6 +22,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use protocol::Envelope;
+use tower_http::services::ServeDir;
 
 use audit::AuditStore;
 use hub::{now_sec, Hub};
@@ -52,18 +53,33 @@ async fn main() -> anyhow::Result<()> {
         audit: Arc::clone(&audit),
     };
 
+    // ── 静态托管 admin-web/dist（P-SRV5：单一内网 URL 同时供 UI + API + WS）──────
+    //   vite 产物全在 dist/assets 下，挂 nest_service("/assets")；index.html 读一次缓存。
+    //   未命中 /ws、/api、/assets 的路径（含 / 与 /audit /grid 等前端路由）一律 fallback
+    //   回 index.html(200) —— 用 axum 原生 fallback 而非 ServeDir not_found_service
+    //   （后者会把状态强戳成 404，破坏 SPA 深链/刷新语义）。
+    let web_dir = std::env::var("OHMYDESK_WEB_DIR")
+        .unwrap_or_else(|_| "src/admin-web/dist".to_string());
+    let assets_dir = ServeDir::new(format!("{web_dir}/assets"));
+    let index_body = std::fs::read_to_string(format!("{web_dir}/index.html")).unwrap_or_default();
+
     // ── axum Router：
-    //   WS 路由挂 State<Arc<Hub>>，
-    //   HTTP 路由已经 with_state(HttpState) 固化为 Router<()>，
-    //   Router<()> 可被 merge 进任意 Router<S>。
-    // M-SRV2 CORS 已在 http_router 内层挂好，WS 端点额外挂一层供 admin-web
+    //   WS 路由挂 State<Arc<Hub>>；HTTP 路由已 with_state 固化为 Router<()>，可被 merge。
+    // M-SRV2 CORS 已在 http_router 内层挂好，WS 端点额外挂一层供 admin-web。
     let app = Router::new()
         .route("/ws", get(ws_handler))
-        .with_state(hub)          // WS handler State = Arc<Hub>
-        .merge(http_router(http_state)); // Router<()> merge 进 Router<()>（固化后）
+        .with_state(hub) // WS handler State = Arc<Hub>
+        .merge(http_router(http_state))
+        .nest_service("/assets", assets_dir)
+        .fallback(move || {
+            let body = index_body.clone();
+            async move { axum::response::Html(body) }
+        });
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8765").await?;
-    tracing::info!("OhMyDesk server on ws://0.0.0.0:8765/ws  http://0.0.0.0:8765/api/*");
+    tracing::info!(
+        "OhMyDesk server on http://0.0.0.0:8765/  (UI + /api/* + /ws)  web_dir={web_dir}"
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }

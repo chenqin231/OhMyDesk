@@ -153,8 +153,72 @@ pub(super) async fn handle_uplink(
                 payload: Message::SessionEnd { session_id },
             }
         }
+        // 被控端截图回发：to=请求方(admin)，endpoint_id=本机 id，由 server forward_by_to 路由
+        FromUi::ScreenshotResp {
+            req_id,
+            requester,
+            data,
+            w,
+            h,
+        } => Envelope {
+            from: self_id.to_string(),
+            to: Some(requester),
+            ts: now(),
+            payload: Message::ScreenshotResp {
+                req_id,
+                endpoint_id: self_id.to_string(),
+                data,
+                w,
+                h,
+            },
+        },
     };
     if let Ok(s) = serde_json::to_string(&env) {
         let _ = out_tx.send(s);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::conn::SessionCtx;
+
+    /// 截图回发上行映射契约：to=请求方、endpoint_id=本机、type=screenshot_resp。
+    #[tokio::test]
+    async fn screenshot_resp_uplink_envelope_contract() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let session = Arc::new(tokio::sync::Mutex::new(SessionCtx::default()));
+        handle_uplink(
+            FromUi::ScreenshotResp {
+                req_id: "req-1".into(),
+                requester: "admin-x".into(),
+                data: "<b64>".into(),
+                w: 1280,
+                h: 720,
+            },
+            "ep-self",
+            &tx,
+            &session,
+        )
+        .await;
+        let s = rx.recv().await.expect("应有一条出站消息");
+        assert!(s.contains("\"type\":\"screenshot_resp\""), "缺 screenshot_resp tag: {s}");
+        let env: Envelope = serde_json::from_str(&s).unwrap();
+        assert_eq!(env.from, "ep-self");
+        assert_eq!(env.to.as_deref(), Some("admin-x"), "to 必须是请求方，供 server forward_by_to");
+        match env.payload {
+            Message::ScreenshotResp {
+                req_id,
+                endpoint_id,
+                w,
+                h,
+                ..
+            } => {
+                assert_eq!(req_id, "req-1");
+                assert_eq!(endpoint_id, "ep-self", "endpoint_id 必须是本机 id（前端按此 key 入缓存）");
+                assert_eq!((w, h), (1280, 720));
+            }
+            _ => panic!("payload 类型错误"),
+        }
     }
 }

@@ -44,15 +44,30 @@ pub async fn consume_inject(
     }
 }
 
-/// 截图消费：收 ScreenshotReq → 截一帧（Wave 1 仅记录日志 + 验证能力；回发 ScreenshotResp 留集成期）。
-pub async fn consume_screenshot(mut rx: tokio::sync::mpsc::UnboundedReceiver<(String, String)>) {
+/// 截图消费：收 ScreenshotReq → 截一帧 → 回发 ScreenshotResp 给请求方（I3）。
+///
+/// 截屏（xcap）阻塞且 `!Send`，留 spawn_blocking。截到帧经 `from_ui_tx`（与推帧同一出站泵）
+/// 回流为 `FromUi::ScreenshotResp`，由 net 出站填 `to=requester` 发出，server forward_by_to 路由回 admin。
+pub async fn consume_screenshot(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<(String, String)>,
+    from_ui_tx: tokio::sync::mpsc::UnboundedSender<net::FromUi>,
+) {
     while let Some((req_id, requester)) = rx.recv().await {
         let r = tokio::task::spawn_blocking(|| capture::Capturer::new().and_then(|c| c.frame())).await;
         match r {
-            Ok(Ok((b64, w, h))) => tracing::info!(
-                "截图就绪 req_id={req_id} from={requester} size={w}x{h} bytes={}",
-                b64.len()
-            ),
+            Ok(Ok((b64, w, h))) => {
+                tracing::info!(
+                    "截图就绪 req_id={req_id} from={requester} size={w}x{h} bytes={}",
+                    b64.len()
+                );
+                let _ = from_ui_tx.send(net::FromUi::ScreenshotResp {
+                    req_id,
+                    requester,
+                    data: b64,
+                    w,
+                    h,
+                });
+            }
             _ => tracing::warn!("截图失败 req_id={req_id}（无显示器/X11？）"),
         }
     }

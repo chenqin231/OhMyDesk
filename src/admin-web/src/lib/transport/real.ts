@@ -6,9 +6,18 @@ import type { AuditLog } from "@/lib/types/AuditLog";
 
 let ws: WebSocket | null = null;
 
+// WS 地址同源派生（P-SRV5：admin 由 server 静态托管，单一内网 URL）。
+// 优先 VITE_WS_URL（开发期跨端口连 :8765 用）；否则按当前页面 origin 推导 ws(s)://host/ws。
+function wsUrl(): string {
+  const override = import.meta.env.VITE_WS_URL as string | undefined;
+  if (override) return override;
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}/ws`;
+}
+
 export const realTransport: Transport = {
   connect(selfId, onEnvelope) {
-    ws = new WebSocket("ws://127.0.0.1:8765/ws");
+    ws = new WebSocket(wsUrl());
     ws.onopen = () => {
       // admin 首条消息登记 admin-* conn id，触发 server 推送 endpoint_list
       const heartbeat: Envelope = {

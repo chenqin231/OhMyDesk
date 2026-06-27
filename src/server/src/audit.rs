@@ -59,7 +59,6 @@ impl AuditStore {
     }
 
     /// 写一条 sessions 记录（会话建立时）
-    #[allow(dead_code)]
     pub async fn insert_session(&self, session: &Session) {
         let Some(db) = &self.db else {
             tracing::warn!("审计降级（M-SRV1），跳过写 session: {}", session.id);

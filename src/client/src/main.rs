@@ -80,7 +80,7 @@ fn main() -> anyhow::Result<()> {
         ctrl_session,
     ));
     rt.spawn(workers::consume_inject(inject_rx));
-    rt.spawn(workers::consume_screenshot(shot_rx));
+    rt.spawn(workers::consume_screenshot(shot_rx, from_ui_tx.clone()));
     rt.spawn(workers::consume_capture(cap_rx, from_ui_tx));
 
     // 主线程进入 Slint 事件循环（阻塞）
