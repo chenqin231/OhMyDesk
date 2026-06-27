@@ -83,6 +83,14 @@ cargo run -p server          # 监听 0.0.0.0:8765，审计落 ./ohmydesk.db
   ```
   开发期直接跑：`OHMYDESK_SERVER="ws://<IP>:8765/ws" cargo run -p client -- "张伟-财务部"`。
   起 ≥2 个不同名实例即可在管理端看到多台终端。
+- **Windows 被控端**（从 Linux/WSL 交叉编译出 exe，远控 Windows 终端）：
+  ```bash
+  bash packaging/windows/build-windows.sh     # 产出 dist-windows/（独立 exe，无需装运行时）
+  ```
+  把整个 `dist-windows/` 拷到 Windows 机器 → 双击 `连接服务器.bat`（已内嵌 `wss://rc.guoziweb.com/ws`，
+  可记事本改地址）→ 即注册为被控端，在管理后台远控该 Windows。Windows 真实截屏/键鼠注入开箱可用
+  （xcap Windows Graphics Capture + enigo SendInput，无 WSLg 限制）。
+  自定义地址：`OHMYDESK_SERVER="wss://<域名>/ws" bash packaging/windows/build-windows.sh`。
 - **MCP Server**（stdio，供 Claude Desktop 等 MCP 客户端接入）：
   ```bash
   OHMYDESK_API_BASE="http://<服务器IP>:8765" node src/mcp/dist/index.js
@@ -123,5 +131,6 @@ cargo run -p server          # 监听 0.0.0.0:8765，审计落 ./ohmydesk.db
 ## 安全约束
 
 - **数据不出网**：仅内网；AI 问答基于本地 MCP 工具数据，不外发到第三方 LLM。
-- **TLS**：全栈 `rustls`（不用 openssl，规避 loongarch64 交叉编译坑）。
+- **TLS**：服务端 + Linux/信创客户端用 `rustls`（ring provider，不引 openssl，规避 loongarch64 交叉编译坑）；
+  Windows 客户端用系统 `SChannel`（native-tls，同样不引 openssl）。客户端连 `wss://` 时按目标自动选后端。
 - **会话锁 X11**：截屏/注入仅在 X11 会话可靠。
