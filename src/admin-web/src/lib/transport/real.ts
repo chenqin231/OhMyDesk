@@ -21,8 +21,9 @@ export const realTransport: Transport = {
           ram: { total: BigInt(0), used: BigInt(0) },
         },
       };
+      // bigint→Number（非 toString）：server 的 Envelope.ts/ram 是 i64/u64，serde 拒绝字符串数字
       ws?.send(JSON.stringify(heartbeat, (_k, v) =>
-        typeof v === "bigint" ? v.toString() : v
+        typeof v === "bigint" ? Number(v) : v
       ));
     };
     ws.onmessage = (ev) => {
@@ -38,8 +39,9 @@ export const realTransport: Transport = {
 
   send(e) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // bigint→Number（非 toString）：对齐 server serde i64/u64（ts/ram/seq 值 < 2^53 安全）
     ws.send(JSON.stringify(e, (_k, v) =>
-      typeof v === "bigint" ? v.toString() : v
+      typeof v === "bigint" ? Number(v) : v
     ));
   },
 
