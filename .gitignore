@@ -1,0 +1,24 @@
+# Rust
+/target
+**/target
+Cargo.lock.bak
+
+# ts-rs：#[ts(export)] 的默认产物（冗余，真实类型导出到 src/admin-web/src/lib/types/）
+src/protocol/bindings/
+
+# Node / 前端
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# 环境与密钥（数据不出网，严禁入库）
+.env
+.env.*
+*.key
+*.pem
+credentials.*
+
+# 杂项
+*.log
+.DS_Store

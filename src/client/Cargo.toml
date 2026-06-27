@@ -1,0 +1,9 @@
+[package]
+name = "client"
+edition.workspace = true
+version.workspace = true
+
+# Wave 0 占位：保证 workspace 完整可编译。Wave 1 client-dev 在本文件内 cargo add 真实依赖
+# （slint / sysinfo / xcap / enigo / tokio-tungstenite / rand / image / base64 等）
+# + protocol = { path = "../protocol" }，并补 build.rs（slint_build::compile）。
+[dependencies]

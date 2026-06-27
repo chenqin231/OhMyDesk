@@ -1,0 +1,8 @@
+[package]
+name = "server"
+edition.workspace = true
+version.workspace = true
+
+# Wave 0 占位：保证 workspace 完整可编译。Wave 1 server-dev 在本文件内 cargo add 真实依赖
+# （axum / sqlx / dashmap / tower-http 等）+ protocol = { path = "../protocol" }。
+[dependencies]
