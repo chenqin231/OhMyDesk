@@ -1,0 +1,223 @@
+// OhMyDesk 客户端 Slint UI —— 信创软渲染（无 GPU），新语法 component X inherits Y。
+//
+// 单窗口承载三态：
+//   1. 被控提示条（being_controlled 时常驻顶部"⚠ 此终端正在被 {peer_name} 远程"）
+//   2. 授权弹窗（auth_pending 时弹出，同意/拒绝回调）
+//   3. 模式 B 主控：发起面板（填 target_id + 密码）→ 进入主控态贴帧 + 键鼠捕获
+//
+// 跨线程更新约束：网络/解码线程禁止直接 set_xxx，一律 invoke_from_event_loop + Weak（见 main.rs）。
+
+import { Button, LineEdit, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component AppWindow inherits Window {
+    title: "OhMyDesk 客户端";
+    preferred-width: 1280px;
+    preferred-height: 760px;
+    background: #1a1a1a;
+
+    // ── 被控端状态 ──
+    in property <string> self_id;                 // 本机注册 id，展示给用户报给主控方
+    in property <string> self_password;           // 本机随机 6 位密码，展示给授权用
+    in property <bool> being_controlled: false;   // 是否正在被远程
+    in property <string> peer_name;               // 控制方名称（提示条用）
+
+    // 授权弹窗
+    in property <bool> auth_pending: false;       // 收到 ConnectRequest 待用户裁决
+    in property <string> auth_requester;          // 请求方展示名
+    callback auth_accept();
+    callback auth_reject();
+
+    // ── 主控端状态（模式 B：client→client 发起）──
+    in property <bool> remote_active: false;      // 是否已进入主控画面态
+    in-out property <string> target_id;           // 发起面板：目标终端 id
+    in-out property <string> target_password;     // 发起面板：目标密码
+    in property <string> remote_status;           // 发起/连接状态提示（"连接中…"/"密码错误"等）
+    in-out property <image> frame;                // 主控贴帧：对端屏幕（SharedPixelBuffer→Image）
+    in property <int> frame_w: 1;                 // 当前帧逻辑宽（键鼠坐标换算用）
+    in property <int> frame_h: 1;                 // 当前帧逻辑高
+    callback connect_b();                         // 点"发起远控"
+    callback disconnect_remote();                 // 点"断开"
+
+    // 主控画面区键鼠回调（坐标已换算为帧内像素，net 据此发 Input）
+    callback on_pointer_move(int /*x*/, int /*y*/);
+    callback on_pointer_button(int /*x*/, int /*y*/, int /*btn 0左1中2右*/, bool /*down*/);
+    callback on_key(string /*code*/, bool /*down*/);
+
+    VerticalBox {
+        padding: 0px;
+        spacing: 0px;
+
+        // ① 被控提示条（常驻顶部，仅 being_controlled 时显示）
+        if being_controlled: Rectangle {
+            height: 36px;
+            background: #b8860b;
+            HorizontalBox {
+                alignment: center;
+                Text {
+                    text: "⚠ 此终端正在被 " + root.peer_name + " 远程控制";
+                    color: white;
+                    font-size: 15px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // ② 主体区：主控画面态 / 发起面板态
+        if root.remote_active: Rectangle {
+            background: black;
+            // 贴帧 Image，铺满；TouchArea 捕获键鼠
+            frame_img := Image {
+                source: root.frame;
+                image-fit: contain;          // 保比例完整显示对端桌面
+                width: 100%;
+                height: 100%;
+            }
+            ta := TouchArea {
+                width: 100%;
+                height: 100%;
+                // 指针移动：把控件内坐标按 帧逻辑尺寸/控件渲染尺寸 换算成帧内像素
+                moved => {
+                    root.on_pointer_move(
+                        (self.mouse-x / self.width * root.frame_w * 1px) / 1px,
+                        (self.mouse-y / self.height * root.frame_h * 1px) / 1px);
+                }
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.down || ev.kind == PointerEventKind.up) {
+                        root.on_pointer_button(
+                            (self.mouse-x / self.width * root.frame_w * 1px) / 1px,
+                            (self.mouse-y / self.height * root.frame_h * 1px) / 1px,
+                            ev.button == PointerEventButton.left ? 0
+                                : ev.button == PointerEventButton.middle ? 1 : 2,
+                            ev.kind == PointerEventKind.down);
+                    }
+                }
+            }
+            // 顶部悬浮工具条
+            Rectangle {
+                y: 0px;
+                height: 32px;
+                width: 100%;
+                background: #00000088;
+                HorizontalBox {
+                    alignment: end;
+                    padding: 4px;
+                    Text {
+                        text: "主控中 · " + root.target_id;
+                        color: white;
+                        vertical-alignment: center;
+                    }
+                    Button {
+                        text: "断开";
+                        clicked => { root.disconnect_remote(); }
+                    }
+                }
+            }
+            // 键盘焦点捕获
+            fs := FocusScope {
+                width: 0px;                   // 不占布局，仅接键盘事件
+                key-pressed(ev) => {
+                    root.on_key(ev.text, true);
+                    accept
+                }
+                key-released(ev) => {
+                    root.on_key(ev.text, false);
+                    accept
+                }
+            }
+        }
+
+        // 发起面板（未进入主控态时显示）
+        if !root.remote_active: VerticalBox {
+            alignment: start;
+            padding: 24px;
+            spacing: 12px;
+
+            Text {
+                text: "OhMyDesk 客户端";
+                color: white;
+                font-size: 22px;
+            }
+            Rectangle {
+                height: 1px;
+                background: #333;
+            }
+            // 本机身份（被控方报给主控）
+            Text {
+                text: "本机 ID：" + root.self_id;
+                color: #aaa;
+            }
+            Text {
+                text: "本机密码：" + root.self_password + "（远程方需输入）";
+                color: #aaa;
+            }
+            Rectangle { height: 8px; }
+
+            // 模式 B 发起面板
+            Text {
+                text: "发起远程控制（模式 B）";
+                color: white;
+                font-size: 16px;
+            }
+            HorizontalBox {
+                spacing: 8px;
+                Text { text: "目标 ID："; color: #ccc; vertical-alignment: center; }
+                LineEdit {
+                    placeholder-text: "对方终端 ID";
+                    text <=> root.target_id;
+                }
+            }
+            HorizontalBox {
+                spacing: 8px;
+                Text { text: "目标密码："; color: #ccc; vertical-alignment: center; }
+                LineEdit {
+                    placeholder-text: "对方 6 位密码";
+                    text <=> root.target_password;
+                }
+            }
+            Button {
+                text: "发起远控";
+                clicked => { root.connect_b(); }
+            }
+            if root.remote_status != "": Text {
+                text: root.remote_status;
+                color: #e06c75;
+            }
+        }
+    }
+
+    // ③ 授权弹窗（覆盖层，auth_pending 时弹出）
+    if root.auth_pending: Rectangle {
+        background: #000000aa;
+        TouchArea {}                          // 吃掉背景点击
+        Rectangle {
+            width: 360px;
+            height: 180px;
+            background: #2a2a2a;
+            border-radius: 8px;
+            VerticalBox {
+                padding: 20px;
+                spacing: 16px;
+                Text {
+                    text: root.auth_requester + " 请求远程控制本机";
+                    color: white;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                HorizontalBox {
+                    alignment: center;
+                    spacing: 16px;
+                    Button {
+                        text: "拒绝";
+                        clicked => { root.auth_reject(); }
+                    }
+                    Button {
+                        text: "同意";
+                        primary: true;
+                        clicked => { root.auth_accept(); }
+                    }
+                }
+            }
+        }
+    }
+}
