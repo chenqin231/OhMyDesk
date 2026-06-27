@@ -9,7 +9,7 @@
 | **M1 终端资产** | Agent 反连注册、硬件采集、心跳在线态、信创标识识别、列表/详情 | Agent + Web |
 | **M2 远程控制** | 模式 A（Web→终端）/ 模式 B（终端→终端）授权 → 画面 → 键鼠 → 断开 | Agent + Web |
 | **M3 批量监控** | 一键批量截图，在线终端屏幕墙 | Web + Agent |
-| **M4 会话审计** | 连接/操作纯文本审计落 MySQL，按终端/时间筛选 | Server |
+| **M4 会话审计** | 连接/操作纯文本审计落 SQLite，按终端/时间筛选 | Server |
 | **M5 MCP/AI** | 管控数据以 MCP 只读工具暴露给 AI，自然语言问答 | MCP + Web |
 
 ## 架构
@@ -18,7 +18,7 @@
 ┌────────────┐   WS(反连)   ┌──────────────────────────┐   HTTP/stdio  ┌────────────┐
 │ Agent 客户端 │ ───────────▶ │      Server (Relay)       │ ◀───────────  │ MCP Server │
 │ Slint+Rust  │ ◀─────────── │  注册表/鉴权/路由/审计落库   │   /api/*       │   TS 薄层   │
-│ 被控+主控    │   帧/键鼠    │  axum + MySQL             │               └────────────┘
+│ 被控+主控    │   帧/键鼠    │  axum + SQLite             │               └────────────┘
 └────────────┘              │  + 静态托管 admin/dist     │
                             └──────────┬───────────────┘
                             HTTP+WS+UI │ 单一内网 URL :8765
@@ -35,18 +35,18 @@
 
 ```
 src/protocol/   协议契约（三端单一事实源；ts-rs 导出 admin 类型）
-src/server/     Relay 服务端（axum WS 中转 + MySQL 审计 + 静态托管）
+src/server/     Relay 服务端（axum WS 中转 + SQLite 审计 + 静态托管）
 src/client/     Agent 客户端（Slint UI + 采集/网络/截屏/注入）
 src/admin-web/  管理 Web（React + Vite，五页）
 src/mcp/        MCP Server（4 只读 tool，真实 HTTP）
-scripts/db/     MySQL 建表 DDL
+scripts/db/     SQLite 建表 DDL（schema.sqlite.sql；MySQL 版留作参考）
 ```
 
 ## 环境要求
 
 - Rust（stable，工作区构建）
 - Node ≥ 20 + pnpm（admin-web / mcp）
-- MySQL 8（可选；无则审计自动降级，实时链路不受影响）
+- 无需外部数据库：审计用内置 SQLite（单文件 ohmydesk.db，自动创建；连接失败则审计降级，实时链路不受影响）
 - 客户端 GUI 需 **X11 会话**（xcap/enigo 在 Wayland 不可靠，进程会强制锁 X11 + 软渲染）
 
 ## 构建
@@ -66,15 +66,10 @@ cd src/mcp && pnpm install && pnpm build && cd -
 ## 运行（单一内网 URL 模式）
 
 ```bash
-# MySQL（可选；这里用 docker 起一个，库名 ohmydesk）
-docker run -d --name ohmydesk-mysql \
-  -e MYSQL_ROOT_PASSWORD=ohmydesk -e MYSQL_DATABASE=ohmydesk \
-  -p 13307:3306 mysql:8.0
-
-# 启动 Server（务必在仓库根，托管 admin/dist；建表 DDL 自动幂等执行）
-DATABASE_URL="mysql://root:ohmydesk@127.0.0.1:13307/ohmydesk" \
+# 启动 Server（务必在仓库根，托管 admin/dist；内置 SQLite 自动建库建表，零外部依赖）
 OHMYDESK_WEB_DIR="src/admin-web/dist" \
-cargo run -p server          # 监听 0.0.0.0:8765
+cargo run -p server          # 监听 0.0.0.0:8765，审计落 ./ohmydesk.db
+# 容器部署挂数据卷持久化：DATABASE_URL=sqlite:/app/data/ohmydesk.db
 ```
 
 - **管理端**：浏览器开 `http://<服务器IP>:8765/`（UI、API、WS 同源）。
@@ -97,7 +92,7 @@ cargo run -p server          # 监听 0.0.0.0:8765
 
 ### 管理平台登录（公网暴露必备）
 
-浏览器打开后需登录才能进入。**默认账号 `admin` / 默认密码 `OhMyDesk@2026`**，登录后在「系统设置」页可改账号密码（存 MySQL `settings` 表持久化）。
+浏览器打开后需登录才能进入。**默认账号 `admin` / 默认密码 `OhMyDesk@2026`**，登录后在「系统设置」页可改账号密码（存 SQLite `settings` 表持久化）。
 
 - 鉴权：JWT(HS256)。`/api/*` 需 `Authorization: Bearer <token>`；`/ws` 的 admin 连接需 `?token=<jwt>`（无/失效 token 以 close 1008 拒绝）。终端 Agent 注册无需登录。
 - 模式 A 远控、批量截图、终端列表**只对已登录 admin 开放**——攻击者即使连上 WS 也拿不到列表、发不动远控。
@@ -109,14 +104,14 @@ cargo run -p server          # 监听 0.0.0.0:8765
 |----|---------|------|
 | 协议契约 | `cargo test -p protocol` | 24 通过 |
 | 客户端 net/几何/采集 | `cargo test -p client` | 21 通过（含 I3 截图回发契约） |
-| 服务端会话/审计/路由 | `cargo test -p server` | 10 通过 |
+| 服务端会话/审计/路由/鉴权 | `cargo test -p server` | 15 通过（含 5 鉴权单测） |
 | 全栈 lint | `cargo clippy --workspace` | 0 警告 |
 | Web/MCP 类型 | `tsc --noEmit` | 0 错误 |
 | I1 资产链路 | 双真实终端注册 + 信创推断 + 离线检测 | 通过 |
 | I2 远控闭环 | node 双端探针（授权→键鼠→帧双向→拒连） | 通过 |
 | I3 批量截图 | node 双 agent 探针（截图请求→双端回发→按 endpoint 入墙） | 通过 |
 | I4 MCP 真实 HTTP | 真实 server 拉 2 终端/1 会话/4 审计 | 通过 |
-| M4 审计落库 | 真实 MySQL 落审计 4 条 + 会话 1 条（含终态 UPDATE） | 通过 |
+| M4 审计落库 | SQLite 落审计 4 条 + 会话 1 条（含终态 UPDATE）+ 改密跨重启持久化 | 通过 |
 
 手工（浏览器/真机）逐条验收见 [docs/06-测试/手工验收清单.md](docs/06-测试/手工验收清单.md)。
 
