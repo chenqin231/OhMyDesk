@@ -3,4 +3,4 @@
 /**
  * 裁决 C-1：统一为 feature-spec 集合（删 design 的 click、原型的 transfer/error）
  */
-export type AuditType = "connect" | "auth_fail" | "reject" | "screenshot" | "input" | "disconnect";
+export type AuditType = "connect" | "auth_fail" | "reject" | "screenshot" | "input" | "disconnect" | "command" | "file_transfer";

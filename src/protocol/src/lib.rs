@@ -212,6 +212,56 @@ pub enum Message {
     SessionEnd {
         session_id: String,
     },
+
+    // ── 远程命令执行（一次性；控制方→被控方→回执，按 session 路由）────────────
+    /// 控制方下发一次性命令；被控方用系统 shell 执行（Win `cmd /C` / Linux `sh -c`）。
+    ExecRequest {
+        session_id: String,
+        exec_id: String,
+        command: String,
+        timeout_ms: u32,
+    },
+    /// 被控方回传执行结果（stdout/stderr 各截断 64KB，truncated 标记是否被截）。
+    ExecResult {
+        session_id: String,
+        exec_id: String,
+        exit_code: Option<i32>,
+        stdout: String,
+        stderr: String,
+        truncated: bool,
+        duration_ms: u32,
+    },
+
+    // ── 文件传输（分块流；push=控制方→被控方，pull=被控方→控制方）──────────────
+    /// 发起一次传输：dir=push 时控制方紧接着发 FileChunk；dir=pull 时为被控方对
+    /// FilePullRequest 的回流首包。
+    FileOpen {
+        session_id: String,
+        transfer_id: String,
+        name: String,
+        size: u64,
+        dir: FileDir,
+    },
+    /// 数据块；data 为该块 base64，last=true 表示末块。
+    FileChunk {
+        session_id: String,
+        transfer_id: String,
+        seq: u64,
+        data: String,
+        last: bool,
+    },
+    /// 控制方请求取回被控方某路径文件 → 被控方以 FileOpen{dir:pull}+FileChunk 回流。
+    FilePullRequest {
+        session_id: String,
+        transfer_id: String,
+        path: String,
+    },
+    /// 传输失败/被拒（超限、路径不可读、目录穿越等）。
+    FileError {
+        session_id: String,
+        transfer_id: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -222,6 +272,15 @@ pub enum InputEvent {
     MouseButton { button: u8, down: bool },
     Key { code: String, down: bool },
     Text { text: String },
+}
+
+/// 文件传输方向：push=控制方推给被控方，pull=被控方回流给控制方。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum FileDir {
+    Push,
+    Pull,
 }
 
 /// 推给管理端的精简视图（含在线态 + 信创标签，不含密码）
@@ -283,6 +342,8 @@ pub enum AuditType {
     Screenshot,
     Input,
     Disconnect,
+    Command,      // 远程命令执行
+    FileTransfer, // 文件传输（下发/取回）
 }
 
 // ── 测试拆分到 src/protocol/src/tests.rs（modularity 规范：测试与实现分离）──

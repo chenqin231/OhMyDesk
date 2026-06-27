@@ -199,6 +199,53 @@ impl Hub {
                 self.forward_by_to(&env);
             }
 
+            // ── 远程命令执行：按 session 对端路由；ExecRequest 落 Command 审计 ──
+            Message::ExecRequest {
+                session_id, command, ..
+            } => {
+                let summary: String = command.chars().take(200).collect();
+                self.audit
+                    .log(
+                        session_id,
+                        &env.from,
+                        AuditType::Command,
+                        &format!("执行命令: {summary}"),
+                    )
+                    .await;
+                self.route_to_peer(session_id, &env);
+            }
+            Message::ExecResult { session_id, .. } => {
+                self.route_to_peer(session_id, &env);
+            }
+
+            // ── 文件传输：按 session 对端路由；FileOpen 落 FileTransfer 审计 ────
+            Message::FileOpen {
+                session_id,
+                name,
+                size,
+                dir,
+                ..
+            } => {
+                let way = match dir {
+                    protocol::FileDir::Push => "下发",
+                    protocol::FileDir::Pull => "取回",
+                };
+                self.audit
+                    .log(
+                        session_id,
+                        &env.from,
+                        AuditType::FileTransfer,
+                        &format!("文件{way}: {name} ({size} 字节)"),
+                    )
+                    .await;
+                self.route_to_peer(session_id, &env);
+            }
+            Message::FileChunk { session_id, .. }
+            | Message::FilePullRequest { session_id, .. }
+            | Message::FileError { session_id, .. } => {
+                self.route_to_peer(session_id, &env);
+            }
+
             // server 单向发出的消息，不处理客户端发来的
             Message::RegisterAck { .. }
             | Message::EndpointList { .. }
@@ -275,5 +322,46 @@ mod tests {
             admin_rx.try_recv().is_err(),
             "结束通知不应回发给发起方 admin"
         );
+    }
+
+    /// 高危路径回归：ExecRequest 必须按 session 路由给被控端，且落审计不 panic。
+    #[tokio::test]
+    async fn exec_request_forwarded_to_controlled_peer() {
+        let hub = test_hub();
+        let (_admin_tx, _admin_rx) = mpsc::unbounded_channel::<String>();
+        let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-1".into(), _admin_tx);
+        hub.add_client("ep-victim".into(), victim_tx);
+
+        let sid = "sess-x".to_string();
+        hub.sessions.insert(Session {
+            id: sid.clone(),
+            mode: Mode::A,
+            from_id: "admin-1".into(),
+            to_id: "ep-victim".into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        let env = Envelope {
+            from: "admin-1".into(),
+            to: None,
+            ts: 200,
+            payload: Message::ExecRequest {
+                session_id: sid.clone(),
+                exec_id: "e-1".into(),
+                command: "whoami".into(),
+                timeout_ms: 5000,
+            },
+        };
+        hub.handle(env, 200).await;
+
+        let got = victim_rx.try_recv().expect("被控端应收到 ExecRequest");
+        let env: Envelope = serde_json::from_str(&got).unwrap();
+        match env.payload {
+            Message::ExecRequest { command, .. } => assert_eq!(command, "whoami"),
+            other => panic!("应为 ExecRequest，实际 {other:?}"),
+        }
     }
 }

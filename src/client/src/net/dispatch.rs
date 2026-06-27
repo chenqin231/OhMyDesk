@@ -8,10 +8,33 @@ use tokio::sync::mpsc;
 use super::conn::SessionCtx;
 use super::{now, CaptureCtrl, FromUi, ToUi, CAPTURE_CTRL, INJECT_TX, SCREENSHOT_TX};
 
+/// 给控制方回一条 `FileError`（被控端拒收/写盘失败时）。
+fn send_file_error(
+    out_tx: &mpsc::UnboundedSender<String>,
+    self_id: &str,
+    session_id: String,
+    transfer_id: String,
+    reason: String,
+) {
+    let env = Envelope {
+        from: self_id.to_string(),
+        to: None,
+        ts: now(),
+        payload: Message::FileError {
+            session_id,
+            transfer_id,
+            reason,
+        },
+    };
+    if let Ok(s) = serde_json::to_string(&env) {
+        let _ = out_tx.send(s);
+    }
+}
+
 /// 处理一条下行消息。
 pub(super) async fn handle_downlink(
     text: &str,
-    _self_id: &str,
+    self_id: &str,
     out_tx: &mpsc::UnboundedSender<String>,
     to_ui: &mpsc::UnboundedSender<ToUi>,
     session: &Arc<tokio::sync::Mutex<SessionCtx>>,
@@ -86,6 +109,101 @@ pub(super) async fn handle_downlink(
                 CAPTURE_CTRL.send(CaptureCtrl::Stop); // 停被控端推帧
             }
             let _ = to_ui.send(ToUi::SessionEnded);
+        }
+
+        // ── 被控端：收控制方下发的一次性命令 → 执行 → 回 ExecResult ───────────
+        Message::ExecRequest {
+            session_id,
+            exec_id,
+            command,
+            timeout_ms,
+        } => {
+            let controlled =
+                session.lock().await.controlled.as_deref() == Some(session_id.as_str());
+            if controlled {
+                let out = out_tx.clone();
+                let from = self_id.to_string();
+                tokio::spawn(async move {
+                    let r = crate::exec::run_command(&command, timeout_ms).await;
+                    let env = Envelope {
+                        from,
+                        to: None,
+                        ts: now(),
+                        payload: Message::ExecResult {
+                            session_id,
+                            exec_id,
+                            exit_code: r.exit_code,
+                            stdout: r.stdout,
+                            stderr: r.stderr,
+                            truncated: r.truncated,
+                            duration_ms: r.duration_ms,
+                        },
+                    };
+                    if let Ok(s) = serde_json::to_string(&env) {
+                        let _ = out.send(s);
+                    }
+                });
+            }
+        }
+
+        // ── 被控端：收 push 下发首包 → 打开接收文件（失败回 FileError）──────────
+        Message::FileOpen {
+            session_id,
+            transfer_id,
+            name,
+            size,
+            dir,
+        } => {
+            let controlled =
+                session.lock().await.controlled.as_deref() == Some(session_id.as_str());
+            if controlled && dir == protocol::FileDir::Push {
+                if let Err(reason) = crate::transfer::open_recv(&transfer_id, &name, size) {
+                    send_file_error(out_tx, self_id, session_id, transfer_id, reason);
+                }
+            }
+            // dir==Pull：本端作为控制方收到回流首包 → P1（端到端 UI）
+        }
+
+        // ── 被控端：收 push 数据块 → 落盘（失败回 FileError）────────────────────
+        Message::FileChunk {
+            session_id,
+            transfer_id,
+            data,
+            last,
+            ..
+        } => {
+            let controlled =
+                session.lock().await.controlled.as_deref() == Some(session_id.as_str());
+            if controlled {
+                if let Err(reason) = crate::transfer::write_chunk(&transfer_id, &data, last) {
+                    send_file_error(out_tx, self_id, session_id, transfer_id, reason);
+                }
+            }
+            // 控制方收 pull 回流块 → P1
+        }
+
+        // ── 被控端：收取回请求 → 读文件分块回流（独立任务）─────────────────────
+        Message::FilePullRequest {
+            session_id,
+            transfer_id,
+            path,
+        } => {
+            let controlled =
+                session.lock().await.controlled.as_deref() == Some(session_id.as_str());
+            if controlled {
+                tokio::spawn(crate::transfer::send_file(
+                    out_tx.clone(),
+                    self_id.to_string(),
+                    session_id,
+                    transfer_id,
+                    path,
+                ));
+            }
+        }
+
+        // ── 传输失败：清理在途接收 ─────────────────────────────────────────────
+        Message::FileError { transfer_id, .. } => {
+            crate::transfer::abort(&transfer_id);
         }
         _ => {}
     }

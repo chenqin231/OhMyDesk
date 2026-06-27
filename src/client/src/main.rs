@@ -14,10 +14,12 @@
 
 mod asset;
 mod capture;
+mod exec;
 mod geom;
 mod history;
 mod inject;
 mod net;
+mod transfer;
 mod ui_glue;
 mod workers;
 
