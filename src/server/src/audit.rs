@@ -179,6 +179,8 @@ fn audit_type_str(t: AuditType) -> &'static str {
         AuditType::Screenshot => "screenshot",
         AuditType::Input => "input",
         AuditType::Disconnect => "disconnect",
+        AuditType::Command => "command",
+        AuditType::FileTransfer => "file_transfer",
     }
 }
 
@@ -218,6 +220,8 @@ impl From<AuditLogRow> for AuditLog {
             "reject" => AuditType::Reject,
             "screenshot" => AuditType::Screenshot,
             "input" => AuditType::Input,
+            "command" => AuditType::Command,
+            "file_transfer" => AuditType::FileTransfer,
             _ => AuditType::Disconnect,
         };
         AuditLog {
