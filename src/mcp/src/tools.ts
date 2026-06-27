@@ -9,7 +9,12 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { MOCK_AUDIT_LOGS, MOCK_ENDPOINTS, MOCK_SESSIONS, toJson } from "./mock.js";
+import {
+  fetchAudit,
+  fetchEndpoints,
+  fetchSessions,
+  toJson,
+} from "./client.js";
 
 export function registerTools(server: McpServer): void {
   // ── Tool 1: list_endpoints ──────────────────────────────────────────────
@@ -25,8 +30,7 @@ export function registerTools(server: McpServer): void {
       },
     },
     async (args) => {
-      // Wave 2: 替换为 fetch(`${BASE_URL}/api/endpoints`)
-      let result = MOCK_ENDPOINTS;
+      let result = await fetchEndpoints();
 
       if (args.online !== undefined) {
         result = result.filter((e) => e.online === args.online);
@@ -54,8 +58,8 @@ export function registerTools(server: McpServer): void {
       inputSchema: {},
     },
     async (_args) => {
-      // Wave 2: 替换为 fetch(`${BASE_URL}/api/sessions`)
-      const result = MOCK_SESSIONS.filter((s) => s.status === "active");
+      const sessions = await fetchSessions();
+      const result = sessions.filter((s) => s.status === "active");
       return { content: [{ type: "text", text: toJson(result) }] };
     },
   );
@@ -78,23 +82,19 @@ export function registerTools(server: McpServer): void {
       },
     },
     async (args) => {
-      // Wave 2: 替换为 fetch(`${BASE_URL}/api/audit?${new URLSearchParams(...)}`)
-      let logs = MOCK_AUDIT_LOGS;
+      // from/to（ISO 字符串）→ 秒，交由 server 端按时间过滤；endpoint 透传
+      const toSecOpt = (iso?: string): number | undefined =>
+        iso ? Math.floor(new Date(iso).getTime() / 1000) : undefined;
 
-      if (args.from) {
-        const fromTs = BigInt(new Date(args.from).getTime());
-        logs = logs.filter((l) => l.ts >= fromTs);
-      }
-      if (args.to) {
-        const toTs = BigInt(new Date(args.to).getTime());
-        logs = logs.filter((l) => l.ts <= toTs);
-      }
+      let logs = await fetchAudit({
+        endpoint: args.endpoint,
+        fromSec: toSecOpt(args.from),
+        toSec: toSecOpt(args.to),
+      });
+
+      // result（事件类型）在客户端按字符串过滤；AuditLog 字段名为 type
       if (args.result) {
         logs = logs.filter((l) => l.type === args.result);
-      }
-      // endpoint 过滤需通过 session_id 关联，Wave 1 简化为文本匹配
-      if (args.endpoint) {
-        logs = logs.filter((l) => l.session_id.includes(args.endpoint as string));
       }
 
       return { content: [{ type: "text", text: toJson(logs) }] };
@@ -111,8 +111,7 @@ export function registerTools(server: McpServer): void {
       inputSchema: {},
     },
     async (_args) => {
-      // Wave 2: 基于 fetch(`${BASE_URL}/api/endpoints`) 数据聚合
-      const endpoints = MOCK_ENDPOINTS;
+      const endpoints = await fetchEndpoints();
       const total = endpoints.length;
       const online = endpoints.filter((e) => e.online).length;
 

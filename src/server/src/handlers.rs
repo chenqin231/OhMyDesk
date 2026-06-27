@@ -43,9 +43,9 @@ pub async fn handle_connect_request(
         }
     }
 
-    // 密码正确（B）或模式 A：server 生成 session_id，建内存会话
+    // 密码正确（B）或模式 A：server 生成 session_id，建会话
     let session_id = Uuid::new_v4().to_string();
-    hub.sessions.insert(Session {
+    let session = Session {
         id: session_id.clone(),
         mode: *mode,
         from_id: from_id.to_string(),
@@ -53,7 +53,10 @@ pub async fn handle_connect_request(
         start_at: now,
         end_at: None,
         status: SessionStatus::Active,
-    });
+    };
+    // 持久化会话（M4：/api/sessions 查询 + end_session 终态 UPDATE 有行可改）
+    hub.audit.insert_session(&session).await;
+    hub.sessions.insert(session);
 
     // 发 IncomingControl 给被控端（携带 server 生成的 session_id）
     let incoming = Envelope {
