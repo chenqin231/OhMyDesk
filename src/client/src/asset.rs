@@ -30,13 +30,9 @@ pub fn collect(user_name: &str) -> EndpointInfo {
     let os_name = System::name().unwrap_or_default();
     let os = OsInfo {
         kind: map_os(&os_name),
-        name: format!(
-            "{} {}",
-            os_name,
-            System::os_version().unwrap_or_default()
-        )
-        .trim()
-        .to_string(),
+        name: format!("{} {}", os_name, System::os_version().unwrap_or_default())
+            .trim()
+            .to_string(),
     };
     let (ip, mac) = primary_nic();
     let id = stable_machine_id(&mac);
@@ -152,9 +148,25 @@ fn mac_universal(mac: &str) -> bool {
 fn is_virtual_nic(name: &str) -> bool {
     let n = name.to_lowercase();
     const VIRTUAL: &[&str] = &[
-        "loopback", "vethernet", "veth", "wsl", "vmware", "virtualbox", "vbox", "hyper-v",
-        "hyperv", "docker", "tailscale", "zerotier", "tun", "tap", "vpn", "bluetooth",
-        "virtual", "isatap", "teredo",
+        "loopback",
+        "vethernet",
+        "veth",
+        "wsl",
+        "vmware",
+        "virtualbox",
+        "vbox",
+        "hyper-v",
+        "hyperv",
+        "docker",
+        "tailscale",
+        "zerotier",
+        "tun",
+        "tap",
+        "vpn",
+        "bluetooth",
+        "virtual",
+        "isatap",
+        "teredo",
     ];
     VIRTUAL.iter().any(|p| n.contains(p))
 }
@@ -210,7 +222,11 @@ mod tests {
     }
 
     fn mk_nic(name: &str, mac: &str, ip: Option<&str>) -> Nic {
-        Nic { name: name.into(), mac: mac.into(), ipv4: ip.map(|s| s.into()) }
+        Nic {
+            name: name.into(),
+            mac: mac.into(),
+            ipv4: ip.map(|s| s.into()),
+        }
     }
 
     #[test]
@@ -218,10 +234,18 @@ mod tests {
         let nics = vec![
             mk_nic("vEthernet (WSL)", "00:15:5d:01:02:03", Some("172.27.112.1")), // 虚拟名
             mk_nic("以太网", "a4:bb:6d:11:22:33", Some("192.168.3.10")),          // 物理全局MAC
-            mk_nic("VMware Network Adapter VMnet8", "00:50:56:c0:00:08", Some("192.168.48.1")), // 虚拟名
+            mk_nic(
+                "VMware Network Adapter VMnet8",
+                "00:50:56:c0:00:08",
+                Some("192.168.48.1"),
+            ), // 虚拟名
         ];
         let want = "a4:bb:6d:11:22:33";
-        assert_eq!(pick_primary(nics.clone()).unwrap().mac, want, "应选物理网卡");
+        assert_eq!(
+            pick_primary(nics.clone()).unwrap().mac,
+            want,
+            "应选物理网卡"
+        );
         // 打乱枚举顺序仍选同一张 → 确定性（修复 IP/MAC/ID 乱跳）
         let mut shuffled = nics.clone();
         shuffled.rotate_left(2);

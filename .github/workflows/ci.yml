@@ -1,0 +1,89 @@
+# CI：每次 push/PR 的快速质量门。只做 x86_64 原生验证，不做多架构发布编译（那在 release.yml）。
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust 检查与测试 (x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # 客户端依赖 xcap/enigo/slint/arboard，链接期需要 X11/字体开发库。
+      - name: 安装 X11 / 字体开发库
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libxcb1-dev libxrandr-dev libxi-dev libxtst-dev \
+            libx11-dev libxkbcommon-dev libfontconfig1-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # fmt / clippy 暂为非阻塞（仓库现存未格式化代码）；待统一 cargo fmt 后可改为硬门。
+      - name: 格式检查（非阻塞）
+        continue-on-error: true
+        run: cargo fmt --all --check
+
+      - name: Clippy（非阻塞）
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets
+
+      - name: 编译
+        run: cargo build --workspace
+
+      - name: 测试
+        run: cargo test --workspace
+
+  admin-web:
+    name: 管理前端构建
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: src/admin-web/pnpm-lock.yaml
+      - name: 安装依赖
+        working-directory: src/admin-web
+        run: pnpm install --frozen-lockfile
+      - name: 构建
+        working-directory: src/admin-web
+        run: pnpm build
+
+  mcp:
+    name: MCP 服务构建
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: src/mcp/pnpm-lock.yaml
+      - name: 安装依赖
+        working-directory: src/mcp
+        run: pnpm install --frozen-lockfile
+      - name: 构建
+        working-directory: src/mcp
+        run: pnpm build

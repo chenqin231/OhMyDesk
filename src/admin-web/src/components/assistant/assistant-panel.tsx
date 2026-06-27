@@ -17,6 +17,8 @@ import { useStore } from "@/store";
 export function AssistantPanel() {
   const endpoints = useStore((s) => s.endpoints);
   const auditLogs = useStore((s) => s.auditLogs);
+  const fetchAudit = useStore((s) => s.fetchAudit);
+  const userAskedRef = useRef(false);
 
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     initialConversation(endpoints, auditLogs),
@@ -31,9 +33,19 @@ export function AssistantPanel() {
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [messages, thinking]);
 
+  useEffect(() => {
+    void fetchAudit();
+  }, [fetchAudit]);
+
+  useEffect(() => {
+    if (userAskedRef.current) return;
+    setMessages(initialConversation(endpoints, auditLogs));
+  }, [endpoints, auditLogs]);
+
   function send(text: string) {
     const q = text.trim();
     if (!q || thinking) return;
+    userAskedRef.current = true;
     setInput("");
     setMessages((prev) => [...prev, userMessage(q)]);
     setThinking(true);

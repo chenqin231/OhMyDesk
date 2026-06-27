@@ -1,4 +1,4 @@
-//! 屏幕捕获：xcap 截屏 → 等比缩放 → JPEG q60 → base64（P-CLI4）。
+//! 屏幕捕获：xcap 截屏 → 等比缩放 → JPEG q85 → base64（P-CLI4）。
 //!
 //! 坑点（见 references/xcap-enigo.md）：
 //! - `Monitor::all()` 启动枚举一次缓存复用，不每帧枚举。
@@ -48,7 +48,7 @@ impl Capturer {
         (self.real_w, self.real_h)
     }
 
-    /// 截一帧 → 等比缩放 → JPEG q60 → base64。返回 (base64, 缩放后 w, 缩放后 h)。
+    /// 截一帧 → 等比缩放 → JPEG q85 → base64。返回 (base64, 缩放后 w, 缩放后 h)。
     pub fn frame(&self) -> anyhow::Result<(String, u32, u32)> {
         let img = self.mon.capture_image()?; // RgbaImage
         encode_frame(&img)
@@ -64,12 +64,12 @@ pub fn encode_frame(img: &RgbaImage) -> anyhow::Result<(String, u32, u32)> {
     let rgb = if (w, h) == (sw, sh) {
         image::DynamicImage::ImageRgba8(img.clone()).to_rgb8()
     } else {
-        let resized = image::imageops::resize(img, w, h, image::imageops::FilterType::Triangle);
+        let resized = image::imageops::resize(img, w, h, image::imageops::FilterType::Lanczos3);
         image::DynamicImage::ImageRgba8(resized).to_rgb8()
     };
 
     let mut buf = std::io::Cursor::new(Vec::new());
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 60).encode_image(&rgb)?;
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 85).encode_image(&rgb)?;
     Ok((STANDARD.encode(buf.get_ref()), w, h))
 }
 
@@ -148,9 +148,14 @@ mod tests {
             Ok((b64, w, h)) => {
                 assert!(!b64.is_empty());
                 assert!(w <= MAX_W && h <= MAX_H, "缩放后不超上限：{w}x{h}");
-                println!("真实截屏：屏 {rw}x{rh} → 帧 {w}x{h}，base64 {} 字节", b64.len());
+                println!(
+                    "真实截屏：屏 {rw}x{rh} → 帧 {w}x{h}，base64 {} 字节",
+                    b64.len()
+                );
             }
-            Err(e) => println!("枚举屏 {rw}x{rh} OK；抓屏失败（WSLg GetImage 限制，真机无此问题）：{e}"),
+            Err(e) => {
+                println!("枚举屏 {rw}x{rh} OK；抓屏失败（WSLg GetImage 限制，真机无此问题）：{e}")
+            }
         }
     }
 
@@ -167,8 +172,12 @@ mod tests {
 
     #[test]
     fn encode_帧体积可控() {
-        // q60 纯色帧 base64 后应在合理量级（远小于裸 RGBA 1280*720*4 ≈ 3.5MB）
+        // q85 纯色帧 base64 后应在合理量级（远小于裸 RGBA 1280*720*4 ≈ 3.5MB）
         let (b64, _, _) = encode_frame(&solid(1920, 1080)).unwrap();
-        assert!(b64.len() < 1_000_000, "单帧 base64 应远小于 1MB，实际 {}", b64.len());
+        assert!(
+            b64.len() < 1_000_000,
+            "单帧 base64 应远小于 1MB，实际 {}",
+            b64.len()
+        );
     }
 }

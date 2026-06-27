@@ -12,6 +12,7 @@
 import type { AuditLog, EndpointView, Session } from "./types.js";
 
 const BASE_URL = process.env.OHMYDESK_API_BASE ?? "http://127.0.0.1:8765";
+const API_TOKEN = process.env.OHMYDESK_API_TOKEN?.trim();
 
 // ---------- JSON 序列化辅助（bigint → string，数据现多为 number，保留以防万一）----------
 
@@ -28,7 +29,9 @@ export function toJson(value: unknown): string {
 async function getJson<T>(path: string, fallback: T): Promise<T> {
   const url = `${BASE_URL}${path}`;
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {},
+    });
     if (!res.ok) {
       console.error(`[mcp] GET ${url} 非 2xx：${res.status} ${res.statusText}`);
       return fallback;
