@@ -18,11 +18,23 @@ serde_json.workspace = true
 slint = { version = "1.17", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software"] }
 sysinfo = "0.39"
 tokio = { workspace = true, features = ["full"] }
-tokio-tungstenite = "0.24"
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { version = "1.23.4", features = ["v4"] }
 xcap = "0.9"
+
+# TLS 按目标分流（client 需连 wss://rc.guoziweb.com）：
+# - Windows：native-tls → SChannel（纯 Rust schannel 绑定，交叉编译零 C 依赖，不引 openssl）
+# - Linux/信创：rustls + webpki 内置根证书（守住「全栈 rustls 不用 openssl」硬约束）
+# 二者按 target 互斥启用，connect_async 自动据所启用后端协商 wss。
+[target.'cfg(windows)'.dependencies]
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+
+[target.'cfg(not(windows))'.dependencies]
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# tokio-tungstenite 启用 rustls 时 default-features=false（不带 provider）；
+# 这里显式只启 ring（openssl-free、loongarch 友好），让 rustls ClientConfig::builder() 自动用 ring。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 
 [build-dependencies]
 slint-build = "1.17"
