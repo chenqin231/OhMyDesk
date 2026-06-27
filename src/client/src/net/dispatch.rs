@@ -100,7 +100,13 @@ pub(super) async fn handle_uplink(
     session: &Arc<tokio::sync::Mutex<SessionCtx>>,
 ) {
     let env = match act {
-        FromUi::StartRemote { target_id, password } => Envelope {
+        // RefreshPassword 在 connect_once 的 select 处已拦截重注册，不进入本分发；
+        // 此臂仅为穷尽匹配，理论不可达。
+        FromUi::RefreshPassword => return,
+        FromUi::StartRemote {
+            target_id,
+            password,
+        } => Envelope {
             from: self_id.to_string(),
             to: Some(target_id.clone()),
             ts: now(),
@@ -127,7 +133,11 @@ pub(super) async fn handle_uplink(
                 payload: Message::AuthResult {
                     session_id,
                     ok: accept,
-                    reason: if accept { None } else { Some("用户拒绝".into()) },
+                    reason: if accept {
+                        None
+                    } else {
+                        Some("用户拒绝".into())
+                    },
                 },
             }
         }
@@ -191,8 +201,8 @@ pub(super) async fn handle_uplink(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::conn::SessionCtx;
+    use super::*;
 
     /// 截图回发上行映射契约：to=请求方、endpoint_id=本机、type=screenshot_resp。
     #[tokio::test]
@@ -213,10 +223,17 @@ mod tests {
         )
         .await;
         let s = rx.recv().await.expect("应有一条出站消息");
-        assert!(s.contains("\"type\":\"screenshot_resp\""), "缺 screenshot_resp tag: {s}");
+        assert!(
+            s.contains("\"type\":\"screenshot_resp\""),
+            "缺 screenshot_resp tag: {s}"
+        );
         let env: Envelope = serde_json::from_str(&s).unwrap();
         assert_eq!(env.from, "ep-self");
-        assert_eq!(env.to.as_deref(), Some("admin-x"), "to 必须是请求方，供 server forward_by_to");
+        assert_eq!(
+            env.to.as_deref(),
+            Some("admin-x"),
+            "to 必须是请求方，供 server forward_by_to"
+        );
         match env.payload {
             Message::ScreenshotResp {
                 req_id,
@@ -226,7 +243,10 @@ mod tests {
                 ..
             } => {
                 assert_eq!(req_id, "req-1");
-                assert_eq!(endpoint_id, "ep-self", "endpoint_id 必须是本机 id（前端按此 key 入缓存）");
+                assert_eq!(
+                    endpoint_id, "ep-self",
+                    "endpoint_id 必须是本机 id（前端按此 key 入缓存）"
+                );
                 assert_eq!((w, h), (1280, 720));
             }
             _ => panic!("payload 类型错误"),
