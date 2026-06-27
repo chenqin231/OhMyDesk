@@ -42,7 +42,7 @@ async fn get(db: &Db, k: &str) -> Option<String> {
 
 async fn put(db: &Db, k: &str, v: &str) {
     if let Err(e) = sqlx::query(
-        "INSERT INTO settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)",
+        "INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
     )
     .bind(k)
     .bind(v)

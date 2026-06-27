@@ -15,7 +15,7 @@ tracing-subscriber = { workspace = true }
 dashmap = "6"
 futures-util = "0.3"
 tower-http = { version = "0.6", features = ["fs", "cors"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "mysql"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 uuid = { version = "1", features = ["v4"] }
 jsonwebtoken = "9"
 bcrypt = "0.15"
