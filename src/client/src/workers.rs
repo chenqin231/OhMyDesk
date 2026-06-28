@@ -26,15 +26,19 @@ pub async fn consume_inject(
     let (blk_tx, blk_rx) = std::sync::mpsc::channel::<protocol::InputEvent>();
     std::thread::spawn(move || {
         let mut injector = match inject::Injector::new(real_w, real_h, frame_w, frame_h) {
-            Ok(i) => i,
+            Ok(i) => {
+                tracing::info!("注入器就绪 real={real_w}x{real_h} frame={frame_w}x{frame_h}");
+                i
+            }
             Err(e) => {
-                tracing::warn!("注入器构造失败（无 X11？）：{e}，注入禁用");
+                tracing::warn!("注入器构造失败（无 X11/注入后端？）：{e}，注入禁用");
                 return;
             }
         };
         while let Ok(ev) = blk_rx.recv() {
-            if let Err(e) = injector.apply(&ev) {
-                tracing::debug!("注入失败：{e}");
+            match injector.apply(&ev) {
+                Ok(()) => tracing::debug!("注入成功 ev={ev:?}"),
+                Err(e) => tracing::warn!("注入失败 ev={ev:?}：{e}"),
             }
         }
     });

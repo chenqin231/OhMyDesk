@@ -104,7 +104,12 @@ pub(super) async fn handle_downlink(
         // 被控端收到键鼠 → 经旁路交 main 注入侧（注入依赖 X11，不在 net 任务里执行）
         Message::Input { session_id, event } => {
             let ctx = session.lock().await;
-            if ctx.controlled.as_deref() == Some(session_id.as_str()) {
+            let matched = ctx.controlled.as_deref() == Some(session_id.as_str());
+            tracing::debug!(
+                "被控收到输入 session={session_id} matched={matched} controlled={:?}",
+                ctx.controlled
+            );
+            if matched {
                 drop(ctx);
                 let _ = out_tx; // Input 不回发，交注入侧
                 INJECT_TX.with_send(session_id, event);

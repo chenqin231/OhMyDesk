@@ -32,12 +32,21 @@ slint::include_modules!();
 pub(crate) type SharedSession = Arc<std::sync::Mutex<Option<String>>>;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "client=info".into()),
-        )
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "client=info".into());
+    // Windows 被控端是无控制台子系统、看不到 stderr 日志；设 OHMYDESK_LOG_FILE=<路径>
+    // 即把日志落到文件，便于现场排障（注入是否就绪、是否收到输入、apply 是否报错）。
+    match std::env::var("OHMYDESK_LOG_FILE") {
+        Ok(p) if !p.is_empty() => match std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+            Ok(file) => tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file))
+                .init(),
+            Err(_) => tracing_subscriber::fmt().with_env_filter(filter).init(),
+        },
+        _ => tracing_subscriber::fmt().with_env_filter(filter).init(),
+    }
     lock_x11_session();
 
     let user = std::env::args().nth(1).unwrap_or_else(|| "演示终端".into());
