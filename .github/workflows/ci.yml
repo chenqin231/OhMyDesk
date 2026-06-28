@@ -1,4 +1,5 @@
 # CI：每次 push/PR 的快速质量门。只做 x86_64 原生验证，不做多架构发布编译（那在 release.yml）。
+# (touch: 触发 GitHub Actions workflow 重新解析注册)
 name: CI
 
 on:
@@ -9,6 +10,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # 禁 HTTP/2 多路复用：规避 GitHub runner 上 crates.io fetch 偶发的 "HTTP2 framing layer" 错误
+  CARGO_HTTP_MULTIPLEXING: "false"
 
 jobs:
   rust:
@@ -25,7 +28,8 @@ jobs:
             pkg-config \
             libxcb1-dev libxrandr-dev libxi-dev libxtst-dev \
             libx11-dev libxkbcommon-dev libfontconfig1-dev \
-            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev \
+            libdbus-1-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:

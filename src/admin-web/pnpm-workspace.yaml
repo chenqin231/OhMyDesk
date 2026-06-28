@@ -1,2 +1,5 @@
-allowBuilds:
-  esbuild: true
+# 单包项目：显式声明 packages 字段，否则 pnpm 视为残缺 workspace 报错
+# （CI "packages field missing or empty"）。构建脚本（esbuild）放行改由 Dockerfile/CI 的
+# --config.dangerouslyAllowAllBuilds 处理（pnpm 11 下 onlyBuiltDependencies 此场景不生效）。
+packages:
+  - '.'
