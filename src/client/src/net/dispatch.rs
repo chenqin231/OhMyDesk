@@ -82,9 +82,20 @@ pub(super) async fn handle_downlink(
         Message::Reject { reason, .. } => {
             let _ = to_ui.send(ToUi::RemoteRejected { reason });
         }
-        // 主控端收到画面帧 → 通知 UI 贴帧
-        Message::Frame { data, w, h, .. } => {
-            let _ = to_ui.send(ToUi::Frame { data, w, h });
+        // 主控端收到画面帧 → 通知 UI 贴帧（带 session_id 供 UI 统一会话态）
+        Message::Frame {
+            session_id,
+            data,
+            w,
+            h,
+            ..
+        } => {
+            let _ = to_ui.send(ToUi::Frame {
+                session_id,
+                data,
+                w,
+                h,
+            });
         }
         // 主控端收到被控端会话内提示（如 Wayland 无法截屏）→ 复用拒绝态 UI 展示原因
         Message::RemoteNotice { text, .. } => {

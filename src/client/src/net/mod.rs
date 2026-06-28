@@ -42,8 +42,15 @@ pub enum ToUi {
     RemoteAck { session_id: String },
     /// 主控发起被拒（密码错/被拒）。
     RemoteRejected { reason: String },
-    /// 收到一帧画面（主控态贴帧）：JPEG base64 + 缩放后尺寸。
-    Frame { data: String, w: u32, h: u32 },
+    /// 收到一帧画面（主控态贴帧）：会话 id + JPEG base64 + 缩放后尺寸。
+    /// 带 session_id 让 UI 侧据帧统一会话态——输入发送与画面用同一事实源，
+    /// 避免「有画面但 cur_session 未设、输入被丢弃」。
+    Frame {
+        session_id: String,
+        data: String,
+        w: u32,
+        h: u32,
+    },
     /// 会话结束（任一端断开）。
     SessionEnded,
     /// 连接断开（UI 可提示"重连中…"）。
