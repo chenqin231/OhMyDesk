@@ -1,0 +1,338 @@
+// Zustand store：终端列表 / 会话 / 审计状态
+import { create } from "zustand";
+import type { EndpointView } from "@/lib/types/EndpointView";
+import type { AuditLog } from "@/lib/types/AuditLog";
+import type { Session } from "@/lib/types/Session";
+import type { Message } from "@/lib/types/Message";
+import { transport } from "@/lib/transport";
+import {
+  bytesToB64,
+  b64ToBytes,
+  downloadBytes,
+  genId,
+  CHUNK_SIZE,
+  EXEC_TIMEOUT_MS,
+} from "@/lib/file-transfer";
+
+// 截图缓存：req_id → { endpoint_id: base64 }
+export type ScreenshotCache = Record<string, Record<string, string>>;
+
+// 远控帧：含 data(base64) + 分辨率
+export type ActiveFrame = { data: string; w: number; h: number; seq: bigint };
+
+// 一条命令执行记录（pending=等待被控端回执）
+export type ExecEntry = {
+  exec_id: string;
+  command: string;
+  pending: boolean;
+  exit_code: number | null;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+  duration_ms: number;
+};
+
+// 在途取回（pull）的二进制组装缓冲：transfer_id → 分片（不进 React state，纯瞬态）
+const pullBuffers = new Map<string, { name: string; parts: Uint8Array[] }>();
+
+type State = {
+  // 终端列表（从 endpoint_list 推送更新）
+  endpoints: EndpointView[];
+  // 审计日志（fetchAudit 返回）
+  auditLogs: AuditLog[];
+  // 会话列表（mock 预生成）
+  sessions: Session[];
+  // 当前远控会话状态
+  remoteSessionId: string | null;
+  remoteTarget: string;           // 当前远控目标展示名（连接中/控制中卡片显示）
+  remotePhase: "launch" | "connecting" | "connected" | "rejected";
+  remoteFrame: ActiveFrame | null;
+  remoteRejectReason: string | null;
+  // Grid 截图缓存 { endpointId: base64 }
+  screenshots: Record<string, string>;
+  // 当前截图请求 id（用于匹配 screenshot_resp）
+  activeReqId: string | null;
+
+  // 远控会话内的命令执行记录（最近在前）
+  execResults: ExecEntry[];
+  // 文件传输提示（下发/取回的状态/错误）
+  fileNotice: string | null;
+
+  // actions
+  initTransport: () => void;
+  disconnectTransport: () => void;
+  sendEnvelope: (payload: Message) => void;
+  fetchAudit: (from?: number, to?: number, endpoint?: string, result?: string) => Promise<void>;
+  deleteEndpoints: (ids: string[]) => Promise<void>;
+  requestBatchScreenshot: () => void;
+  startRemote: (mode: "a" | "b", target: string, password: string | null, name?: string) => void;
+  endRemote: () => void;
+  resetRemote: () => void;
+  // 远控会话内：执行命令 / 下发文件 / 取回文件
+  execCommand: (command: string) => void;
+  pushFile: (file: File) => Promise<void>;
+  pullFile: (path: string) => void;
+};
+
+const selfId = "admin-" + Math.random().toString(36).slice(2, 8);
+
+export const useStore = create<State>((set, get) => ({
+  endpoints: [],
+  auditLogs: [],
+  sessions: [],
+  remoteSessionId: null,
+  remoteTarget: "",
+  remotePhase: "launch",
+  remoteFrame: null,
+  remoteRejectReason: null,
+  screenshots: {},
+  activeReqId: null,
+  execResults: [],
+  fileNotice: null,
+
+  initTransport() {
+    transport.connect(selfId, (env) => {
+      const p = env.payload;
+
+      if (p.type === "endpoint_list") {
+        set({ endpoints: p.endpoints });
+        return;
+      }
+
+      if (p.type === "screenshot_resp") {
+        const { endpoint_id, data } = p;
+        set((s) => ({
+          screenshots: { ...s.screenshots, [endpoint_id]: data },
+        }));
+        return;
+      }
+
+      if (p.type === "frame") {
+        set({ remoteFrame: { data: p.data, w: p.w, h: p.h, seq: p.seq } });
+        return;
+      }
+
+      if (p.type === "auth_result") {
+        // auth_result ok=true → 等 connect_ack
+        if (!p.ok) {
+          set({ remotePhase: "rejected", remoteRejectReason: p.reason ?? "鉴权失败" });
+        }
+        return;
+      }
+
+      if (p.type === "connect_ack") {
+        set({ remoteSessionId: p.session_id, remotePhase: "connected" });
+        return;
+      }
+
+      if (p.type === "reject") {
+        set({ remotePhase: "rejected", remoteRejectReason: p.reason });
+        return;
+      }
+
+      // 命令执行回执：按 exec_id 回填对应记录
+      if (p.type === "exec_result") {
+        set((s) => ({
+          execResults: s.execResults.map((e) =>
+            e.exec_id === p.exec_id
+              ? {
+                  ...e,
+                  pending: false,
+                  exit_code: p.exit_code,
+                  stdout: p.stdout,
+                  stderr: p.stderr,
+                  truncated: p.truncated,
+                  duration_ms: p.duration_ms,
+                }
+              : e,
+          ),
+        }));
+        return;
+      }
+
+      // 取回（pull）回流首包：开缓冲
+      if (p.type === "file_open") {
+        pullBuffers.set(p.transfer_id, { name: p.name, parts: [] });
+        set({ fileNotice: `正在取回 ${p.name}…` });
+        return;
+      }
+
+      // 取回数据块：累积，末块触发浏览器下载
+      if (p.type === "file_chunk") {
+        const buf = pullBuffers.get(p.transfer_id);
+        if (buf) {
+          if (p.data) buf.parts.push(b64ToBytes(p.data));
+          if (p.last) {
+            pullBuffers.delete(p.transfer_id);
+            downloadBytes(buf.name, buf.parts);
+            set({ fileNotice: `已取回 ${buf.name}` });
+          }
+        }
+        return;
+      }
+
+      // 传输失败
+      if (p.type === "file_error") {
+        pullBuffers.delete(p.transfer_id);
+        set({ fileNotice: `传输失败：${p.reason}` });
+        return;
+      }
+    });
+
+    // 预加载审计数据
+    get().fetchAudit();
+  },
+
+  disconnectTransport() {
+    transport.disconnect();
+  },
+
+  sendEnvelope(payload) {
+    transport.send({
+      from: selfId,
+      to: null,
+      ts: BigInt(Math.floor(Date.now() / 1000)),
+      payload,
+    });
+  },
+
+  async fetchAudit(from, to, endpoint, result) {
+    const [logs, sessions] = await Promise.all([
+      transport.fetchAudit({ from, to, endpoint, result }),
+      transport.fetchSessions(),
+    ]);
+    set({ auditLogs: logs, sessions });
+  },
+
+  async deleteEndpoints(ids) {
+    await transport.deleteEndpoints(ids);
+    // 乐观移除（server 删完也会 push 最新 endpoint_list 兜底）
+    set((s) => ({ endpoints: s.endpoints.filter((e) => !ids.includes(e.info.id)) }));
+  },
+
+  requestBatchScreenshot() {
+    const reqId = "req-" + Date.now();
+    set({ activeReqId: reqId });
+    get().sendEnvelope({ type: "screenshot_req", req_id: reqId });
+  },
+
+  startRemote(mode, target, password, name) {
+    set({
+      remotePhase: "connecting",
+      remoteTarget: name ?? target,
+      remoteRejectReason: null,
+      remoteFrame: null,
+    });
+    get().sendEnvelope({
+      type: "connect_request",
+      mode,
+      target,
+      password,
+    });
+  },
+
+  endRemote() {
+    const sessionId = get().remoteSessionId;
+    if (sessionId) {
+      get().sendEnvelope({ type: "session_end", session_id: sessionId });
+    }
+    set({ remotePhase: "launch", remoteSessionId: null, remoteFrame: null });
+  },
+
+  resetRemote() {
+    set({
+      remotePhase: "launch",
+      remoteSessionId: null,
+      remoteFrame: null,
+      remoteRejectReason: null,
+      execResults: [],
+      fileNotice: null,
+    });
+  },
+
+  // 在已授权远控会话内下发一次性命令
+  execCommand(command) {
+    const sessionId = get().remoteSessionId;
+    if (!sessionId || !command.trim()) return;
+    const exec_id = genId("e");
+    set((s) => ({
+      execResults: [
+        {
+          exec_id,
+          command,
+          pending: true,
+          exit_code: null,
+          stdout: "",
+          stderr: "",
+          truncated: false,
+          duration_ms: 0,
+        },
+        ...s.execResults,
+      ].slice(0, 20),
+    }));
+    get().sendEnvelope({
+      type: "exec_request",
+      session_id: sessionId,
+      exec_id,
+      command,
+      timeout_ms: EXEC_TIMEOUT_MS,
+    });
+  },
+
+  // 下发本地文件到被控端（分块 push）
+  async pushFile(file) {
+    const sessionId = get().remoteSessionId;
+    if (!sessionId) return;
+    const transfer_id = genId("t");
+    const buf = new Uint8Array(await file.arrayBuffer());
+    set({ fileNotice: `正在下发 ${file.name}…` });
+    get().sendEnvelope({
+      type: "file_open",
+      session_id: sessionId,
+      transfer_id,
+      name: file.name,
+      size: BigInt(buf.length),
+      dir: "push",
+    });
+    if (buf.length === 0) {
+      get().sendEnvelope({
+        type: "file_chunk",
+        session_id: sessionId,
+        transfer_id,
+        seq: 0n,
+        data: "",
+        last: true,
+      });
+    } else {
+      let seq = 0;
+      for (let off = 0; off < buf.length; off += CHUNK_SIZE) {
+        const slice = buf.subarray(off, Math.min(off + CHUNK_SIZE, buf.length));
+        const last = off + CHUNK_SIZE >= buf.length;
+        get().sendEnvelope({
+          type: "file_chunk",
+          session_id: sessionId,
+          transfer_id,
+          seq: BigInt(seq),
+          data: bytesToB64(slice),
+          last,
+        });
+        seq++;
+      }
+    }
+    set({ fileNotice: `已下发 ${file.name}（${buf.length} 字节）` });
+  },
+
+  // 从被控端取回指定路径文件（pull）
+  pullFile(path) {
+    const sessionId = get().remoteSessionId;
+    if (!sessionId || !path.trim()) return;
+    const transfer_id = genId("t");
+    set({ fileNotice: `请求取回 ${path}…` });
+    get().sendEnvelope({
+      type: "file_pull_request",
+      session_id: sessionId,
+      transfer_id,
+      path,
+    });
+  },
+}));

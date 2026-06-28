@@ -1,0 +1,851 @@
+// OhMyDesk 客户端 Slint UI —— 参考 v0「AI-Remote Sentinel」设计重做（信创软渲染，无 GPU）。
+//
+// 设计来源：v0_client（Sentinel 桌面远控客户端原型）。软渲染无 backdrop-blur，玻璃拟态用
+// 半透明实色层近似；不引入 std-widgets（其默认浅色样式与深色主题冲突），全用内置元素 +
+// 自定义控件，保证深色 token 完全可控。
+//
+// 单窗口承载多态：
+//   1. 空闲态：居中 420 卡片（Header + 设备卡 + 连接卡 + 最近连接）。
+//   2. 被控提示条（being_controlled 时顶部常驻）。
+//   3. 连接中遮罩（connecting，主控等待对端授权）。
+//   4. 授权弹窗（auth_pending）。
+//   5. 主控画面态（remote_active：贴帧铺满 + 悬浮工具条 + 键鼠捕获）。
+//
+// 跨线程更新约束：网络/解码线程禁止直接 set_xxx，一律 invoke_from_event_loop + Weak（见 main.rs）。
+
+// ── 深色 token（对齐 v0 globals.css .dark 色板）──
+global Theme {
+    out property <color> bg: #0a0a0b;            // 深空背景
+    out property <color> card: #131316;          // 卡片
+    out property <color> card-border: #ffffff14; // 卡片描边（白 8%）
+    out property <color> inset: #ffffff0a;        // 内嵌输入/值框底
+    out property <color> muted: #18181b;          // 次级面
+    out property <color> fg: #f4f4f5;             // 主文本
+    out property <color> fg-muted: #9b9ba3;       // 次级文本
+    out property <color> primary: #3b82f6;        // 主蓝
+    out property <color> primary-hover: #5b9bff;
+    out property <color> emerald: #10b981;        // 在线绿
+    out property <color> danger: #ef4444;         // 告警红
+    out property <color> danger-hover: #f15a5a;
+    out property <color> amber: #f0b86e;          // 被控提示
+}
+
+// 一条最近连接（Rust 侧 build 后 set_history）。
+struct HistoryItem {
+    raw_id: string,   // 纯数字 id（回填 target_id 用）
+    label: string,    // 分组展示 "419 027 558"
+    sub: string,      // 相对时间 "2 分钟前"
+}
+
+// ── 通用控件 ───────────────────────────────────────────────
+
+// 卡片容器
+component Card inherits Rectangle {
+    border-radius: 14px;
+    background: Theme.card;
+    border-width: 1px;
+    border-color: Theme.card-border;
+}
+
+// 区段小标题（圆点 + 文字）
+component SectionHeader inherits HorizontalLayout {
+    in property <string> label;
+    in property <color> dot: Theme.emerald;
+    spacing: 8px;
+    Rectangle {
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: root.dot;
+    }
+    Text {
+        text: root.label;
+        color: Theme.fg-muted;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 1.5px;
+        vertical-alignment: center;
+    }
+    Rectangle { } // 右侧留白撑开
+}
+
+// 幽灵小按钮（复制 / 换）
+component GhostButton inherits Rectangle {
+    in property <string> label;
+    callback clicked;
+    border-radius: 6px;
+    background: ta.has-hover ? #ffffff14 : transparent;
+    animate background { duration: 120ms; }
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        Text {
+            text: root.label;
+            color: ta.has-hover ? Theme.fg : Theme.fg-muted;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// 主操作按钮
+component PrimaryButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 42px;
+    border-radius: 9px;
+    background: !root.enabled ? #25303f
+        : (ta.has-hover ? Theme.primary-hover : Theme.primary);
+    animate background { duration: 120ms; }
+    Text {
+        text: root.label;
+        color: root.enabled ? white : Theme.fg-muted;
+        font-size: 15px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// 危险按钮（断开）
+component DangerButton inherits Rectangle {
+    in property <string> label;
+    callback clicked;
+    height: 30px;
+    border-radius: 8px;
+    background: ta.has-hover ? Theme.danger-hover : Theme.danger;
+    animate background { duration: 120ms; }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        Text {
+            text: root.label;
+            color: white;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// 带占位符的输入框（自定义，避开 std-widgets 浅色样式）
+component FieldInput inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text;
+    in property <bool> password: false;
+    callback accepted;
+    height: 44px;
+    border-radius: 9px;
+    background: Theme.inset;
+    border-width: 1px;
+    border-color: ti.has-focus ? Theme.primary : Theme.card-border;
+    animate border-color { duration: 120ms; }
+    HorizontalLayout {
+        padding-left: 13px;
+        padding-right: 13px;
+        ti := TextInput {
+            text <=> root.text;
+            color: Theme.fg;
+            font-size: 15px;
+            font-family: "monospace";
+            letter-spacing: 1px;
+            vertical-alignment: center;
+            single-line: true;
+            input-type: root.password ? InputType.password : InputType.text;
+            accepted => {
+                root.accepted();
+            }
+        }
+    }
+    // 占位符：空文本时显示，非交互（点击穿透到 TextInput）
+    if root.text == "": Text {
+        x: 13px;
+        height: 100%;
+        text: root.placeholder;
+        color: Theme.fg-muted;
+        font-size: 15px;
+        vertical-alignment: center;
+    }
+}
+
+// 一行「值框」：小标题 + 大号等宽值 + 右侧动作
+component ValueRow inherits Rectangle {
+    in property <string> caption;
+    in property <string> value;
+    in property <color> value-color: Theme.fg;
+    border-radius: 10px;
+    background: Theme.inset;
+    border-width: 1px;
+    border-color: Theme.card-border;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 3px;
+        Text {
+            text: root.caption;
+            color: Theme.fg-muted;
+            font-size: 11px;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.value;
+                color: root.value-color;
+                font-size: 24px;
+                font-weight: 700;
+                font-family: "monospace";
+                letter-spacing: 3px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            @children // 右侧动作按钮
+        }
+    }
+}
+
+// 一条最近连接行
+component HistoryRow inherits Rectangle {
+    in property <string> label;
+    in property <string> sub;
+    in property <string> raw;
+    callback chosen(string);
+    height: 50px;
+    border-radius: 10px;
+    background: ta.has-hover ? #ffffff0a : transparent;
+    animate background { duration: 120ms; }
+    HorizontalLayout {
+        padding: 8px;
+        spacing: 11px;
+        Rectangle {
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
+            background: Theme.muted;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            Text {
+                text: "›_";
+                color: Theme.fg-muted;
+                font-size: 13px;
+                font-family: "monospace";
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.label;
+                color: Theme.fg;
+                font-size: 13px;
+                font-weight: 500;
+                font-family: "monospace";
+                letter-spacing: 1px;
+            }
+            Text {
+                text: root.sub;
+                color: Theme.fg-muted;
+                font-size: 11px;
+            }
+        }
+        Rectangle { }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.chosen(root.raw);
+        }
+    }
+}
+
+// ── 主窗口 ─────────────────────────────────────────────────
+export component AppWindow inherits Window {
+    title: "OhMyDesk 客户端";
+    // 默认紧凑小窗（贴合原型卡片）；进入主控画面态由 Rust 动态放大到 ~1280×820。
+    preferred-width: 460px;
+    preferred-height: 620px;
+    min-width: 420px;
+    min-height: 520px;
+    background: Theme.bg;
+    default-font-size: 14px;
+
+    // ── 被控端状态 ──
+    in property <string> self_id;                 // 本机注册 id（已分组展示）
+    in property <string> self_password;           // 本机临时密码（展示给授权用）
+    in property <bool> connected: false;          // 是否已连上服务器（Header 在线灯）
+    in property <bool> being_controlled: false;   // 是否正在被远程
+    in property <string> peer_name;               // 控制方名称（提示条用）
+
+    // 授权弹窗
+    in property <bool> auth_pending: false;
+    in property <string> auth_requester;
+    callback auth_accept();
+    callback auth_reject();
+
+    // ── 主控端状态（模式 B：client→client 发起）──
+    in property <bool> remote_active: false;      // 已进入主控画面态
+    in-out property <bool> connecting: false;     // 发起后等待对端授权（遮罩）；Slint try-start 也写它
+    in-out property <string> target_id;
+    in-out property <string> target_password;
+    in property <string> remote_status;           // 失败提示（"密码错误"等）
+    in-out property <image> frame;
+    in property <int> frame_w: 1;
+    in property <int> frame_h: 1;
+    callback connect_b();
+    callback disconnect_remote();
+
+    // 设备卡动作
+    callback copy_text(string);                   // 复制 ID/密码到剪贴板
+    callback refresh_password();                  // 刷新临时密码
+
+    // 最近连接
+    in property <[HistoryItem]> history: [];
+
+    // 主控画面区键鼠回调（坐标已换算为帧内像素）
+    callback on_pointer_move(int /*x*/, int /*y*/);
+    callback on_pointer_button(int /*x*/, int /*y*/, int /*btn 0左1中2右*/, bool /*down*/);
+    callback on_key(string /*code*/, bool /*down*/);
+
+    // ① 空闲态：被控提示条 + 居中卡片
+    if !root.remote_active: VerticalLayout {
+        // 被控提示条（常驻顶部，仅 being_controlled 时显示）
+        if root.being_controlled: Rectangle {
+            height: 42px;
+            background: #211a0d;
+            border-width: 1px;
+            border-color: #4a3a18;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 8px;
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 4px;
+                    background: Theme.amber;
+                }
+                Text {
+                    text: "此设备正在被 " + root.peer_name + " 远程控制";
+                    color: Theme.amber;
+                    font-size: 13px;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // 卡片区（可滚动：历史变多/窗口偏小时内容不被裁切；窗口紧凑贴合原型）
+        Rectangle {
+            vertical-stretch: 1;
+            Flickable {
+                width: 100%;
+                height: 100%;
+                viewport-width: self.width;
+                viewport-height: card-col.preferred-height;
+                HorizontalLayout {
+                    alignment: center;
+                    card-col := VerticalLayout {
+                        width: 420px;
+                        padding: 10px;
+                        spacing: 14px;
+
+                        // ── Header ──
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Rectangle {
+                                width: 34px;
+                                height: 34px;
+                                border-radius: 9px;
+                                background: #3b82f626;
+                                border-width: 1px;
+                                border-color: #3b82f640;
+                                Text {
+                                    text: "S";
+                                    color: Theme.primary;
+                                    font-size: 18px;
+                                    font-weight: 800;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 1px;
+                                Text {
+                                    text: "OhMyDesk";
+                                    color: Theme.fg;
+                                    font-size: 15px;
+                                    font-weight: 700;
+                                }
+                                Text {
+                                    text: "信创内网安全管控客户端";
+                                    color: Theme.fg-muted;
+                                    font-size: 11px;
+                                }
+                            }
+                            Rectangle { } // 撑开
+                            // 在线胶囊
+                            Rectangle {
+                                border-radius: 12px;
+                                background: Theme.muted;
+                                border-width: 1px;
+                                border-color: Theme.card-border;
+                                HorizontalLayout {
+                                    padding-left: 9px;
+                                    padding-right: 11px;
+                                    padding-top: 5px;
+                                    padding-bottom: 5px;
+                                    spacing: 6px;
+                                    Rectangle {
+                                        width: 7px;
+                                        height: 7px;
+                                        border-radius: 4px;
+                                        background: root.connected ? Theme.emerald : Theme.fg-muted;
+                                    }
+                                    Text {
+                                        text: root.connected ? "在线" : "连接中";
+                                        color: root.connected ? Theme.fg : Theme.fg-muted;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── 设备卡（本机 ID + 临时密码）──
+                        Card {
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 12px;
+                                SectionHeader {
+                                    label: "您的设备";
+                                    dot: Theme.emerald;
+                                }
+                                ValueRow {
+                                    caption: "本机 ID";
+                                    value: root.self_id;
+                                    value-color: Theme.fg;
+                                    GhostButton {
+                                        label: "复制";
+                                        clicked => {
+                                            root.copy_text(root.self_id);
+                                        }
+                                    }
+                                }
+                                ValueRow {
+                                    caption: "临时密码";
+                                    value: root.self_password;
+                                    value-color: Theme.emerald;
+                                    GhostButton {
+                                        label: "换";
+                                        clicked => {
+                                            root.refresh_password();
+                                        }
+                                    }
+                                    GhostButton {
+                                        label: "复制";
+                                        clicked => {
+                                            root.copy_text(root.self_password);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── 连接卡（发起远控）──
+                        Card {
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 10px;
+                                SectionHeader {
+                                    label: "连接到伙伴";
+                                    dot: Theme.primary;
+                                }
+                                FieldInput {
+                                    placeholder: "伙伴 ID";
+                                    text <=> root.target_id;
+                                    accepted => {
+                                        root.try-start();
+                                    }
+                                }
+                                FieldInput {
+                                    placeholder: "密码";
+                                    password: true;
+                                    text <=> root.target_password;
+                                    accepted => {
+                                        root.try-start();
+                                    }
+                                }
+                                PrimaryButton {
+                                    label: "开始控制";
+                                    enabled: root.target_id != "" && root.target_password != "";
+                                    clicked => {
+                                        root.try-start();
+                                    }
+                                }
+                                if root.remote_status != "": Text {
+                                    text: root.remote_status;
+                                    color: Theme.danger;
+                                    font-size: 12px;
+                                }
+                            }
+                        }
+
+                        // ── 最近连接 ──
+                        VerticalLayout {
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            spacing: 2px;
+                            Text {
+                                text: "最近连接";
+                                color: Theme.fg-muted;
+                                font-size: 11px;
+                                font-weight: 600;
+                                letter-spacing: 1.5px;
+                            }
+                            Rectangle { height: 4px; }
+                            if root.history.length == 0: Text {
+                                text: "暂无最近连接记录";
+                                color: Theme.fg-muted;
+                                font-size: 12px;
+                            }
+                            for it in root.history: HistoryRow {
+                                label: it.label;
+                                sub: it.sub;
+                                raw: it.raw_id;
+                                chosen(r) => {
+                                    root.target_id = r;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ⑤ 主控画面态：贴帧铺满 + 悬浮工具条 + 键鼠捕获
+    if root.remote_active: Rectangle {
+        background: #050506;
+        property <float> frame_scale: root.frame_w <= 1 || root.frame_h <= 1 ? 1 : (
+            (self.width / (root.frame_w * 1px)) < (self.height / (root.frame_h * 1px))
+                ? ((self.width / (root.frame_w * 1px)) < 1 ? (self.width / (root.frame_w * 1px)) : 1)
+                : ((self.height / (root.frame_h * 1px)) < 1 ? (self.height / (root.frame_h * 1px)) : 1));
+        property <length> frame_display_w: root.frame_w <= 1 ? self.width : (root.frame_w * 1px * self.frame_scale);
+        property <length> frame_display_h: root.frame_h <= 1 ? self.height : (root.frame_h * 1px * self.frame_scale);
+        property <length> frame_display_x: (self.width - self.frame_display_w) / 2;
+        property <length> frame_display_y: (self.height - self.frame_display_h) / 2;
+
+        // 首帧到达前的占位（frame_w 默认 1）
+        if root.frame_w <= 1: VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 52px;
+                            height: 52px;
+                            border-radius: 26px;
+                            background: Theme.muted;
+                            border-width: 1px;
+                            border-color: Theme.card-border;
+                            Text {
+                                text: "▣";
+                                color: Theme.fg-muted;
+                                font-size: 20px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Text {
+                        text: "远程桌面已就绪";
+                        color: Theme.fg;
+                        font-size: 14px;
+                        font-weight: 500;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "正在接收对端画面…";
+                        color: Theme.fg-muted;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // 贴帧
+        frame_img := Image {
+            source: root.frame;
+            image-fit: fill;
+            x: parent.frame_display_x;
+            y: parent.frame_display_y;
+            width: parent.frame_display_w;
+            height: parent.frame_display_h;
+        }
+
+        // 键鼠捕获（只覆盖实际画面矩形，避免 contain 黑边导致坐标偏移）
+        ta := TouchArea {
+            x: parent.frame_display_x;
+            y: parent.frame_display_y;
+            width: parent.frame_display_w;
+            height: parent.frame_display_h;
+            mouse-cursor: pointer;
+            moved => {
+                root.on_pointer_move(
+                    (self.mouse-x / self.width * root.frame_w * 1px) / 1px,
+                    (self.mouse-y / self.height * root.frame_h * 1px) / 1px);
+            }
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down || ev.kind == PointerEventKind.up) {
+                    root.on_pointer_button(
+                        (self.mouse-x / self.width * root.frame_w * 1px) / 1px,
+                        (self.mouse-y / self.height * root.frame_h * 1px) / 1px,
+                        ev.button == PointerEventButton.left ? 0
+                            : ev.button == PointerEventButton.middle ? 1 : 2,
+                        ev.kind == PointerEventKind.down);
+                }
+            }
+        }
+
+        // 悬浮工具条
+        Rectangle {
+            y: 0px;
+            height: 44px;
+            width: 100%;
+            background: #0b0b0ddd;
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 10px;
+                spacing: 10px;
+                // 左：状态
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.emerald;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 0px;
+                    Text {
+                        text: root.target_id;
+                        color: Theme.fg;
+                        font-size: 13px;
+                        font-weight: 500;
+                        font-family: "monospace";
+                    }
+                    Text {
+                        text: "已加密 · 主控中";
+                        color: Theme.emerald;
+                        font-size: 10px;
+                    }
+                }
+                Rectangle { } // 撑开
+                // 右：断开
+                VerticalLayout {
+                    alignment: center;
+                    DangerButton {
+                        label: "断开";
+                        clicked => {
+                            root.disconnect_remote();
+                        }
+                    }
+                }
+            }
+        }
+
+        // 键盘焦点捕获
+        fs := FocusScope {
+            width: 0px;
+            key-pressed(ev) => {
+                root.on_key(ev.text, true);
+                accept
+            }
+            key-released(ev) => {
+                root.on_key(ev.text, false);
+                accept
+            }
+        }
+    }
+
+    // ③ 连接中遮罩（主控等待对端授权）
+    if root.connecting: Rectangle {
+        background: #0a0a0bdd;
+        TouchArea { } // 吃掉背景点击
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 12px;
+                    HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 54px;
+                            height: 54px;
+                            border-radius: 27px;
+                            background: #3b82f61f;
+                            border-width: 2px;
+                            border-color: #3b82f655;
+                            Text {
+                                text: "↻";
+                                color: Theme.primary;
+                                font-size: 24px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Text {
+                        text: "正在建立加密通道，等待对端授权…";
+                        color: Theme.fg;
+                        font-size: 14px;
+                        font-weight: 500;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "伙伴 " + root.target_id;
+                        color: Theme.fg-muted;
+                        font-size: 12px;
+                        font-family: "monospace";
+                        horizontal-alignment: center;
+                    }
+                    // 进度三段（静态，软渲染不做无限动画）
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        Rectangle { width: 32px; height: 4px; border-radius: 2px; background: Theme.primary; }
+                        Rectangle { width: 32px; height: 4px; border-radius: 2px; background: Theme.primary; }
+                        Rectangle { width: 32px; height: 4px; border-radius: 2px; background: Theme.muted; }
+                    }
+                }
+            }
+        }
+    }
+
+    // ④ 授权弹窗（最顶层覆盖）
+    if root.auth_pending: Rectangle {
+        background: #000000bb;
+        TouchArea { } // 吃掉背景点击
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+                Card {
+                    width: 380px;
+                    background: #18181c;
+                    VerticalLayout {
+                        padding: 22px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 44px;
+                                height: 44px;
+                                border-radius: 22px;
+                                background: #3b82f61f;
+                                border-width: 1px;
+                                border-color: #3b82f655;
+                                Text {
+                                    text: "?";
+                                    color: Theme.primary;
+                                    font-size: 22px;
+                                    font-weight: 800;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Rectangle { height: 4px; }
+                        Text {
+                            text: "远程控制授权请求";
+                            color: Theme.fg;
+                            font-size: 16px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: root.auth_requester + " 请求远程控制本机";
+                            color: Theme.fg-muted;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Rectangle { height: 8px; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            // 拒绝
+                            Rectangle {
+                                height: 42px;
+                                horizontal-stretch: 1;
+                                border-radius: 9px;
+                                background: rej.has-hover ? Theme.muted : Theme.inset;
+                                border-width: 1px;
+                                border-color: Theme.card-border;
+                                Text {
+                                    text: "拒绝";
+                                    color: Theme.fg;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                rej := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.auth_reject();
+                                    }
+                                }
+                            }
+                            // 同意
+                            PrimaryButton {
+                                label: "同意";
+                                horizontal-stretch: 1;
+                                clicked => {
+                                    root.auth_accept();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 发起远控：校验非空 → 置连接中 → 触发回调（Slint 内联，避免空请求）
+    function try-start() {
+        if (root.target_id != "" && root.target_password != "") {
+            root.connecting = true;
+            root.connect_b();
+        }
+    }
+}
