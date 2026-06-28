@@ -1,9 +1,11 @@
 import {
   Camera,
+  FileUp,
   KeyboardIcon,
   LogOut,
   PlugZap,
   ShieldX,
+  Terminal,
   type LucideIcon,
 } from "lucide-react";
 
@@ -33,6 +35,8 @@ const KIND_ICON: Record<AuditType, LucideIcon> = {
   auth_fail: ShieldX,
   reject: ShieldX,
   disconnect: LogOut,
+  command: Terminal,
+  file_transfer: FileUp,
 };
 
 export function AuditTimelineSheet({ record, open, onOpenChange }: Props) {
