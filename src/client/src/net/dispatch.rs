@@ -86,6 +86,10 @@ pub(super) async fn handle_downlink(
         Message::Frame { data, w, h, .. } => {
             let _ = to_ui.send(ToUi::Frame { data, w, h });
         }
+        // 主控端收到被控端会话内提示（如 Wayland 无法截屏）→ 复用拒绝态 UI 展示原因
+        Message::RemoteNotice { text, .. } => {
+            let _ = to_ui.send(ToUi::RemoteRejected { reason: text });
+        }
         // 被控端收到键鼠 → 经旁路交 main 注入侧（注入依赖 X11，不在 net 任务里执行）
         Message::Input { session_id, event } => {
             let ctx = session.lock().await;
@@ -282,6 +286,12 @@ pub(super) async fn handle_uplink(
                 h,
                 seq,
             },
+        },
+        FromUi::Notice { session_id, text } => Envelope {
+            from: self_id.to_string(),
+            to: None, // server 按 session_id 路由给主控
+            ts: now(),
+            payload: Message::RemoteNotice { session_id, text },
         },
         FromUi::Disconnect { session_id } => {
             session.lock().await.controlling = None;

@@ -199,6 +199,12 @@ pub enum Message {
         session_id: String,
         event: InputEvent,
     },
+    /// 被控→主控：会话内提示（如 Wayland 无法截屏）。主控端在等待画面处展示，
+    /// 把「无限等待第一帧」变成可操作的明确提示。按 session 对端路由（同 Frame）。
+    RemoteNotice {
+        session_id: String,
+        text: String,
+    },
     ScreenshotReq {
         req_id: String,
     },
