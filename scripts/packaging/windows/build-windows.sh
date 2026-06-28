@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 从 Linux/WSL 交叉编译 OhMyDesk 客户端为 Windows exe（x86_64-pc-windows-gnu）。
-# 产出 dist-windows/：ohmydesk-client.exe + 所需 mingw 运行时 DLL + 一键启动 .bat。
+# 产出 dist/windows/：ohmydesk-client.exe + 所需 mingw 运行时 DLL + 一键启动 .bat。
 #
 # 用法：
 #   bash packaging/windows/build-windows.sh                 # 默认连 wss://rc.guoziweb.com/ws
@@ -18,9 +18,9 @@ OBJDUMP="x86_64-w64-mingw32-objdump"
 SERVER_URL="${OHMYDESK_SERVER:-wss://rc.guoziweb.com/ws}"
 
 # 仓库根 = 本脚本所在目录的上两级
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT"
-DIST="$ROOT/dist-windows"
+DIST="$ROOT/dist/windows"
 
 echo "==> 1/5 前置自检"
 command -v cargo >/dev/null || { echo "缺 cargo，先装 Rust 工具链"; exit 1; }
@@ -42,7 +42,7 @@ RUSTFLAGS="${RUSTFLAGS:-} -C link-args=-static" \
 EXE_SRC="$ROOT/target/${TARGET}/release/client.exe"
 [ -f "$EXE_SRC" ] || { echo "未找到产物 $EXE_SRC" >&2; exit 1; }
 
-echo "==> 3/5 收拢产物到 dist-windows/"
+echo "==> 3/5 收拢产物到 dist/windows/"
 rm -rf "$DIST"
 mkdir -p "$DIST"
 cp "$EXE_SRC" "$DIST/ohmydesk-client.exe"
@@ -85,11 +85,11 @@ echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Windows 客户端构建完成"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  产物目录：dist-windows/"
+echo "  产物目录：dist/windows/"
 echo "    ohmydesk-client.exe   ($SIZE)"
 echo "    连接服务器.bat        （双击启动，已内嵌 $SERVER_URL）"
 ls "$DIST"/*.dll >/dev/null 2>&1 && echo "    *.dll                 （mingw 运行时，需与 exe 同目录）"
 echo
-echo "  用法：把整个 dist-windows/ 拷到 Windows 机器 → 双击「连接服务器.bat」"
+echo "  用法：把整个 dist/windows/ 拷到 Windows 机器 → 双击「连接服务器.bat」"
 echo "  即注册为被控端，可在管理后台远控该 Windows。"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

@@ -6,7 +6,7 @@ Cargo.lock.bak
 # ts-rs：#[ts(export)] 的默认产物（冗余，真实类型导出到 src/admin-web/src/lib/types/）
 src/protocol/bindings/
 
-# Node / 前端
+# Node / 前端构建产物
 node_modules/
 dist/
 .vite/
@@ -23,11 +23,8 @@ credentials.*
 *.log
 .DS_Store
 
-# deb 打包产物
-dist-deb/
-
-# Windows 交叉编译产物
-dist-windows/
+# 发布产物（dist/linux dist/windows dist/macos，cargo/packaging 脚本生成）
+/dist/
 
 # SQLite 数据文件（运行时生成）
 ohmydesk.db
@@ -36,11 +33,9 @@ ohmydesk.db-*
 *.db-wal
 *.db-shm
 
-# macOS 交叉编译产物
-dist-macos/
-
-# 开发对话记录与 v0 设计稿原型（不开源）
+# 开发对话记录（不开源）
 chat/
 chat*.txt
-v0/
-v0_client/
+
+# v0 设计稿原型（已提炼到 src/admin-web，原型归档在 proto/ 不开源）
+proto/
