@@ -15,6 +15,11 @@ use enigo::{
 };
 use protocol::InputEvent;
 
+/// 修饰键位掩码（用于组合键判定，仅含会改变按键语义的非 Shift 修饰键）。
+const MOD_CTRL: u8 = 1;
+const MOD_ALT: u8 = 2;
+const MOD_META: u8 = 4;
+
 /// 键鼠注入器：持有 enigo + 被控真实屏尺寸 + 当前帧尺寸（用于坐标换算）。
 pub struct Injector {
     enigo: Enigo,
@@ -22,6 +27,8 @@ pub struct Injector {
     real_h: u32,
     frame_w: u32,
     frame_h: u32,
+    /// 当前按住的非 Shift 修饰键（Ctrl/Alt/Meta）位掩码，从事件流推断，用于组合键注入。
+    mods_held: u8,
 }
 
 impl Injector {
@@ -33,6 +40,7 @@ impl Injector {
             real_h,
             frame_w: frame_w.max(1),
             frame_h: frame_h.max(1),
+            mods_held: 0,
         })
     }
 
@@ -57,7 +65,15 @@ impl Injector {
                 self.enigo.button(b, if *down { Press } else { Release })?;
             }
             InputEvent::Key { code, down } => {
-                if let Some(key) = code_to_key(code) {
+                // 先更新修饰键按下态（Ctrl/Alt/Meta），供组合键判定。
+                if let Some(m) = modifier_bit(code) {
+                    if *down {
+                        self.mods_held |= m;
+                    } else {
+                        self.mods_held &= !m;
+                    }
+                }
+                if let Some(key) = resolve_key_with_mods(code, self.mods_held) {
                     self.enigo
                         .key(key, if *down { Press } else { Release })?;
                 }
@@ -164,9 +180,63 @@ fn code_char_fallback(code: &str) -> Option<Key> {
     Some(Key::Unicode(c))
 }
 
+/// 把修饰键标识映射为 [`MOD_CTRL`]/[`MOD_ALT`]/[`MOD_META`] 位。Shift 不计入：
+/// Shift+字母经 `.key` 已解析成大写/上档字符，Unicode 注入即正确，无需扫描码组合。
+fn modifier_bit(code: &str) -> Option<u8> {
+    match code {
+        "ControlLeft" | "ControlRight" | "Control" => Some(MOD_CTRL),
+        "AltLeft" | "AltRight" | "Alt" | "AltGraph" => Some(MOD_ALT),
+        "MetaLeft" | "MetaRight" | "OSLeft" | "OSRight" | "Meta" => Some(MOD_META),
+        _ => None,
+    }
+}
+
+/// 在 [`code_to_key`] 基础上叠加「组合键」修正。
+///
+/// 根因（Windows）：字母/数字默认走 `Key::Unicode`，其底层 `KEYEVENTF_UNICODE` 直接注入字符、
+/// **绕过键盘修饰键状态**，故 Ctrl+C / Ctrl+V 之类组合键失效（只输入字面 'c'/'v'）。
+/// 修正：当 Ctrl/Alt/Meta 处于按下态且按键是单个字母/数字时，改用 Windows VK 扫描码变体
+/// （`Key::A`/`Key::Num1`…），让 OS 把修饰键与该键组合。
+///
+/// 非 Windows（信创 X11）：`Key::Unicode` 在 X 服务层本就与真实按下的修饰键组合，无此问题，
+/// 故保持原映射不变（`mods_held` 不参与）。
+pub fn resolve_key_with_mods(code: &str, mods_held: u8) -> Option<Key> {
+    #[cfg(target_os = "windows")]
+    {
+        if mods_held != 0 && code.chars().count() == 1 {
+            let c = code.chars().next().unwrap();
+            if c.is_ascii_alphanumeric() {
+                if let Some(k) = vk_key_for_char(c) {
+                    return Some(k);
+                }
+            }
+        }
+    }
+    let _ = mods_held; // 非 Windows 不使用，避免未用告警
+    code_to_key(code)
+}
+
+/// 字母/数字 → Windows VK 扫描码 `Key` 变体（这些变体仅在 Windows 存在，故 cfg 门控）。
+#[cfg(target_os = "windows")]
+fn vk_key_for_char(c: char) -> Option<Key> {
+    let key = match c.to_ascii_lowercase() {
+        'a' => Key::A, 'b' => Key::B, 'c' => Key::C, 'd' => Key::D, 'e' => Key::E,
+        'f' => Key::F, 'g' => Key::G, 'h' => Key::H, 'i' => Key::I, 'j' => Key::J,
+        'k' => Key::K, 'l' => Key::L, 'm' => Key::M, 'n' => Key::N, 'o' => Key::O,
+        'p' => Key::P, 'q' => Key::Q, 'r' => Key::R, 's' => Key::S, 't' => Key::T,
+        'u' => Key::U, 'v' => Key::V, 'w' => Key::W, 'x' => Key::X, 'y' => Key::Y,
+        'z' => Key::Z,
+        '0' => Key::Num0, '1' => Key::Num1, '2' => Key::Num2, '3' => Key::Num3,
+        '4' => Key::Num4, '5' => Key::Num5, '6' => Key::Num6, '7' => Key::Num7,
+        '8' => Key::Num8, '9' => Key::Num9,
+        _ => return None,
+    };
+    Some(key)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{code_to_key, Key};
+    use super::{code_to_key, modifier_bit, resolve_key_with_mods, Key, MOD_CTRL, MOD_ALT, MOD_META};
     use crate::geom::map_frame_to_real;
 
     #[test]
@@ -210,6 +280,41 @@ mod tests {
     fn 键码_标点() {
         assert_eq!(code_to_key("Slash"), Some(Key::Unicode('/')));
         assert_eq!(code_to_key("Period"), Some(Key::Unicode('.')));
+    }
+
+    #[test]
+    fn 修饰键_位识别() {
+        assert_eq!(modifier_bit("Control"), Some(MOD_CTRL));
+        assert_eq!(modifier_bit("ControlLeft"), Some(MOD_CTRL));
+        assert_eq!(modifier_bit("AltGraph"), Some(MOD_ALT));
+        assert_eq!(modifier_bit("Meta"), Some(MOD_META));
+        // 非修饰键 / Shift（Shift 不计入组合判定）返回 None
+        assert_eq!(modifier_bit("ShiftLeft"), None);
+        assert_eq!(modifier_bit("KeyA"), None);
+        assert_eq!(modifier_bit("c"), None);
+    }
+
+    // Windows：组合键（Ctrl/Alt/Meta 按下）下字母/数字走 VK 扫描码，与修饰键组合；
+    // 无修饰键时仍走 Unicode（跨布局/符号正确）。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_组合键走扫描码() {
+        assert_eq!(resolve_key_with_mods("c", MOD_CTRL), Some(Key::C));
+        assert_eq!(resolve_key_with_mods("v", MOD_CTRL), Some(Key::V));
+        assert_eq!(resolve_key_with_mods("1", MOD_CTRL), Some(Key::Num1));
+        // 无修饰键：仍是 Unicode
+        assert_eq!(resolve_key_with_mods("c", 0), Some(Key::Unicode('c')));
+        // 具名键不受影响
+        assert_eq!(resolve_key_with_mods("Backspace", MOD_CTRL), Some(Key::Backspace));
+    }
+
+    // 非 Windows（信创 X11）：Unicode 本就与修饰键组合，mods_held 不改变解析结果。
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn 非windows_组合键不改变映射() {
+        assert_eq!(resolve_key_with_mods("c", MOD_CTRL), Some(Key::Unicode('c')));
+        assert_eq!(resolve_key_with_mods("c", 0), Some(Key::Unicode('c')));
+        assert_eq!(resolve_key_with_mods("Backspace", MOD_CTRL), Some(Key::Backspace));
     }
 
     // 注入器构造依赖 X11 DISPLAY，CI/无头环境不可用；此处只单测坐标换算逻辑（与 Injector::to_real 同源）。

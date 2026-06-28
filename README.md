@@ -34,15 +34,59 @@
 - **统一信封**：`Envelope { from, to, ts, payload }`，`payload` 内部 tag `type` 判别消息。
 - **单一内网 URL**：Server 同端口（:8765）同时提供 `/`(UI) + `/api/*` + `/ws`。
 
-## 目录
+## 目录结构
 
 ```
-src/protocol/   协议契约（三端单一事实源；ts-rs 导出 admin 类型）
-src/server/     Relay 服务端（axum WS 中转 + SQLite 审计 + 静态托管）
-src/client/     Agent 客户端（Slint UI + 采集/网络/截屏/注入）
-src/admin-web/  管理 Web（React + Vite，五页）
-src/mcp/        MCP Server（4 只读 tool，真实 HTTP）
-scripts/db/     SQLite 建表 DDL（schema.sqlite.sql；MySQL 版留作参考）
+OhMyDesk/
+├── Cargo.toml          # Workspace 根：声明成员、公共依赖、release 优化参数
+├── Cargo.lock          # 依赖版本锁（可重现构建，二进制项目必须提交）
+├── Dockerfile          # 服务端容器化部署
+│
+├── src/                # 全部源代码
+│   ├── protocol/       # 协议契约（三端单一事实源，ts-rs 导出 TS 类型）
+│   │
+│   ├── server/         # Relay 服务端（Rust + axum + tokio）
+│   │   ├── hub.rs      #   WS 连接池 + 消息路由 + 广播
+│   │   ├── registry.rs #   内存终端注册表（在线/离线检测）
+│   │   ├── session.rs  #   会话鉴权（A/B 模式）+ 生命周期
+│   │   ├── audit.rs    #   SQLite 文本审计落库
+│   │   ├── auth.rs     #   JWT HS256 签发验证
+│   │   └── http.rs     #   /api/* 只读 HTTP（供 MCP + 管理端）
+│   │
+│   ├── client/         # Agent 客户端（Rust + Slint 软渲染桌面）
+│   │   ├── asset.rs    #   sysinfo 硬件采集 → 信创标识推断
+│   │   ├── net.rs      #   WS 反连 + 注册 + 心跳
+│   │   ├── capture.rs  #   xcap 截屏 → JPEG → base64
+│   │   └── inject.rs   #   enigo 键鼠注入（X11 锁定）
+│   │
+│   ├── admin-web/      # 管理端 Web（React + Vite + Tailwind + shadcn/ui）
+│   │   └── src/pages/
+│   │       ├── Assets.tsx     # M1 终端资产列表 + 信创标识
+│   │       ├── Grid.tsx       # M3 批量截图墙
+│   │       ├── Remote.tsx     # M2 远程控制画面
+│   │       ├── Audit.tsx      # M4 会话审计列表
+│   │       └── Assistant.tsx  # M5 AI 自然语言问答
+│   │
+│   └── mcp/            # MCP Server（TypeScript + @modelcontextprotocol/sdk）
+│       └── index.ts    #   5 只读工具：endpoints/sessions/audit/screenshots
+│
+├── scripts/
+│   ├── db/             # SQLite 建表脚本（schema.sqlite.sql）
+│   ├── deploy/         # systemd 守护配置
+│   ├── probes/         # 集成测试探针（Node.js，验证 WS 闭环）
+│   └── packaging/
+│       ├── deb/        # Linux/信创 .deb 打包脚本
+│       ├── windows/    # Windows exe 交叉编译脚本
+│       └── download/   # 下载页 + Linux 便携启动包
+│
+├── dist/               # 发布产物（脚本生成，不入库）
+│   ├── linux/          #   .deb 安装包（amd64 / arm64 / loong64）
+│   ├── windows/        #   ohmydesk-client.exe + 连接服务器.bat
+│   └── macos/          #   ohmydesk-client tar.gz（arm64 / x86_64）
+│
+├── docs/               # 产品文档（立项/需求/设计/演示/用户手册）
+├── assets/             # 品牌素材：logo、信创图标
+└── proto/              # UI 设计原型（v0 生成，已提炼到 src/admin-web，不开源）
 ```
 
 ## 环境要求
@@ -79,8 +123,8 @@ cargo run -p server          # 监听 0.0.0.0:8765，审计落 ./ohmydesk.db
 - **客户端 Agent**（需 X11 显示）——**推荐 .deb 安装**（终端用户无需懂命令行）：
   ```bash
   # 构建 deb（先 cargo build -p client --release）
-  bash packaging/deb/build-deb.sh        # 产出 dist-deb/ohmydesk-client_*.deb
-  sudo dpkg -i dist-deb/ohmydesk-client_*.deb   # 缺依赖：sudo apt-get -f install
+  bash scripts/packaging/deb/build-deb.sh        # 产出 dist/linux/ohmydesk-client_*.deb
+  sudo dpkg -i dist/linux/ohmydesk-client_*.deb   # 缺依赖：sudo apt-get -f install
   # 默认连接 wss://rc.guoziweb.com/ws；内网部署可编辑 /etc/ohmydesk/client.env
   ohmydesk-client-launch                 # 或 应用菜单「OhMyDesk 终端」
   ```
@@ -88,12 +132,12 @@ cargo run -p server          # 监听 0.0.0.0:8765，审计落 ./ohmydesk.db
   起 ≥2 个不同名实例即可在管理端看到多台终端。
 - **Windows 被控端**（从 Linux/WSL 交叉编译出 exe，远控 Windows 终端）：
   ```bash
-  bash packaging/windows/build-windows.sh     # 产出 dist-windows/（独立 exe，无需装运行时）
+  bash scripts/packaging/windows/build-windows.sh     # 产出 dist/windows/（独立 exe，无需装运行时）
   ```
-  把整个 `dist-windows/` 拷到 Windows 机器 → 双击 `连接服务器.bat`（已内嵌 `wss://rc.guoziweb.com/ws`，
+  把整个 `dist/windows/` 拷到 Windows 机器 → 双击 `连接服务器.bat`（已内嵌 `wss://rc.guoziweb.com/ws`，
   可记事本改地址）→ 即注册为被控端，在管理后台远控该 Windows。Windows 真实截屏/键鼠注入开箱可用
   （xcap Windows Graphics Capture + enigo SendInput，无 WSLg 限制）。
-  自定义地址：`OHMYDESK_SERVER="wss://<域名>/ws" bash packaging/windows/build-windows.sh`。
+  自定义地址：`OHMYDESK_SERVER="wss://<域名>/ws" bash scripts/packaging/windows/build-windows.sh`。
 - **MCP Server**（stdio，供 Claude Desktop 等 MCP 客户端接入）：
   ```bash
   OHMYDESK_API_BASE="http://<服务器IP>:8765" \

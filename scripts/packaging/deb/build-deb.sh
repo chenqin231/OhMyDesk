@@ -3,7 +3,7 @@
 # 用法：先 `cargo build -p client --release`，再在仓库根执行 `bash packaging/deb/build-deb.sh`。
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$REPO_ROOT"
 
 PKG=ohmydesk-client
@@ -103,8 +103,8 @@ EOF
 chmod 755 "$STAGE/DEBIAN/postinst"
 
 # ── 打包 ────────────────────────────────────────────────────────────────────
-OUT="$REPO_ROOT/dist-deb/${PKG}_${VERSION}_${ARCH}.deb"
-install -d "$REPO_ROOT/dist-deb"
+OUT="$REPO_ROOT/dist/linux/${PKG}_${VERSION}_${ARCH}.deb"
+install -d "$REPO_ROOT/dist/linux"
 dpkg-deb --build --root-owner-group "$STAGE" "$OUT"
 
 echo ""
