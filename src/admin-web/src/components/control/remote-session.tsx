@@ -35,6 +35,7 @@ function MetaItem({ label, value }: { label: string; value: string }) {
 // O-2 裁决：删除会话录制标记 UI
 export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionProps) {
   const remoteFrame = useStore((s) => s.remoteFrame);
+  const remoteNotice = useStore((s) => s.remoteNotice);
   const remoteSessionId = useStore((s) => s.remoteSessionId);
   const sendEnvelope = useStore((s) => s.sendEnvelope);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -189,6 +190,13 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
               className="max-h-full max-w-full object-contain"
               draggable={false}
             />
+          ) : remoteNotice ? (
+            <div className="absolute inset-0 flex items-center justify-center bg-secondary px-8">
+              <div className="flex max-w-md items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning">
+                <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <span className="leading-relaxed">{remoteNotice}</span>
+              </div>
+            </div>
           ) : (
             <div className="absolute inset-0 flex items-center justify-center bg-secondary text-sm text-muted-foreground">
               等待第一帧…

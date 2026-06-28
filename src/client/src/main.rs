@@ -104,6 +104,15 @@ fn default_server_url() -> String {
 /// 会让 xcap 选 wayland 后端 panic（UnsupportedVersion），故进程级强制 X11：清 WAYLAND_DISPLAY +
 /// 标记 session 为 x11 + 软渲染兜底，让 xcap/winit 统一走 X11。真实信创 X11 机本无此变量。
 fn lock_x11_session() {
+    // 先记录“原本是 Wayland 会话”——下面会抹掉 WAYLAND_DISPLAY 强制 X11 后端，
+    // 但真实 Wayland 会话即便连到 Xwayland 也抓不到桌面，截屏线程据此明确回执主控端。
+    let is_wayland = std::env::var("WAYLAND_DISPLAY").map(|v| !v.is_empty()).unwrap_or(false)
+        || std::env::var("XDG_SESSION_TYPE")
+            .map(|v| v.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false);
+    if is_wayland {
+        std::env::set_var("OHMYDESK_WAYLAND", "1");
+    }
     std::env::remove_var("WAYLAND_DISPLAY");
     if std::env::var("XDG_SESSION_TYPE")
         .map(|v| v.is_empty())

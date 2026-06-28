@@ -57,6 +57,8 @@ type State = {
   execResults: ExecEntry[];
   // 文件传输提示（下发/取回的状态/错误）
   fileNotice: string | null;
+  // 被控端会话内提示（如 Wayland 无法截屏）——主控端在等待画面处展示，替代「无限等待第一帧」
+  remoteNotice: string | null;
 
   // actions
   initTransport: () => void;
@@ -89,6 +91,7 @@ export const useStore = create<State>((set, get) => ({
   activeReqId: null,
   execResults: [],
   fileNotice: null,
+  remoteNotice: null,
 
   initTransport() {
     transport.connect(selfId, (env) => {
@@ -109,6 +112,12 @@ export const useStore = create<State>((set, get) => ({
 
       if (p.type === "frame") {
         set({ remoteFrame: { data: p.data, w: p.w, h: p.h, seq: p.seq } });
+        return;
+      }
+
+      // 被控端会话内提示（如 Wayland 无法截屏）→ 在等待画面处展示
+      if (p.type === "remote_notice") {
+        set({ remoteNotice: p.text });
         return;
       }
 
@@ -222,6 +231,7 @@ export const useStore = create<State>((set, get) => ({
       remoteTarget: name ?? target,
       remoteRejectReason: null,
       remoteFrame: null,
+      remoteNotice: null,
     });
     get().sendEnvelope({
       type: "connect_request",
@@ -247,6 +257,7 @@ export const useStore = create<State>((set, get) => ({
       remoteRejectReason: null,
       execResults: [],
       fileNotice: null,
+      remoteNotice: null,
     });
   },
 

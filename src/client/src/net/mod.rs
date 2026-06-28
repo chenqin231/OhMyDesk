@@ -79,6 +79,8 @@ pub enum FromUi {
         w: u32,
         h: u32,
     },
+    /// 被控端会话内提示回流（如 Wayland 无法截屏）→ 主控端展示，替代「无限等待第一帧」。
+    Notice { session_id: String, text: String },
     /// 主动断开当前会话。
     Disconnect { session_id: String },
     /// 刷新本机临时密码：重新生成并重发 Register（server DashMap 按 id upsert 覆盖旧密码）。

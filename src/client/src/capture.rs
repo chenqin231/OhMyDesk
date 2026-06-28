@@ -94,6 +94,12 @@ pub fn placeholder_frame(seq: u64) -> anyhow::Result<(String, u32, u32)> {
     encode_frame(&img)
 }
 
+/// 本机是否为 Wayland 会话（由 `lock_x11_session` 在抹掉 WAYLAND_DISPLAY 前打的标记决定）。
+/// Wayland 下 xcap 抓不到桌面（Xwayland 隔离），截屏线程据此直接回执主控端而非空等。
+pub fn is_wayland_session() -> bool {
+    std::env::var("OHMYDESK_WAYLAND").map(|v| v == "1").unwrap_or(false)
+}
+
 /// 是否启用降级占位帧（环境变量开关，默认关）。
 pub fn fake_capture_enabled() -> bool {
     std::env::var("OHMYDESK_FAKE_CAPTURE")

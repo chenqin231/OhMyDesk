@@ -189,8 +189,8 @@ impl Hub {
                 handlers::handle_session_end(self, session_id, now).await;
             }
 
-            // ── Frame：被控→主控，按 session 对端路由 ─────────────────────────
-            Message::Frame { session_id, .. } => {
+            // ── Frame / RemoteNotice：被控→主控，按 session 对端路由 ───────────
+            Message::Frame { session_id, .. } | Message::RemoteNotice { session_id, .. } => {
                 self.route_to_peer(session_id, &env);
             }
 
