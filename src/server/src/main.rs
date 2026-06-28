@@ -90,6 +90,15 @@ async fn main() -> anyhow::Result<()> {
     let static_dir = ServeDir::new(format!("{web_dir}/static"));
     let index_body = std::fs::read_to_string(format!("{web_dir}/index.html")).unwrap_or_default();
 
+    // ── 客户端下载（P-DL）：/download 返回下载页，/downloads/* 提供安装包产物 ──────────
+    //   产物与 download.html 放数据卷（OHMYDESK_DOWNLOAD_DIR，默认 {web_dir}/downloads），
+    //   与镜像解耦：重建镜像不丢产物，CI 编出的多架构包 scp 到该目录即可热更新。
+    //   download.html 每次请求实时读，更新产物列表无需重启容器。
+    let download_dir = std::env::var("OHMYDESK_DOWNLOAD_DIR")
+        .unwrap_or_else(|_| format!("{web_dir}/downloads"));
+    let downloads_service = ServeDir::new(download_dir.clone());
+    let download_page_path = format!("{download_dir}/download.html");
+
     // ── axum Router：
     //   WS 路由挂 State<Arc<Hub>>；HTTP 路由已 with_state 固化为 Router<()>，可被 merge。
     // M-SRV2 CORS 已在 http_router 内层挂好，WS 端点额外挂一层供 admin-web。
@@ -101,6 +110,20 @@ async fn main() -> anyhow::Result<()> {
         }) // WS handler State = WsState（中枢 + 鉴权）
         .merge(http_router(http_state))
         .nest_service("/static", static_dir)
+        .route(
+            "/download",
+            get(move || {
+                let p = download_page_path.clone();
+                async move {
+                    axum::response::Html(
+                        tokio::fs::read_to_string(&p)
+                            .await
+                            .unwrap_or_else(|_| "<h1>下载页未部署</h1>".to_string()),
+                    )
+                }
+            }),
+        )
+        .nest_service("/downloads", downloads_service)
         .fallback(move || {
             let body = index_body.clone();
             async move { axum::response::Html(body) }

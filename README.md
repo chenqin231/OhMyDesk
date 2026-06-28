@@ -1,5 +1,8 @@
 # OhMyDesk · 信创内网终端远程安全管控平台
 
+[![CI](https://github.com/chenqin231/OhMyDesk/actions/workflows/ci.yml/badge.svg)](https://github.com/chenqin231/OhMyDesk/actions/workflows/ci.yml)
+[![Release](https://github.com/chenqin231/OhMyDesk/actions/workflows/release.yml/badge.svg)](https://github.com/chenqin231/OhMyDesk/actions/workflows/release.yml)
+
 > 内网环境下对信创终端（麒麟/统信 × 龙芯/鲲鹏）做**资产管理 + 远程控制 + 批量监控 + 操作审计 + AI 问答**的一体化平台。Rust 全栈，数据不出网。
 
 ## 能力总览（5 大模块）

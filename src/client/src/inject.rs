@@ -104,6 +104,9 @@ pub fn code_to_key(code: &str) -> Option<Key> {
         "Space" => Some(Key::Space),
         "Escape" | "Esc" => Some(Key::Escape),
         "Delete" | "Del" => Some(Key::Delete),
+        // enigo 的 Key::Insert 在 macOS 不存在（mac 键盘无 Insert 键），仅非 macOS 映射；
+        // macOS 上 "Insert" 落入下方兜底逻辑（忽略，不注入）。
+        #[cfg(not(target_os = "macos"))]
         "Insert" => Some(Key::Insert),
         "ArrowUp" | "Up" => Some(Key::UpArrow),
         "ArrowDown" | "Down" => Some(Key::DownArrow),

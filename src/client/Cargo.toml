@@ -24,7 +24,7 @@ tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { version = "1.23.4", features = ["v4"] }
-xcap = "0.9"
+xcap = "0.4"
 
 # TLS 按目标分流（client 需连 wss://rc.guoziweb.com）：
 # - Windows：native-tls → SChannel（纯 Rust schannel 绑定，交叉编译零 C 依赖，不引 openssl）

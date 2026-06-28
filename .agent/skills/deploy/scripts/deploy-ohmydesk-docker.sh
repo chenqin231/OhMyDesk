@@ -74,6 +74,8 @@ fi
 {
   printf 'DATABASE_URL=sqlite:/app/data/ohmydesk.db\n'
   printf 'OHMYDESK_JWT_SECRET=%s\n' "$JWT_SECRET"
+  # 客户端安装包目录放数据卷（持久化，重建镜像不丢；CI 产物 scp 到此处供 /downloads 提供）。
+  printf 'OHMYDESK_DOWNLOAD_DIR=/app/data/downloads\n'
 } > "$LOCAL_ENV_FILE"
 
 echo "==> 本地构建镜像: $IMAGE_TAG"
