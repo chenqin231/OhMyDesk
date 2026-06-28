@@ -4,7 +4,7 @@ members = ["src/protocol", "src/server", "src/client"]
 
 [workspace.package]
 edition = "2021"
-version = "0.1.0"
+version = "0.1.1"
 
 # Wave 0 一次配齐通用依赖；四线各自的特有依赖在各 crate 的 Cargo.toml 内用 cargo add 添加，
 # 不回改本根清单（根清单 Wave 0 后冻结，避免 Wave 1 四线并发改根冲突）。
