@@ -1,0 +1,171 @@
+# Release：多架构客户端编译 + 打包，面向信创（麒麟 / 统信 UOS × 龙芯 / 鲲鹏）。
+# (touch: 触发 GitHub Actions workflow 重新解析注册)
+#
+# 关键设计 —— glibc 兼容：麒麟 V10 / UOS 1050~1060 基线为 glibc 2.28。
+# 若直接用 ubuntu-24.04(glibc 2.39) 编译，二进制在信创机上会报 `GLIBC_2.3x not found`。
+# 故 Linux 产物在 manylinux_2_28 容器(glibc 2.28，AlmaLinux 8)内原生编译，匹配信创基线；
+# actions/checkout 等仍跑在 host(ubuntu) 上，避开容器内 node 的 glibc 问题。
+#
+# 触发：打 tag `v*`（同时建 GitHub Release），或手动 workflow_dispatch（只产出 artifacts）。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # 禁 HTTP/2 多路复用：规避 GitHub runner 上 crates.io fetch 偶发的 "HTTP2 framing layer" 错误
+  CARGO_HTTP_MULTIPLEXING: "false"
+
+jobs:
+  # ── Linux .deb：x86_64(麒麟/UOS x86) + aarch64(鲲鹏/飞腾) ──────────────────
+  linux:
+    name: Linux ${{ matrix.arch }} (.deb)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            image: quay.io/pypa/manylinux_2_28_x86_64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            image: quay.io/pypa/manylinux_2_28_aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 容器内编译（glibc 2.28，兼容麒麟 V10 / UOS）
+        run: |
+          docker run --rm -v "$PWD":/work -w /work "${{ matrix.image }}" bash -c '
+            set -euo pipefail
+            yum install -y libxcb-devel libX11-devel libXrandr-devel libXi-devel \
+              libXtst-devel libxkbcommon-devel fontconfig-devel dbus-devel
+            curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            . "$HOME/.cargo/env"
+            cargo build -p client --release
+          '
+
+      - name: 打包 .deb
+        env:
+          BIN: target/release/client
+          ARCH: ${{ matrix.arch }}
+          # 信创/Debian 系通用运行时依赖包名（容器是 rpm 系，ldd 自动推导不可用，故固定注入）。
+          DEPS: "libc6, libxcb1, libx11-6, libxrandr2, libxi6, libxtst6, libxkbcommon0, libfontconfig1, libdbus-1-3"
+        run: |
+          sudo apt-get update && sudo apt-get install -y dpkg-dev
+          bash packaging/deb/build-deb.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ohmydesk-client-${{ matrix.arch }}-deb
+          path: dist-deb/*.deb
+          if-no-files-found: error
+
+  # ── 龙芯 loongarch64：默认关闭。公共 GitHub runner 无 loong64 的 X11 sysroot，
+  #    无法可靠交叉。正路是自托管龙芯 runner（你们有信创真机）在本机原生编译。
+  #    启用方式：① 在真实龙芯麒麟/UOS 机器安装 GitHub Actions self-hosted runner，
+  #              打标签 loong64；② 仓库 Settings → Variables 设 ENABLE_LOONGARCH=true。
+  loongarch:
+    name: Loongarch64 (.deb，自托管龙芯 runner)
+    if: ${{ vars.ENABLE_LOONGARCH == 'true' }}
+    runs-on: [self-hosted, linux, loong64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 X11 / 字体开发库（麒麟/UOS apt）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev libxrandr-dev libxi-dev libxtst-dev \
+            libx11-dev libxkbcommon-dev libfontconfig1-dev dpkg-dev
+      - name: 原生编译
+        run: |
+          command -v cargo >/dev/null || { curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal; }
+          . "$HOME/.cargo/env" 2>/dev/null || true
+          cargo build -p client --release
+      - name: 打包 .deb
+        env:
+          ARCH: loong64
+        run: bash packaging/deb/build-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ohmydesk-client-loong64-deb
+          path: dist-deb/*.deb
+          if-no-files-found: error
+
+  # ── Windows 被控端 exe（从 Linux 交叉编译，复用现有脚本）──────────────────
+  windows:
+    name: Windows x86_64 (.exe)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: 交叉编译并收拢产物
+        run: bash packaging/windows/build-windows.sh
+      - name: 打包 zip
+        run: |
+          cd dist-windows && zip -r ../ohmydesk-client-windows-x86_64.zip . && cd -
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ohmydesk-client-windows
+          path: ohmydesk-client-windows-x86_64.zip
+          if-no-files-found: error
+
+  # ── macOS：Apple Silicon(arm64) + Intel(x86_64)，原生编译，打 tar.gz ────────
+  macos:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            runner: macos-13
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: 编译
+        run: cargo build -p client --release --target ${{ matrix.target }}
+      - name: 打包 tar.gz
+        run: |
+          mkdir -p dist-macos
+          cp "target/${{ matrix.target }}/release/client" dist-macos/ohmydesk-client
+          tar -C dist-macos -czf "ohmydesk-client-macos-${{ matrix.arch }}.tar.gz" ohmydesk-client
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ohmydesk-client-macos-${{ matrix.arch }}
+          path: ohmydesk-client-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  # ── 仅打 tag 时：汇总所有产物，建 GitHub Release ────────────────────────────
+  release:
+    name: 发布 GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: 汇总产物清单
+        run: find artifacts -type f | sort
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+target
+**/node_modules
+**/dist
+coverage
+*.log
+chat
+v0
+docs
+dist-deb
+.cache
+.DS_Store
