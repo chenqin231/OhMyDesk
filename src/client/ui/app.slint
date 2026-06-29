@@ -328,6 +328,17 @@ export component AppWindow inherits Window {
     callback on_pointer_button(int /*x*/, int /*y*/, int /*btn 0左1中2右*/, bool /*down*/);
     callback on_key(string /*code*/, bool /*down*/);
 
+    // Slint 把修饰键（Ctrl/Shift/Alt/Meta）的 ev.text 给成特殊控制字符，被控端无法识别为修饰键，
+    // 导致组合键（Ctrl+C/V）的修饰态不被跟踪。这里把修饰键归一成被控端认得的名字串；
+    // 其余按键（字母/数字/Enter/Backspace 等控制符）原样透传，被控端 code_to_key 已能处理。
+    pure function key_code(t: string) -> string {
+        return t == Key.Control ? "Control"
+            : t == Key.Shift ? "Shift"
+            : t == Key.Alt ? "Alt"
+            : t == Key.Meta ? "Meta"
+            : t;
+    }
+
     // ① 空闲态：被控提示条 + 居中卡片
     if !root.remote_active: VerticalLayout {
         // 被控提示条（常驻顶部，仅 being_controlled 时显示）
@@ -549,6 +560,9 @@ export component AppWindow inherits Window {
     // ⑤ 主控画面态：贴帧铺满 + 悬浮工具条 + 键鼠捕获
     if root.remote_active: Rectangle {
         background: #050506;
+        // 进入主控画面即把焦点交给键盘 FocusScope；否则它永不获焦、key-pressed 不触发、
+        // 主控端一个 Input::Key 都不发 → 表现为「画面正常但任何键都输不进去」。
+        init => { fs.focus(); }
         property <float> frame_scale: root.frame_w <= 1 || root.frame_h <= 1 ? 1 : (
             (self.width / (root.frame_w * 1px)) < (self.height / (root.frame_h * 1px))
                 ? ((self.width / (root.frame_w * 1px)) < 1 ? (self.width / (root.frame_w * 1px)) : 1)
@@ -624,6 +638,9 @@ export component AppWindow inherits Window {
                     (self.mouse-y / self.height * root.frame_h * 1px) / 1px);
             }
             pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down) {
+                    fs.focus();  // 点画面即重新抓键盘焦点（窗口切换后兜底）
+                }
                 if (ev.kind == PointerEventKind.down || ev.kind == PointerEventKind.up) {
                     root.on_pointer_button(
                         (self.mouse-x / self.width * root.frame_w * 1px) / 1px,
@@ -686,11 +703,11 @@ export component AppWindow inherits Window {
         fs := FocusScope {
             width: 0px;
             key-pressed(ev) => {
-                root.on_key(ev.text, true);
+                root.on_key(root.key_code(ev.text), true);
                 accept
             }
             key-released(ev) => {
-                root.on_key(ev.text, false);
+                root.on_key(root.key_code(ev.text), false);
                 accept
             }
         }

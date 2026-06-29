@@ -199,6 +199,12 @@ pub enum Message {
         session_id: String,
         event: InputEvent,
     },
+    /// 被控→主控：会话内提示（如 Wayland 无法截屏）。主控端在等待画面处展示，
+    /// 把「无限等待第一帧」变成可操作的明确提示。按 session 对端路由（同 Frame）。
+    RemoteNotice {
+        session_id: String,
+        text: String,
+    },
     ScreenshotReq {
         req_id: String,
     },
@@ -241,6 +247,10 @@ pub enum Message {
         name: String,
         size: u64,
         dir: FileDir,
+        /// push 下发的目标目录（控制方在远端文件浏览器里选定的当前目录）；
+        /// None 或非法时被控端回退到固定接收目录 recv_dir。pull 回流时恒为 None。
+        #[serde(default)]
+        dest: Option<String>,
     },
     /// 数据块；data 为该块 base64，last=true 表示末块。
     FileChunk {
@@ -262,6 +272,38 @@ pub enum Message {
         transfer_id: String,
         reason: String,
     },
+    /// 被控方收齐 push 文件并落盘后回执，path 为被控端最终绝对路径（解「下发不知去向」）。
+    FileDone {
+        session_id: String,
+        transfer_id: String,
+        path: String,
+    },
+
+    // ── 远端目录浏览（控制方→被控方列目录→回条目；按 session 路由）──────────────
+    /// 控制方请求列出被控方某目录；path 为空时被控方返回默认目录（home）。
+    FileListRequest {
+        session_id: String,
+        transfer_id: String,
+        path: String,
+    },
+    /// 被控方回传目录条目；path 为实际列出的绝对目录（供前端面包屑/上级导航）。
+    /// error 非空表示列目录失败（无权限/不存在），entries 为空。
+    FileListResp {
+        session_id: String,
+        transfer_id: String,
+        path: String,
+        entries: Vec<FileEntry>,
+        error: Option<String>,
+    },
+}
+
+/// 远端目录中的一个条目（文件或子目录）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FileEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

@@ -26,15 +26,19 @@ pub async fn consume_inject(
     let (blk_tx, blk_rx) = std::sync::mpsc::channel::<protocol::InputEvent>();
     std::thread::spawn(move || {
         let mut injector = match inject::Injector::new(real_w, real_h, frame_w, frame_h) {
-            Ok(i) => i,
+            Ok(i) => {
+                tracing::info!("注入器就绪 real={real_w}x{real_h} frame={frame_w}x{frame_h}");
+                i
+            }
             Err(e) => {
-                tracing::warn!("注入器构造失败（无 X11？）：{e}，注入禁用");
+                tracing::warn!("注入器构造失败（无 X11/注入后端？）：{e}，注入禁用");
                 return;
             }
         };
         while let Ok(ev) = blk_rx.recv() {
-            if let Err(e) = injector.apply(&ev) {
-                tracing::debug!("注入失败：{e}");
+            match injector.apply(&ev) {
+                Ok(()) => tracing::debug!("注入成功 ev={ev:?}"),
+                Err(e) => tracing::warn!("注入失败 ev={ev:?}：{e}"),
             }
         }
     });
@@ -96,6 +100,8 @@ pub async fn consume_capture(
             let fake = capture::fake_capture_enabled();
             let mut capturer: Option<capture::Capturer> = None;
             let mut seq: u64 = 0;
+            // 已就「截屏不可用」回执过的会话 id：每会话只回一次，避免刷屏。
+            let mut notified_for: Option<String> = None;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(350));
                 let sid = match active.lock().unwrap().clone() {
@@ -107,11 +113,31 @@ pub async fn consume_capture(
                     seq += 1;
                     capture::placeholder_frame(seq)
                 } else {
-                    // 懒构造截屏器（依赖 X11；失败则停推帧，避免刷屏告警）
+                    // Wayland 会话抓不到桌面：明确回执主控端（替代「无限等待第一帧」）并停推帧。
+                    if capture::is_wayland_session() {
+                        if notified_for.as_deref() != Some(sid.as_str()) {
+                            tracing::warn!("Wayland 会话无法截屏，已通知主控端；请切换 X11（UKUI 兼容）会话");
+                            let _ = from_ui_tx.send(net::FromUi::Notice {
+                                session_id: sid.clone(),
+                                text: "被控端为 Wayland 会话，无法截屏。请在登录界面切换到 X11（UKUI 兼容）会话后重新连接。".into(),
+                            });
+                            notified_for = Some(sid.clone());
+                        }
+                        *active.lock().unwrap() = None;
+                        continue;
+                    }
+                    // 懒构造截屏器（依赖 X11；失败则回执主控端并停推帧，避免刷屏告警）
                     if capturer.is_none() {
                         match capture::Capturer::new() {
                             Ok(c) => capturer = Some(c),
                             Err(e) => {
+                                if notified_for.as_deref() != Some(sid.as_str()) {
+                                    let _ = from_ui_tx.send(net::FromUi::Notice {
+                                        session_id: sid.clone(),
+                                        text: format!("被控端截屏不可用：{e}。请确认在 X11 桌面会话下运行。"),
+                                    });
+                                    notified_for = Some(sid.clone());
+                                }
                                 tracing::warn!("截屏器构造失败（无显示器/X11？）：{e}，推帧禁用；WSLg 可设 OHMYDESK_FAKE_CAPTURE=1 验链路");
                                 *active.lock().unwrap() = None;
                                 continue;

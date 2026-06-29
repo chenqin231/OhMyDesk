@@ -47,11 +47,22 @@ pub fn safe_name(name: &str) -> String {
 }
 
 /// push 下发：打开接收文件。`Err(reason)` 时调用方回 `FileError`。
-pub fn open_recv(transfer_id: &str, name: &str, size: u64) -> Result<PathBuf, String> {
+/// `dest` 为控制方选定的目标目录（远端文件浏览器当前目录）；为 None 或不是已存在目录时
+/// 回退到固定接收目录 [`recv_dir`]。文件名始终经 [`safe_name`] basename 化防穿越。
+pub fn open_recv(
+    transfer_id: &str,
+    name: &str,
+    size: u64,
+    dest: Option<&str>,
+) -> Result<PathBuf, String> {
     if size > MAX_FILE {
         return Err(format!("文件超过上限 {}MB", MAX_FILE / 1024 / 1024));
     }
-    let dir = recv_dir();
+    // 目标目录：dest 是已存在目录则用之，否则回退 recv_dir
+    let dir = match dest {
+        Some(d) if !d.trim().is_empty() && Path::new(d).is_dir() => PathBuf::from(d),
+        _ => recv_dir(),
+    };
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建接收目录失败: {e}"))?;
     let path = dir.join(safe_name(name));
     let file = File::create(&path).map_err(|e| format!("创建文件失败: {e}"))?;
@@ -99,6 +110,54 @@ pub fn write_chunk(transfer_id: &str, data_b64: &str, last: bool) -> Result<Opti
 /// 放弃一个在途接收（控制方发来 FileError 时清理）。
 pub fn abort(transfer_id: &str) {
     RECEIVERS.lock().unwrap().remove(transfer_id);
+}
+
+/// 列出被控端某目录的条目（供主控端远端文件浏览）。
+/// `path` 为空时回退到用户主目录；目录优先、其次按名称（不区分大小写）排序。
+/// 返回 `(实际目录绝对路径, 条目列表)`；失败返回 `Err(reason)`，调用方回 `FileListResp{error}`。
+pub fn list_dir(path: &str) -> Result<(String, Vec<protocol::FileEntry>), String> {
+    let target: PathBuf = if path.trim().is_empty() {
+        directories::UserDirs::new()
+            .map(|d| d.home_dir().to_path_buf())
+            .or_else(dirs_home_fallback)
+            .ok_or("无法确定默认目录")?
+    } else {
+        PathBuf::from(path)
+    };
+
+    let canonical = std::fs::canonicalize(&target)
+        .map_err(|e| format!("目录不可访问: {e}"))?;
+    if !canonical.is_dir() {
+        return Err("目标不是目录".into());
+    }
+
+    let mut entries: Vec<protocol::FileEntry> = Vec::new();
+    let rd = std::fs::read_dir(&canonical).map_err(|e| format!("读取目录失败: {e}"))?;
+    for item in rd.flatten() {
+        let name = item.file_name().to_string_lossy().to_string();
+        // 元数据失败（权限/损坏链接）的条目跳过，不让整次列目录失败
+        let Ok(meta) = item.metadata() else { continue };
+        entries.push(protocol::FileEntry {
+            name,
+            is_dir: meta.is_dir(),
+            size: if meta.is_dir() { 0 } else { meta.len() },
+        });
+    }
+    // 目录优先；同类按名称不区分大小写排序
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+
+    Ok((canonical.to_string_lossy().to_string(), entries))
+}
+
+/// home 目录兜底（UserDirs 在部分精简信创环境可能为 None）。
+fn dirs_home_fallback() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 fn now_ms() -> i64 {
@@ -166,6 +225,7 @@ pub async fn send_file(
             name,
             size: bytes.len() as u64,
             dir: FileDir::Pull,
+            dest: None,
         },
     );
 
@@ -219,7 +279,7 @@ mod tests {
         let payload = b"hello-ohmydesk-file";
         // 拆 2 块
         let (a, b) = payload.split_at(5);
-        open_recv(tid, "demo.txt", payload.len() as u64).unwrap();
+        open_recv(tid, "demo.txt", payload.len() as u64, None).unwrap();
         assert_eq!(write_chunk(tid, &STANDARD.encode(a), false).unwrap(), None);
         let done = write_chunk(tid, &STANDARD.encode(b), true).unwrap();
         let path = done.expect("末块应返回最终路径");
@@ -229,9 +289,35 @@ mod tests {
     }
 
     #[test]
+    fn 列目录_目录优先且能列出条目() {
+        // 造一个临时目录：含 1 子目录 + 1 文件
+        let base = std::env::temp_dir().join("ohmydesk-ls-test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("subdir")).unwrap();
+        std::fs::write(base.join("a.txt"), b"hi").unwrap();
+
+        let (dir, entries) = list_dir(base.to_str().unwrap()).unwrap();
+        assert!(dir.contains("ohmydesk-ls-test"));
+        assert_eq!(entries.len(), 2);
+        // 目录优先：第一个必是 subdir
+        assert!(entries[0].is_dir);
+        assert_eq!(entries[0].name, "subdir");
+        let file = entries.iter().find(|e| e.name == "a.txt").unwrap();
+        assert!(!file.is_dir);
+        assert_eq!(file.size, 2);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn 列目录_不存在路径报错() {
+        assert!(list_dir("/no/such/ohmydesk/path/xyz").is_err());
+    }
+
+    #[test]
     fn 接收_超声明大小被拒并清理() {
         let tid = "t-test-2";
-        open_recv(tid, "small.bin", 4).unwrap();
+        open_recv(tid, "small.bin", 4, None).unwrap();
         // 写远超 4 字节 + 容差(64KB) 的数据
         let big = vec![b'z'; CHUNK + 1024];
         let r = write_chunk(tid, &STANDARD.encode(&big), false);

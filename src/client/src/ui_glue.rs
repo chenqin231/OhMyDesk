@@ -117,7 +117,9 @@ pub fn wire_ui_callbacks(
         let tx = from_ui_tx.clone();
         let sess = cur_session.clone();
         ui.on_on_pointer_move(move |x, y| {
-            if let Some(sid) = sess.lock().unwrap().clone() {
+            let sid = sess.lock().unwrap().clone();
+            tracing::debug!("主控采集·移动 ({x},{y}) session={}", sid.as_deref().unwrap_or("<无>"));
+            if let Some(sid) = sid {
                 let _ = tx.send(net::FromUi::Input {
                     session_id: sid,
                     event: protocol::InputEvent::MouseMove { x, y },
@@ -129,7 +131,12 @@ pub fn wire_ui_callbacks(
         let tx = from_ui_tx.clone();
         let sess = cur_session.clone();
         ui.on_on_pointer_button(move |x, y, btn, down| {
-            if let Some(sid) = sess.lock().unwrap().clone() {
+            let sid = sess.lock().unwrap().clone();
+            tracing::info!(
+                "主控采集·鼠标键 btn={btn} down={down} pos=({x},{y}) session={}",
+                sid.as_deref().unwrap_or("<无>")
+            );
+            if let Some(sid) = sid {
                 let _ = tx.send(net::FromUi::Input {
                     session_id: sid.clone(),
                     event: protocol::InputEvent::MouseMove { x, y },
@@ -148,7 +155,12 @@ pub fn wire_ui_callbacks(
         let tx = from_ui_tx.clone();
         let sess = cur_session.clone();
         ui.on_on_key(move |code, down| {
-            if let Some(sid) = sess.lock().unwrap().clone() {
+            let sid = sess.lock().unwrap().clone();
+            tracing::info!(
+                "主控采集·键盘 code={code:?} down={down} session={}",
+                sid.as_deref().unwrap_or("<无>")
+            );
+            if let Some(sid) = sid {
                 let _ = tx.send(net::FromUi::Input {
                     session_id: sid,
                     event: protocol::InputEvent::Key {
@@ -241,7 +253,15 @@ pub async fn consume_to_ui(
                     }
                 });
             }
-            net::ToUi::Frame { data, w, h } => {
+            net::ToUi::Frame { session_id, data, w, h } => {
+                // 统一会话态：收到帧即把 cur_session 设为该会话——保证「有画面时输入一定有目标」，
+                // 即便 RemoteAck 因时序/路由未设上 cur_session，输入也不会被静默丢弃。
+                {
+                    let mut s = cur_session.lock().unwrap();
+                    if s.as_deref() != Some(session_id.as_str()) {
+                        *s = Some(session_id.clone());
+                    }
+                }
                 // 在本（tokio）线程解码 JPEG→RGBA（产出 Vec<u8> 是 Send）；Image 非 Send，
                 // 故只把裸 RGBA + 尺寸传进闭包，在 UI 线程内构造 Image（slint.md §3 坑 2）。
                 if let Ok((rgba, iw, ih)) = decode_frame_rgba(&data) {
