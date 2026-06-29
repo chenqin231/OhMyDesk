@@ -247,8 +247,7 @@ export const mockTransport: Transport = {
     }
 
     if (payload.type === "input") {
-      // no-op，仅记录调试信息
-      console.debug("[mockTransport] received input event:", payload.event);
+      // no-op：mock 不处理远程输入
     }
   },
 
