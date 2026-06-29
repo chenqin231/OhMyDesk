@@ -477,10 +477,19 @@ export component AppWindow inherits Window {
                                     caption: "本机 ID";
                                     value: root.self_id;
                                     value-color: Theme.fg;
-                                    GhostButton {
-                                        label: "复制";
-                                        clicked => {
-                                            root.copy_text(root.self_id);
+                                    Rectangle {
+                                        property <bool> copied: false;
+                                        GhostButton {
+                                            label: parent.copied ? "✓" : "复制";
+                                            clicked => {
+                                                root.copy_text(root.self_id);
+                                                parent.copied = true;
+                                            }
+                                        }
+                                        Timer {
+                                            interval: 0.8s;
+                                            running: parent.copied;
+                                            triggered => { parent.copied = false; }
                                         }
                                     }
                                 }
@@ -501,10 +510,19 @@ export component AppWindow inherits Window {
                                             root.refresh_password();
                                         }
                                     }
-                                    GhostButton {
-                                        label: "⧉";
-                                        clicked => {
-                                            root.copy_text(root.self_password);
+                                    Rectangle {
+                                        property <bool> copied: false;
+                                        GhostButton {
+                                            label: parent.copied ? "✓" : "⧉";
+                                            clicked => {
+                                                root.copy_text(root.self_password);
+                                                parent.copied = true;
+                                            }
+                                        }
+                                        Timer {
+                                            interval: 0.8s;
+                                            running: parent.copied;
+                                            triggered => { parent.copied = false; }
                                         }
                                     }
                                 }
