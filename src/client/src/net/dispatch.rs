@@ -6,7 +6,7 @@ use protocol::{Envelope, Message};
 use tokio::sync::mpsc;
 
 use super::conn::SessionCtx;
-use super::{now, CaptureCtrl, FromUi, ToUi, CAPTURE_CTRL, INJECT_TX, SCREENSHOT_TX};
+use super::{now, CaptureCtrl, ClipboardMsg, FromUi, ToUi, CAPTURE_CTRL, CLIPBOARD_TX, INJECT_TX, SCREENSHOT_TX};
 
 /// 给控制方回一条 `FileError`（被控端拒收/写盘失败时）。
 fn send_file_error(
@@ -78,6 +78,9 @@ pub(super) async fn handle_downlink(
                 CAPTURE_CTRL.send(CaptureCtrl::Start {
                     session_id: session_id.clone(),
                 });
+                CLIPBOARD_TX.send(ClipboardMsg::Start {
+                    session_id: session_id.clone(),
+                });
                 let _ = to_ui.send(ToUi::BeingControlled { peer_name: from });
             } else {
                 let _ = to_ui.send(ToUi::ControlRequest {
@@ -98,6 +101,9 @@ pub(super) async fn handle_downlink(
                 CAPTURE_CTRL.send(CaptureCtrl::Start {
                     session_id: session_id.clone(),
                 });
+                CLIPBOARD_TX.send(ClipboardMsg::Start {
+                    session_id: session_id.clone(),
+                });
                 let _ = to_ui.send(ToUi::BeingControlled {
                     peer_name: "远程方".into(),
                 });
@@ -110,6 +116,9 @@ pub(super) async fn handle_downlink(
         // 主控端收到 ack：进入主控态
         Message::ConnectAck { session_id } => {
             session.lock().await.controlling = Some(session_id.clone());
+            CLIPBOARD_TX.send(ClipboardMsg::Start {
+                session_id: session_id.clone(),
+            });
             let _ = to_ui.send(ToUi::RemoteAck { session_id });
         }
         // 主控端收到拒绝
@@ -173,6 +182,7 @@ pub(super) async fn handle_downlink(
                 ctx.controlled = None;
                 CAPTURE_CTRL.send(CaptureCtrl::Stop); // 停被控端推帧
             }
+            CLIPBOARD_TX.send(ClipboardMsg::Stop);
             let _ = to_ui.send(ToUi::SessionEnded);
         }
 
@@ -337,8 +347,16 @@ pub(super) async fn handle_downlink(
         Message::FileError { transfer_id, .. } => {
             crate::transfer::abort(&transfer_id);
         }
-        // 剪贴板同步(后续 Task 接入写本地剪贴板)
-        Message::ClipboardSync { .. } => {}
+        // 被控/主控收对端剪贴板 → 校验方向后交 worker 写本地(防回环由 worker 的 last_synced 处理)。
+        Message::ClipboardSync { session_id, text } => {
+            let ctx = session.lock().await;
+            let in_session = ctx.controlling.as_deref() == Some(session_id.as_str())
+                || ctx.controlled.as_deref() == Some(session_id.as_str());
+            drop(ctx);
+            if in_session {
+                CLIPBOARD_TX.send(ClipboardMsg::Incoming { text });
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -381,6 +399,9 @@ pub(super) async fn handle_uplink(
                 //（server 消费 AuthResult 后只把 ConnectAck 回给主控），挂下行分支等于永不触发。
                 session.lock().await.controlled = Some(session_id.clone());
                 CAPTURE_CTRL.send(CaptureCtrl::Start {
+                    session_id: session_id.clone(),
+                });
+                CLIPBOARD_TX.send(ClipboardMsg::Start {
                     session_id: session_id.clone(),
                 });
             }
@@ -443,6 +464,7 @@ pub(super) async fn handle_uplink(
         },
         FromUi::Disconnect { session_id } => {
             session.lock().await.controlling = None;
+            CLIPBOARD_TX.send(ClipboardMsg::Stop);
             Envelope {
                 from: self_id.to_string(),
                 to: None,
