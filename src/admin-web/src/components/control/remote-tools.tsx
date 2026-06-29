@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Terminal,
   Upload,
@@ -67,6 +67,7 @@ export function RemoteTools() {
           size="sm"
           onClick={() => setCollapsed((c) => !c)}
           title={collapsed ? "展开" : "收起"}
+          aria-label={collapsed ? "展开工具面板" : "收起工具面板"}
         >
           {collapsed ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
         </Button>
@@ -286,15 +287,15 @@ function RemotePane() {
   const error = useStore((s) => s.remoteListError);
   const listRemote = useStore((s) => s.listRemote);
   const pullFile = useStore((s) => s.pullFile);
-  const loadedRef = useRef(false);
 
-  // 首次进入文件传输标签页时加载被控端默认目录（home）
+  // 首次进入文件传输标签页时加载被控端默认目录（home）。
+  // 以 store 状态（而非组件内 ref）判定是否已加载——切标签/折叠导致组件重挂时不重复拉取、不刷审计；
+  // 出错后不自动重试（error 已置位），由用户点「刷新」恢复。
   useEffect(() => {
-    if (!loadedRef.current) {
-      loadedRef.current = true;
+    if (!remotePath && !loading && !error && remoteEntries.length === 0) {
       listRemote("");
     }
-  }, [listRemote]);
+  }, [remotePath, loading, error, remoteEntries.length, listRemote]);
 
   return (
     <div className="flex min-h-0 flex-col p-3">
@@ -309,6 +310,7 @@ function RemotePane() {
             disabled={!remotePath}
             className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-40"
             title="上级目录"
+            aria-label="上级目录"
           >
             <ArrowUp className="size-3.5" />
           </button>
@@ -317,6 +319,7 @@ function RemotePane() {
             onClick={() => listRemote(remotePath)}
             className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
             title="刷新"
+            aria-label="刷新当前目录"
           >
             <RefreshCw className="size-3.5" />
           </button>
