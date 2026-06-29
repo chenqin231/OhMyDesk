@@ -102,13 +102,40 @@ pub fn wire_ui_callbacks(
             }
         });
     }
-    // 主控断开
+    // 主控断开：发 SessionEnd 给被控 + **本地即时退出远程态**。
+    // 关键修复：server 的 SessionEnd 只路由给对端（被控），不回发主控，主控自身收不到
+    // SessionEnded；故必须在此本地重置 UI（与授权回调对称），否则点「断开」后主控画面/大窗卡住。
     {
         let tx = from_ui_tx.clone();
         let sess = cur_session.clone();
+        let ui_weak = ui.as_weak();
         ui.on_disconnect_remote(move || {
-            if let Some(sid) = sess.lock().unwrap().clone() {
+            if let Some(sid) = sess.lock().unwrap().take() {
                 let _ = tx.send(net::FromUi::Disconnect { session_id: sid });
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_remote_active(false);
+                ui.set_connecting(false);
+                ui.set_remote_status("已断开".into());
+                ui.window().set_size(slint::LogicalSize::new(460.0, 620.0));
+            }
+        });
+    }
+    // 主控切换画质档位（高清优先 / 流畅优先）→ 发 SetQuality 给被控端
+    {
+        let tx = from_ui_tx.clone();
+        let sess = cur_session.clone();
+        ui.on_set_quality(move |high| {
+            if let Some(sid) = sess.lock().unwrap().clone() {
+                let mode = if high {
+                    protocol::QualityMode::HighQuality
+                } else {
+                    protocol::QualityMode::Smooth
+                };
+                let _ = tx.send(net::FromUi::SetQuality {
+                    session_id: sid,
+                    mode,
+                });
             }
         });
     }
@@ -195,7 +222,15 @@ pub async fn consume_to_ui(
     cur_session: SharedSession,
     ctrl_session: SharedSession,
 ) {
-    while let Some(ev) = rx.recv().await {
+    while let Some(mut ev) = rx.recv().await {
+        // 丢过期帧：收到 Frame 时若通道里还有积压，丢弃当前帧取下一条——只解码/渲染最新帧，
+        // 消除「操作后看到一串旧画面」的滞后感（主控渲染慢于被控推帧时积压会堆积）。
+        while matches!(ev, net::ToUi::Frame { .. }) {
+            match rx.try_recv() {
+                Ok(next) => ev = next,
+                Err(_) => break,
+            }
+        }
         let ui_weak = ui_weak.clone();
         match ev {
             net::ToUi::Registered { id, password } => {

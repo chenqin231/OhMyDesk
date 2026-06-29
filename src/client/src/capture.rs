@@ -8,7 +8,58 @@
 use crate::geom::{scaled_dims, MAX_H, MAX_W};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::RgbaImage;
+use std::sync::atomic::{AtomicU8, Ordering};
 use xcap::Monitor;
+
+/// 当前画质档位（被控端推帧线程每帧读取）：0=流畅优先(默认)，1=高清优先。
+/// 主控端经 SetQuality 协议消息切换，被控端 dispatch 调 [`set_quality`] 更新。
+static QUALITY: AtomicU8 = AtomicU8::new(0);
+
+/// 画质档位对应的采集参数：分辨率上限 + JPEG 质量 + 推帧间隔(ms)。
+pub struct QualityParams {
+    pub max_w: u32,
+    pub max_h: u32,
+    pub jpeg_q: u8,
+    pub interval_ms: u64,
+}
+
+/// 设置画质档位（被控端收到主控 SetQuality 时调用）。
+pub fn set_quality(mode: protocol::QualityMode) {
+    let v = match mode {
+        protocol::QualityMode::Smooth => 0,
+        protocol::QualityMode::HighQuality => 1,
+    };
+    QUALITY.store(v, Ordering::Relaxed);
+}
+
+/// 档位 → 采集参数（纯函数，便于单测）。
+/// 流畅优先：1280×720 / q80 / ~16fps；高清优先：1920×1080 / q88 / ~10fps。
+pub fn params_for(mode: protocol::QualityMode) -> QualityParams {
+    match mode {
+        protocol::QualityMode::HighQuality => QualityParams {
+            max_w: 1920,
+            max_h: 1080,
+            jpeg_q: 88,
+            interval_ms: 100,
+        },
+        protocol::QualityMode::Smooth => QualityParams {
+            max_w: 1280,
+            max_h: 720,
+            jpeg_q: 80,
+            interval_ms: 62,
+        },
+    }
+}
+
+/// 取当前档位的采集参数（推帧线程每帧调用）。
+pub fn current_params() -> QualityParams {
+    let mode = if QUALITY.load(Ordering::Relaxed) == 1 {
+        protocol::QualityMode::HighQuality
+    } else {
+        protocol::QualityMode::Smooth
+    };
+    params_for(mode)
+}
 
 /// 持有主显示器句柄，复用于每帧截屏。
 pub struct Capturer {
@@ -48,17 +99,33 @@ impl Capturer {
         (self.real_w, self.real_h)
     }
 
-    /// 截一帧 → 等比缩放 → JPEG q85 → base64。返回 (base64, 缩放后 w, 缩放后 h)。
+    /// 截一帧 → 等比缩放 → JPEG q85 → base64（默认档，截图等用）。返回 (base64, 缩放后 w, 缩放后 h)。
     pub fn frame(&self) -> anyhow::Result<(String, u32, u32)> {
         let img = self.mon.capture_image()?; // RgbaImage
         encode_frame(&img)
     }
+
+    /// 按画质档位截一帧（推流用）：分辨率上限/质量由 `QualityParams` 决定。
+    pub fn frame_q(&self, p: &QualityParams) -> anyhow::Result<(String, u32, u32)> {
+        let img = self.mon.capture_image()?;
+        encode_frame_q(&img, p.max_w, p.max_h, p.jpeg_q)
+    }
 }
 
-/// 把一帧 RGBA 等比缩放 + JPEG + base64（纯函数，便于单测缩放/编码逻辑，无需真实屏）。
+/// 把一帧 RGBA 等比缩放 + JPEG q85 + base64（默认 1280×720 上限，截图/默认路径用）。
 pub fn encode_frame(img: &RgbaImage) -> anyhow::Result<(String, u32, u32)> {
+    encode_frame_q(img, MAX_W, MAX_H, 85)
+}
+
+/// 把一帧 RGBA 按指定分辨率上限等比缩放 + JPEG(质量 q) + base64（纯函数，便于单测）。
+pub fn encode_frame_q(
+    img: &RgbaImage,
+    max_w: u32,
+    max_h: u32,
+    q: u8,
+) -> anyhow::Result<(String, u32, u32)> {
     let (sw, sh) = (img.width(), img.height());
-    let (w, h) = scaled_dims(sw, sh, MAX_W, MAX_H);
+    let (w, h) = scaled_dims(sw, sh, max_w, max_h);
 
     // 缩放（等比，不放大）。尺寸未变时跳过 resize 省一次拷贝。
     let rgb = if (w, h) == (sw, sh) {
@@ -69,7 +136,7 @@ pub fn encode_frame(img: &RgbaImage) -> anyhow::Result<(String, u32, u32)> {
     };
 
     let mut buf = std::io::Cursor::new(Vec::new());
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 85).encode_image(&rgb)?;
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, q).encode_image(&rgb)?;
     Ok((STANDARD.encode(buf.get_ref()), w, h))
 }
 
@@ -174,6 +241,26 @@ mod tests {
         assert_eq!(&raw[..2], &[0xFF, 0xD8], "应为 JPEG");
         let img = image::load_from_memory(&raw).unwrap().to_rgba8();
         assert_eq!((img.width(), img.height()), (1280, 720), "解码后尺寸应一致");
+    }
+
+    #[test]
+    fn 画质档位_参数符合预期() {
+        let hq = params_for(protocol::QualityMode::HighQuality);
+        assert_eq!((hq.max_w, hq.max_h, hq.jpeg_q), (1920, 1080, 88));
+        assert!(hq.interval_ms >= 80, "高清档帧率不应过高(信创CPU)：{}ms", hq.interval_ms);
+        let sm = params_for(protocol::QualityMode::Smooth);
+        assert_eq!((sm.max_w, sm.max_h, sm.jpeg_q), (1280, 720, 80));
+        assert!(sm.interval_ms < hq.interval_ms, "流畅档帧率应高于高清档");
+    }
+
+    #[test]
+    fn encode_质量档位_高清更大() {
+        // 同图：高清(更大分辨率上限+更高q)的字节数应 ≥ 流畅
+        let img = solid(1920, 1080);
+        let (hq, hw, _) = encode_frame_q(&img, 1920, 1080, 88).unwrap();
+        let (sm, sw, _) = encode_frame_q(&img, 1280, 720, 80).unwrap();
+        assert_eq!((hw, sw), (1920, 1280), "分辨率上限生效");
+        assert!(hq.len() >= sm.len(), "高清帧字节应不小于流畅帧");
     }
 
     #[test]

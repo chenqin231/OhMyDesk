@@ -142,6 +142,16 @@ pub enum Mode {
     B,
 }
 
+/// 画质档位：高清优先（分辨率/质量高、帧率低）/ 流畅优先（分辨率/质量低、帧率高）。
+/// 具体的分辨率/质量/帧率参数由被控端 capture 模块按档位决定，协议只传枚举。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityMode {
+    HighQuality,
+    Smooth,
+}
+
 /// WS 统一消息体；`#[serde(tag="type")]` **内部 tag**——type 在 payload 对象内（非信封顶层），
 /// 前端按 `env.payload.type` 判别，Rust 按枚举变体匹配（裁决 W0-3）。
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -198,6 +208,12 @@ pub enum Message {
     Input {
         session_id: String,
         event: InputEvent,
+    },
+    /// 主控→被控：设置画质档位（高清优先 / 流畅优先）。被控端据此调整采集分辨率/JPEG质量/帧率。
+    /// 按 session 对端路由（同 Input）。
+    SetQuality {
+        session_id: String,
+        mode: QualityMode,
     },
     /// 被控→主控：会话内提示（如 Wayland 无法截屏）。主控端在等待画面处展示，
     /// 把「无限等待第一帧」变成可操作的明确提示。按 session 对端路由（同 Frame）。

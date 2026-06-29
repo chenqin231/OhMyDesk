@@ -134,6 +134,14 @@ pub(super) async fn handle_downlink(
                 INJECT_TX.with_send(session_id, event);
             }
         }
+        // 被控端收主控切换的画质档位 → 更新采集参数（仅本会话被控态时生效）
+        Message::SetQuality { session_id, mode } => {
+            let controlled =
+                session.lock().await.controlled.as_deref() == Some(session_id.as_str());
+            if controlled {
+                crate::capture::set_quality(mode);
+            }
+        }
         // 截图请求：被控端截一帧回 ScreenshotResp（Phase 5，主控/被控共用截屏能力）
         Message::ScreenshotReq { req_id } => {
             SCREENSHOT_TX.with_send(req_id, env.from);
@@ -381,6 +389,12 @@ pub(super) async fn handle_uplink(
             to: None, // server 按 session_id 路由给主控
             ts: now(),
             payload: Message::RemoteNotice { session_id, text },
+        },
+        FromUi::SetQuality { session_id, mode } => Envelope {
+            from: self_id.to_string(),
+            to: None, // server 按 session_id 路由给被控端
+            ts: now(),
+            payload: Message::SetQuality { session_id, mode },
         },
         FromUi::Disconnect { session_id } => {
             session.lock().await.controlling = None;

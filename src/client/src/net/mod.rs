@@ -88,6 +88,11 @@ pub enum FromUi {
     },
     /// 被控端会话内提示回流（如 Wayland 无法截屏）→ 主控端展示，替代「无限等待第一帧」。
     Notice { session_id: String, text: String },
+    /// 主控端切换画质档位（高清/流畅）→ 发 SetQuality 给被控端。
+    SetQuality {
+        session_id: String,
+        mode: protocol::QualityMode,
+    },
     /// 主动断开当前会话。
     Disconnect { session_id: String },
     /// 刷新本机临时密码：重新生成并重发 Register（server DashMap 按 id upsert 覆盖旧密码）。
