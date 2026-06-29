@@ -231,6 +231,7 @@ mod tests {
                 mode: protocol::Mode::B,
                 target: "ep-b".into(),
                 password: Some("123456".into()),
+                force: false,
             },
         };
         let json = serde_json::to_string(&env).unwrap();

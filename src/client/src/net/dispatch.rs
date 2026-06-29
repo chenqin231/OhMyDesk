@@ -353,6 +353,7 @@ pub(super) async fn handle_uplink(
                 mode: protocol::Mode::B,
                 target: target_id,
                 password: Some(password),
+                force: false,
             },
         },
         FromUi::AuthDecision { session_id, accept } => {
