@@ -38,7 +38,7 @@ pub enum ToUi {
         source: String,
     },
     /// 会话已建立为被控态（授权通过 / 对端 ack）。forced=true 表示管理员强制控制。
-    BeingControlled { peer_name: String, forced: bool },
+    BeingControlled { peer_name: String, forced: bool, session_id: String },
     /// 主控发起结果：收到对端首帧前的 ack。
     RemoteAck { session_id: String },
     /// 主控发起被拒（密码错/被拒）。

@@ -298,7 +298,8 @@ pub async fn consume_to_ui(
                     }
                 });
             }
-            net::ToUi::BeingControlled { peer_name, forced } => {
+            net::ToUi::BeingControlled { peer_name, forced, session_id } => {
+                *ctrl_session.lock().unwrap() = Some(session_id);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_auth_pending(false);

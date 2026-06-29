@@ -84,6 +84,7 @@ pub(super) async fn handle_downlink(
                 let _ = to_ui.send(ToUi::BeingControlled {
                     peer_name: from,
                     forced: mode == protocol::Mode::A,
+                    session_id: session_id.clone(),
                 });
             } else {
                 let _ = to_ui.send(ToUi::ControlRequest {
@@ -111,6 +112,7 @@ pub(super) async fn handle_downlink(
                 let _ = to_ui.send(ToUi::BeingControlled {
                     peer_name: "远程方".into(),
                     forced: false,
+                    session_id: session_id.clone(),
                 });
             } else {
                 let _ = to_ui.send(ToUi::RemoteRejected {
@@ -409,7 +411,10 @@ pub(super) async fn handle_uplink(
         // 此臂仅为穷尽匹配，理论不可达。
         FromUi::RefreshPassword => return,
         FromUi::CancelRemote => {
-            session.lock().await.initiate_cancelled = true;
+            let mut ctx = session.lock().await;
+            if ctx.controlling.is_none() {
+                ctx.initiate_cancelled = true;
+            }
             return;
         }
         FromUi::StartRemote {
