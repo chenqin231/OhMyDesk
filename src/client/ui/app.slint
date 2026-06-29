@@ -313,9 +313,12 @@ export component AppWindow inherits Window {
     // ── 主控端状态（模式 B：client→client 发起）──
     in property <bool> remote_active: false;      // 已进入主控画面态
     in-out property <bool> connecting: false;     // 发起后等待对端授权（遮罩）；Slint try-start 也写它
+    in-out property <bool> awaiting_consent: false;   // 无密码申请:等待对方同意态
+    in-out property <int> consent_countdown: 60;
+    callback cancel_remote();
     in-out property <string> target_id;
     in-out property <string> target_password;
-    in property <string> remote_status;           // 失败提示（"密码错误"等）
+    in-out property <string> remote_status;        // 失败提示（"密码错误"等）
     in-out property <image> frame;
     in property <int> frame_w: 1;
     in property <int> frame_h: 1;
@@ -816,7 +819,9 @@ export component AppWindow inherits Window {
                         }
                     }
                     Text {
-                        text: "正在建立加密通道，等待对端授权…";
+                        text: root.awaiting_consent
+                            ? "已向 " + root.target_id + " 发送控制请求"
+                            : "正在建立加密连接…";
                         color: Theme.fg;
                         font-size: 14px;
                         font-weight: 500;
@@ -836,6 +841,34 @@ export component AppWindow inherits Window {
                         Rectangle { width: 32px; height: 4px; border-radius: 2px; background: Theme.primary; }
                         Rectangle { width: 32px; height: 4px; border-radius: 2px; background: Theme.primary; }
                         Rectangle { width: 32px; height: 4px; border-radius: 2px; background: Theme.muted; }
+                    }
+                    if root.awaiting_consent: Text {
+                        text: "等待对方在终端上点击同意 · " + root.consent_countdown + "s";
+                        color: Theme.fg-muted;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                    }
+                    if root.awaiting_consent: PrimaryButton {
+                        label: "取消请求";
+                        clicked => {
+                            root.awaiting_consent = false;
+                            root.connecting = false;
+                            root.cancel_remote();
+                        }
+                    }
+                    Timer {
+                        interval: 1s;
+                        running: root.awaiting_consent;
+                        triggered => {
+                            if (root.consent_countdown > 1) {
+                                root.consent_countdown -= 1;
+                            } else {
+                                root.awaiting_consent = false;
+                                root.connecting = false;
+                                root.remote_status = "对方未响应(60s 未同意),请求已取消";
+                                root.cancel_remote();
+                            }
+                        }
                     }
                 }
             }

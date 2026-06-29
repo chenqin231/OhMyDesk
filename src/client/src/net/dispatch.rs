@@ -118,9 +118,26 @@ pub(super) async fn handle_downlink(
                 });
             }
         }
-        // 主控端收到 ack：进入主控态
+        // 主控端收到 ack：进入主控态（若已取消则收尾 server 会话，不进主控态）
         Message::ConnectAck { session_id } => {
-            session.lock().await.controlling = Some(session_id.clone());
+            let mut ctx = session.lock().await;
+            if ctx.initiate_cancelled {
+                // 申请已被主控取消/超时 → 收尾 server 会话，不进主控态。
+                ctx.initiate_cancelled = false;
+                drop(ctx);
+                let env = Envelope {
+                    from: self_id.to_string(),
+                    to: None,
+                    ts: now(),
+                    payload: Message::SessionEnd { session_id },
+                };
+                if let Ok(json) = serde_json::to_string(&env) {
+                    let _ = out_tx.send(json);
+                }
+                return Ok(());
+            }
+            ctx.controlling = Some(session_id.clone());
+            drop(ctx);
             CLIPBOARD_TX.send(ClipboardMsg::Start {
                 session_id: session_id.clone(),
             });
@@ -391,20 +408,27 @@ pub(super) async fn handle_uplink(
         // RefreshPassword 在 connect_once 的 select 处已拦截重注册，不进入本分发；
         // 此臂仅为穷尽匹配，理论不可达。
         FromUi::RefreshPassword => return,
+        FromUi::CancelRemote => {
+            session.lock().await.initiate_cancelled = true;
+            return;
+        }
         FromUi::StartRemote {
             target_id,
             password,
-        } => Envelope {
-            from: self_id.to_string(),
-            to: Some(target_id.clone()),
-            ts: now(),
-            payload: Message::ConnectRequest {
-                mode: protocol::Mode::B,
-                target: target_id,
-                password: opt_password(password),
-                force: false,
-            },
-        },
+        } => {
+            session.lock().await.initiate_cancelled = false;
+            Envelope {
+                from: self_id.to_string(),
+                to: Some(target_id.clone()),
+                ts: now(),
+                payload: Message::ConnectRequest {
+                    mode: protocol::Mode::B,
+                    target: target_id,
+                    password: opt_password(password),
+                    force: false,
+                },
+            }
+        }
         FromUi::AuthDecision { session_id, accept } => {
             if accept {
                 // 被控端授权通过 → 进入被控态 + 启动截屏推帧（主控才有画面）。
