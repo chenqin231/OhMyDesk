@@ -138,6 +138,7 @@ impl Hub {
                 mode,
                 target,
                 password,
+                force,
             } => {
                 handlers::handle_connect_request(
                     self,
@@ -145,6 +146,7 @@ impl Hub {
                     mode,
                     target,
                     password.as_deref(),
+                    *force,
                     now,
                 )
                 .await;
