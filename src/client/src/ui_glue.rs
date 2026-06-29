@@ -235,6 +235,9 @@ pub async fn consume_to_ui(
     ctrl_session: SharedSession,
     ended_session: SharedSession,
 ) {
+    // 诊断画面发虚：记录主控实际收到的帧分辨率，变化时打印（流畅=1280×720 / 高清=1920×1080 上限）。
+    // 据此判断高清是否真生效、被控源分辨率多大。
+    let mut last_frame_dims: Option<(u32, u32)> = None;
     while let Some(mut ev) = rx.recv().await {
         // 丢过期帧：收到 Frame 时若通道里还有积压，丢弃当前帧取下一条——只解码/渲染最新帧，
         // 消除「操作后看到一串旧画面」的滞后感（主控渲染慢于被控推帧时积压会堆积）。
@@ -306,6 +309,11 @@ pub async fn consume_to_ui(
                 if frame_belongs_to_ended(&ended_session.lock().unwrap(), &session_id) {
                     continue;
                 }
+                let dims_changed = last_frame_dims != Some((w, h));
+                if dims_changed {
+                    tracing::info!("主控收到帧分辨率={w}x{h}（流畅档≤1280×720 / 高清档≤1920×1080）");
+                    last_frame_dims = Some((w, h));
+                }
                 // 统一会话态：收到帧即把 cur_session 设为该会话——保证「有画面时输入一定有目标」，
                 // 即便 RemoteAck 因时序/路由未设上 cur_session，输入也不会被静默丢弃。
                 {
@@ -326,6 +334,17 @@ pub async fn consume_to_ui(
                             ui.set_frame_h(h as i32);
                             ui.set_frame(slint::Image::from_rgba8(buffer));
                             ui.set_remote_active(true);
+                            // 把主控窗口调到接近被控分辨率，让远程桌面尽量 1:1 显示，避免被压进小窗
+                            // 强制下采样导致发虚。仅尺寸变化时调整。
+                            // DPI 感知：set_size 用逻辑像素，除以主控缩放系数，使窗口的「物理」尺寸≈帧尺寸
+                            // （高 DPI 主控上才不会把窗口放大到溢出屏幕）。上限取常见屏物理 1920×1080。
+                            if dims_changed {
+                                let sf = ui.window().scale_factor().max(1.0);
+                                let win_w = (w.min(1920) as f32) / sf;
+                                let win_h = (h.min(1080) as f32) / sf;
+                                ui.window()
+                                    .set_size(slint::LogicalSize::new(win_w, win_h));
+                            }
                         }
                     });
                 }

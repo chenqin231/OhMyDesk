@@ -30,6 +30,28 @@ pub fn ensure_elevated() {
 #[cfg(not(windows))]
 pub fn ensure_elevated() {}
 
+/// 声明进程为 DPI 感知（Windows）。**必须在创建任何窗口/GDI/截屏之前调用**。
+///
+/// 背景：未声明 DPI 感知的进程在缩放 >100% 的 Windows 显示器（笔记本/多数桌面默认 125%/150%）
+/// 上会被系统「DPI 虚拟化」——进程看到的是缩小后的逻辑分辨率，xcap 据此抓到的是低分辨率、被
+/// GDI 拉伸的**模糊**画面（远程画面整体发虚的根因，且高清档也无高分辨率可抓）。声明 DPI 感知后，
+/// xcap 抓到真实物理分辨率，画面清晰。
+///
+/// 用 `SetProcessDPIAware`（Vista+ 全版本存在，静态导入零启动风险）而非 PerMonitorV2
+/// （需 Win10 1703+，静态导入在更老系统会导致进程无法启动）；对单显示器被控已足够消除发虚。
+#[cfg(windows)]
+pub fn set_dpi_aware() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetProcessDPIAware;
+    // 失败忽略：保持系统默认，不阻断启动。
+    unsafe {
+        let _ = SetProcessDPIAware();
+    }
+}
+
+/// 非 Windows：无 DPI 虚拟化问题，空实现。
+#[cfg(not(windows))]
+pub fn set_dpi_aware() {}
+
 /// 查询当前进程令牌是否已提权（TokenElevation）。
 #[cfg(windows)]
 fn is_elevated() -> bool {
