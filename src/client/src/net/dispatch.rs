@@ -64,16 +64,27 @@ pub(super) async fn handle_downlink(
 ) -> anyhow::Result<()> {
     let env: Envelope = serde_json::from_str(text)?;
     match env.payload {
-        // 被控端收到 server 转发的来控通知 → 通知 UI 弹授权框。
-        // server 已生成会话并分配真 session_id（I2 时序：主控 ConnectRequest → server 建会话 →
-        // 推 IncomingControl 给被控端），被控端授权时按此真 session_id 回 AuthResult。
+        // 被控端收 server 转发的来控通知。
+        // auto_accept=true:免同意(密码对/强制)→ 不弹框,直接进被控态(复用同意副作用);
+        // auto_accept=false:弹授权框,等用户同意。
         Message::IncomingControl {
-            session_id, from, ..
+            session_id,
+            from,
+            auto_accept,
+            ..
         } => {
-            let _ = to_ui.send(ToUi::ControlRequest {
-                requester: from,
-                session_id,
-            });
+            if auto_accept {
+                session.lock().await.controlled = Some(session_id.clone());
+                CAPTURE_CTRL.send(CaptureCtrl::Start {
+                    session_id: session_id.clone(),
+                });
+                let _ = to_ui.send(ToUi::BeingControlled { peer_name: from });
+            } else {
+                let _ = to_ui.send(ToUi::ControlRequest {
+                    requester: from,
+                    session_id,
+                });
+            }
         }
         // 鉴权结果（server 下发）：被控端据此进入被控态并回 ConnectAck 由 server 处理
         Message::AuthResult {
