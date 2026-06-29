@@ -32,6 +32,7 @@ xcap = "0.4"
 # 二者按 target 互斥启用，connect_async 自动据所启用后端协商 wss。
 [target.'cfg(windows)'.dependencies]
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+encoding_rs = "0.8"  # Windows cmd 输出为 GBK/CP936，按 GBK 解码避免中文乱码（纯 Rust，交叉编译友好）
 
 [target.'cfg(not(windows))'.dependencies]
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }

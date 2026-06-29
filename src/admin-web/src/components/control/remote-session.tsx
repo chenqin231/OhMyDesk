@@ -38,7 +38,29 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   const remoteNotice = useStore((s) => s.remoteNotice);
   const remoteSessionId = useStore((s) => s.remoteSessionId);
   const sendEnvelope = useStore((s) => s.sendEnvelope);
+  const remoteQuality = useStore((s) => s.remoteQuality);
+  const setRemoteQuality = useStore((s) => s.setRemoteQuality);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // 全屏：对远程画面容器请求浏览器全屏（再次点击退出）。
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void containerRef.current?.requestFullscreen?.();
+    }
+  }, []);
+
+  // 截图：把当前帧（JPEG base64）触发浏览器下载为 .jpg。
+  const saveScreenshot = useCallback(() => {
+    if (!remoteFrame) return;
+    const a = document.createElement("a");
+    a.href = frameSrc({ data: remoteFrame.data });
+    a.download = `${targetName}-${remoteFrame.seq}.jpg`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, [remoteFrame, targetName]);
 
   // G-2：坐标映射：将容器内鼠标坐标映射到帧分辨率
   const toFrameCoords = useCallback(
@@ -171,11 +193,28 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
 
         {/* 右：操作按钮 */}
         <div className="flex shrink-0 items-center gap-2">
-          <Button variant="outline" size="sm">
+          {/* 画质档位切换：流畅 / 高清 */}
+          <div className="flex items-center overflow-hidden rounded-md border border-border">
+            <button
+              type="button"
+              onClick={() => setRemoteQuality("smooth")}
+              className={`px-2.5 py-1 text-xs ${remoteQuality === "smooth" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
+            >
+              流畅
+            </button>
+            <button
+              type="button"
+              onClick={() => setRemoteQuality("high_quality")}
+              className={`px-2.5 py-1 text-xs ${remoteQuality === "high_quality" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
+            >
+              高清
+            </button>
+          </div>
+          <Button variant="outline" size="sm" onClick={toggleFullscreen}>
             <Maximize data-icon="inline-start" />
             <span className="hidden sm:inline">全屏</span>
           </Button>
-          <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" onClick={saveScreenshot} disabled={!remoteFrame}>
             <Camera data-icon="inline-start" />
             <span className="hidden sm:inline">截图</span>
           </Button>

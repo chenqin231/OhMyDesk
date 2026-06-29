@@ -123,7 +123,15 @@ pub fn abort(transfer_id: &str) {
 /// `path` 为空时回退到用户主目录；目录优先、其次按名称（不区分大小写）排序。
 /// 返回 `(实际目录绝对路径, 条目列表)`；失败返回 `Err(reason)`，调用方回 `FileListResp{error}`。
 pub fn list_dir(path: &str) -> Result<(String, Vec<protocol::FileEntry>), String> {
-    let target: PathBuf = if path.trim().is_empty() {
+    let trimmed = path.trim();
+
+    // Windows：空路径 = 「此电脑」盘符列表（无单一根，盘符各自为根；从盘内向上回到此列表）。
+    #[cfg(windows)]
+    if trimmed.is_empty() {
+        return Ok(list_windows_drives());
+    }
+
+    let target: PathBuf = if trimmed.is_empty() {
         directories::UserDirs::new()
             .map(|d| d.home_dir().to_path_buf())
             .or_else(dirs_home_fallback)
@@ -157,7 +165,38 @@ pub fn list_dir(path: &str) -> Result<(String, Vec<protocol::FileEntry>), String
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
-    Ok((canonical.to_string_lossy().to_string(), entries))
+    Ok((display_path(&canonical), entries))
+}
+
+/// 规整返回给前端的目录路径：Windows 上 `canonicalize` 会加 `\\?\` 扩展长度前缀，剥掉以免前端
+/// 显示/拼接出现 `\\?\C:\...`。非 Windows 原样返回。
+fn display_path(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy().to_string();
+    #[cfg(windows)]
+    {
+        return s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s);
+    }
+    #[cfg(not(windows))]
+    {
+        s
+    }
+}
+
+/// Windows 盘符列表（A:..Z: 中实际存在的），作为「此电脑」根；返回路径用空串标识该根。
+#[cfg(windows)]
+fn list_windows_drives() -> (String, Vec<protocol::FileEntry>) {
+    let mut entries = Vec::new();
+    for letter in b'A'..=b'Z' {
+        let root = format!("{}:\\", letter as char);
+        if std::path::Path::new(&root).is_dir() {
+            entries.push(protocol::FileEntry {
+                name: format!("{}:", letter as char),
+                is_dir: true,
+                size: 0,
+            });
+        }
+    }
+    (String::new(), entries)
 }
 
 /// home 目录兜底（UserDirs 在部分精简信创环境可能为 None）。
