@@ -68,6 +68,7 @@ pub fn wire_ui_callbacks(
                 ui.set_auth_pending(false);
                 if accept {
                     ui.set_being_controlled(true);
+                    ui.set_controlled_forced(false);
                 }
             }
         };
@@ -220,6 +221,16 @@ pub fn wire_ui_callbacks(
             let _ = tx.send(net::FromUi::RefreshPassword);
         });
     }
+    // 被控端主动断开：发 SessionEnd 给控制方 + 本地重置被控态
+    {
+        let tx = from_ui_tx.clone();
+        let sess = ctrl_session.clone();
+        ui.on_stop_being_controlled(move || {
+            if let Some(sid) = sess.lock().unwrap().clone() {
+                let _ = tx.send(net::FromUi::StopControlled { session_id: sid });
+            }
+        });
+    }
 }
 
 /// 该帧是否属于「已断开」会话——是则丢弃，不渲染、不复活远程态（修复需点两次断开的 Bug）。
@@ -262,21 +273,25 @@ pub async fn consume_to_ui(
             net::ToUi::ControlRequest {
                 requester,
                 session_id,
+                source,
             } => {
                 // 记下被控会话 id，授权回调据此回传 AuthResult
                 *ctrl_session.lock().unwrap() = Some(session_id);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_auth_requester(requester.into());
+                        ui.set_auth_source(source.into());
+                        ui.set_auth_countdown(60);
                         ui.set_auth_pending(true);
                     }
                 });
             }
-            net::ToUi::BeingControlled { peer_name } => {
+            net::ToUi::BeingControlled { peer_name, forced } => {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_auth_pending(false);
                         ui.set_peer_name(peer_name.into());
+                        ui.set_controlled_forced(forced);
                         ui.set_being_controlled(true);
                     }
                 });
