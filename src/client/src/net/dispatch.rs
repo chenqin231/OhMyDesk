@@ -70,8 +70,8 @@ pub(super) async fn handle_downlink(
         Message::IncomingControl {
             session_id,
             from,
+            mode,
             auto_accept,
-            ..
         } => {
             if auto_accept {
                 session.lock().await.controlled = Some(session_id.clone());
@@ -81,11 +81,15 @@ pub(super) async fn handle_downlink(
                 CLIPBOARD_TX.send(ClipboardMsg::Start {
                     session_id: session_id.clone(),
                 });
-                let _ = to_ui.send(ToUi::BeingControlled { peer_name: from });
+                let _ = to_ui.send(ToUi::BeingControlled {
+                    peer_name: from,
+                    forced: mode == protocol::Mode::A,
+                });
             } else {
                 let _ = to_ui.send(ToUi::ControlRequest {
                     requester: from,
                     session_id,
+                    source: control_source(mode).to_string(),
                 });
             }
         }
@@ -106,6 +110,7 @@ pub(super) async fn handle_downlink(
                 });
                 let _ = to_ui.send(ToUi::BeingControlled {
                     peer_name: "远程方".into(),
+                    forced: false,
                 });
             } else {
                 let _ = to_ui.send(ToUi::RemoteRejected {
@@ -362,6 +367,14 @@ pub(super) async fn handle_downlink(
     Ok(())
 }
 
+/// 来控来源中文标签(管理端 mode A / 终端伙伴 mode B),用于被控端授权弹窗展示。
+pub(super) fn control_source(mode: protocol::Mode) -> &'static str {
+    match mode {
+        protocol::Mode::A => "管理员",
+        protocol::Mode::B => "终端伙伴",
+    }
+}
+
 /// 伙伴密码归一:空串视为「未填」→ None(选填语义,server 据此走同意流程)。
 pub(super) fn opt_password(p: String) -> Option<String> {
     if p.is_empty() { None } else { Some(p) }
@@ -472,6 +485,22 @@ pub(super) async fn handle_uplink(
                 payload: Message::SessionEnd { session_id },
             }
         }
+        FromUi::StopControlled { session_id } => {
+            {
+                let mut ctx = session.lock().await;
+                if ctx.controlled.as_deref() == Some(session_id.as_str()) {
+                    ctx.controlled = None;
+                }
+            }
+            CAPTURE_CTRL.send(CaptureCtrl::Stop);
+            CLIPBOARD_TX.send(ClipboardMsg::Stop);
+            Envelope {
+                from: self_id.to_string(),
+                to: None,
+                ts: now(),
+                payload: Message::SessionEnd { session_id },
+            }
+        }
         // 被控端截图回发：to=请求方(admin)，endpoint_id=本机 id，由 server forward_by_to 路由
         FromUi::ScreenshotResp {
             req_id,
@@ -508,6 +537,11 @@ mod uplink_tests {
     #[test]
     fn 非空密码映射为_some() {
         assert_eq!(opt_password("123456".into()), Some("123456".into()));
+    }
+    #[test]
+    fn 来源标签_按模式() {
+        assert_eq!(super::control_source(protocol::Mode::A), "管理员");
+        assert_eq!(super::control_source(protocol::Mode::B), "终端伙伴");
     }
 }
 

@@ -303,8 +303,12 @@ export component AppWindow inherits Window {
     // 授权弹窗
     in property <bool> auth_pending: false;
     in property <string> auth_requester;
+    in property <string> auth_source;
+    in-out property <int> auth_countdown: 60;
+    in property <bool> controlled_forced: false;
     callback auth_accept();
     callback auth_reject();
+    callback stop_being_controlled();
 
     // ── 主控端状态（模式 B：client→client 发起）──
     in property <bool> remote_active: false;      // 已进入主控画面态
@@ -348,9 +352,9 @@ export component AppWindow inherits Window {
         // 被控提示条（常驻顶部，仅 being_controlled 时显示）
         if root.being_controlled: Rectangle {
             height: 42px;
-            background: #211a0d;
+            background: root.controlled_forced ? #2a1416 : #211a0d;
             border-width: 1px;
-            border-color: #4a3a18;
+            border-color: root.controlled_forced ? Theme.danger : #4a3a18;
             HorizontalLayout {
                 alignment: center;
                 spacing: 8px;
@@ -358,14 +362,22 @@ export component AppWindow inherits Window {
                     width: 7px;
                     height: 7px;
                     border-radius: 4px;
-                    background: Theme.amber;
+                    background: root.controlled_forced ? Theme.danger : Theme.amber;
                 }
                 Text {
-                    text: "此设备正在被 " + root.peer_name + " 远程控制";
-                    color: Theme.amber;
+                    text: root.controlled_forced
+                        ? "管理员正在强制远程控制本机"
+                        : "此设备正在被 " + root.peer_name + " 远程控制";
+                    color: root.controlled_forced ? Theme.danger : Theme.amber;
                     font-size: 13px;
                     font-weight: 500;
                     vertical-alignment: center;
+                }
+                GhostButton {
+                    label: "我要断开";
+                    clicked => {
+                        root.stop_being_controlled();
+                    }
                 }
             }
         }
@@ -877,6 +889,29 @@ export component AppWindow inherits Window {
                             font-size: 13px;
                             horizontal-alignment: center;
                             wrap: word-wrap;
+                        }
+                        Text {
+                            text: "来源：" + root.auth_source;
+                            color: Theme.fg-muted;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: root.auth_countdown + " 秒后自动拒绝";
+                            color: Theme.amber;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                        }
+                        Timer {
+                            interval: 1s;
+                            running: root.auth_pending;
+                            triggered => {
+                                if (root.auth_countdown > 1) {
+                                    root.auth_countdown -= 1;
+                                } else {
+                                    root.auth_reject();
+                                }
+                            }
                         }
                         Rectangle { height: 8px; }
                         HorizontalLayout {
