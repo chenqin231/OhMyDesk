@@ -61,6 +61,15 @@ pub fn current_params() -> QualityParams {
     params_for(mode)
 }
 
+/// 当前档位下、被控真实屏 `real_w×real_h` 对应的**推帧分辨率**。
+///
+/// 与采集线程 `frame_q` 内部 `scaled_dims(屏, 档位上限)` 同源同算法，是「截多大」的单一事实源；
+/// 注入侧据此把主控帧内坐标还原为真实屏坐标，保证切换高清/流畅后点击不偏（见 P-CLI4）。
+pub fn current_frame_dims(real_w: u32, real_h: u32) -> (u32, u32) {
+    let p = current_params();
+    crate::geom::scaled_dims(real_w, real_h, p.max_w, p.max_h)
+}
+
 /// 持有主显示器句柄，复用于每帧截屏。
 pub struct Capturer {
     mon: Monitor,
@@ -251,6 +260,29 @@ mod tests {
         let sm = params_for(protocol::QualityMode::Smooth);
         assert_eq!((sm.max_w, sm.max_h, sm.jpeg_q), (1280, 720, 80));
         assert!(sm.interval_ms < hq.interval_ms, "流畅档帧率应高于高清档");
+    }
+
+    #[test]
+    fn 注入帧尺寸_随档位变化_与采集编码一致() {
+        // 被控真实屏 1920×1080。注入侧 current_frame_dims 必须与采集 encode_frame_q 的输出尺寸一致，
+        // 且随档位变化——否则切高清后注入用陈旧尺寸还原坐标，点击错位（回归 Bug）。
+        let img = solid(1920, 1080);
+
+        set_quality(protocol::QualityMode::Smooth);
+        let sp = params_for(protocol::QualityMode::Smooth);
+        let (_, sw, sh) = encode_frame_q(&img, sp.max_w, sp.max_h, sp.jpeg_q).unwrap();
+        assert_eq!(current_frame_dims(1920, 1080), (sw, sh), "流畅档帧尺寸应一致");
+        assert_eq!((sw, sh), (1280, 720));
+
+        set_quality(protocol::QualityMode::HighQuality);
+        let hp = params_for(protocol::QualityMode::HighQuality);
+        let (_, hw, hh) = encode_frame_q(&img, hp.max_w, hp.max_h, hp.jpeg_q).unwrap();
+        assert_eq!(current_frame_dims(1920, 1080), (hw, hh), "高清档帧尺寸应一致");
+        assert_eq!((hw, hh), (1920, 1080));
+        // 关键回归：高清档下注入帧尺寸绝不能再是旧静态 1280×720（那会导致 1.5× 偏移）。
+        assert_ne!(current_frame_dims(1920, 1080), (1280, 720));
+
+        set_quality(protocol::QualityMode::Smooth); // 复位，避免污染其它测试
     }
 
     #[test]

@@ -33,6 +33,9 @@ xcap = "0.4"
 [target.'cfg(windows)'.dependencies]
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 encoding_rs = "0.8"  # Windows cmd 输出为 GBK/CP936，按 GBK 解码避免中文乱码（纯 Rust，交叉编译友好）
+# 启动自提权（UAC）：部分 Windows 需管理员权限才能向受 UIPI 保护/提权窗口注入键鼠。
+# 仅 token 提权检测 + ShellExecuteW("runas") 自重启，FFI 面极小，windows-gnu 交叉编译友好。
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(not(windows))'.dependencies]
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }

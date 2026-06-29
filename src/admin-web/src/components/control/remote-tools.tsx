@@ -1,25 +1,21 @@
 import { useEffect, useState } from "react";
 import {
-  Terminal,
   Upload,
   Download,
   Loader2,
-  FolderTree,
   Folder,
   File as FileIcon,
   ArrowUp,
   RefreshCw,
   X,
-  ChevronUp,
-  ChevronDown,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useStore } from "@/store";
 
-// 远控会话内的「命令行 + 文件传输」底部停靠面板。挂在远控画面下方，全宽，可折叠。
-// 两个标签页：命令行（一次性命令执行）/ 文件传输（左本地暂存区 ↔ 右远端目录浏览）。
-// 整个面板仅在 remotePhase==="connected" 时随 RemoteSession 渲染——天然满足「连接成功方可使用」。
+// 远控会话的「命令行」「文件传输」面板。由 RemoteSession 作为与「远程控制」平级的标签页渲染
+// （三标签：远程控制 / 命令行 / 文件传输），整体仅在 remotePhase==="connected" 时挂载——
+// 天然满足「连接成功方可使用」。
 const inputCls =
   "min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs " +
   "text-foreground placeholder:text-muted-foreground outline-none focus:border-primary";
@@ -62,43 +58,8 @@ function upPath(remotePath: string): string {
   return p;
 }
 
-export function RemoteTools() {
-  const [tab, setTab] = useState<"cmd" | "file">("cmd");
-  const [collapsed, setCollapsed] = useState(false);
-
-  return (
-    <aside className="flex shrink-0 flex-col border-t border-border bg-card">
-      {/* 标签头 + 折叠开关 */}
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-border px-2">
-        <div className="flex items-center gap-1">
-          <TabButton active={tab === "cmd"} onClick={() => setTab("cmd")} icon={<Terminal className="size-3.5" />}>
-            命令行
-          </TabButton>
-          <TabButton active={tab === "file"} onClick={() => setTab("file")} icon={<FolderTree className="size-3.5" />}>
-            文件传输
-          </TabButton>
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setCollapsed((c) => !c)}
-          title={collapsed ? "展开" : "收起"}
-          aria-label={collapsed ? "展开工具面板" : "收起工具面板"}
-        >
-          {collapsed ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-        </Button>
-      </div>
-
-      {!collapsed && (
-        <div className="h-72 min-h-0">
-          {tab === "cmd" ? <CommandPanel /> : <FilePanel />}
-        </div>
-      )}
-    </aside>
-  );
-}
-
-function TabButton({
+// 三标签栏复用的标签按钮（远程控制 / 命令行 / 文件传输）。
+export function TabButton({
   active,
   onClick,
   icon,
@@ -127,7 +88,7 @@ function TabButton({
 }
 
 // ── 命令行标签页 ────────────────────────────────────────────────────────────
-function CommandPanel() {
+export function CommandPanel() {
   const execResults = useStore((s) => s.execResults);
   const execCommand = useStore((s) => s.execCommand);
   const [cmd, setCmd] = useState("");
@@ -192,7 +153,7 @@ function CommandPanel() {
 }
 
 // ── 文件传输标签页：左本地暂存区 ↔ 右远端目录浏览 ─────────────────────────────
-function FilePanel() {
+export function FilePanel() {
   const fileNotice = useStore((s) => s.fileNotice);
 
   return (

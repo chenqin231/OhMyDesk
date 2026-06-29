@@ -14,6 +14,7 @@
 
 mod asset;
 mod capture;
+mod elevate;
 mod exec;
 mod geom;
 mod history;
@@ -47,6 +48,9 @@ fn main() -> anyhow::Result<()> {
         },
         _ => tracing_subscriber::fmt().with_env_filter(filter).init(),
     }
+    // Windows：若未提权则触发 UAC 自重启（成功则本体退出），保证能向受保护/提权窗口注入。
+    // 须在反连/起线程之前，避免提权副本与本体同时上线。非 Windows 为 no-op。
+    elevate::ensure_elevated();
     lock_x11_session();
 
     let user = std::env::args().nth(1).unwrap_or_else(|| "演示终端".into());

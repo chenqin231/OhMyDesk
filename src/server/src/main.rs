@@ -43,7 +43,9 @@ async fn main() -> anyhow::Result<()> {
     let db = db::connect().await; // Option<Db>，None 时审计 best-effort 跳过
 
     // ── 共享状态构造 ─────────────────────────────────────────────────────────
-    let reg = Arc::new(Registry::new());
+    // 注册表带 DB 持久化：启动回灌历史终端（修复升级/重启后终端列表为空）。
+    let reg = Arc::new(Registry::with_db(db.clone()));
+    reg.load_from_db(hub::now_sec()).await;
     let sessions = Arc::new(SessionStore::new());
     let audit = Arc::new(AuditStore::new(db.clone()));
     let settings = Arc::new(SettingsStore::new(db));

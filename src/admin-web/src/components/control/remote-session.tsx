@@ -1,5 +1,5 @@
-import { useEffect, useRef, useCallback } from "react";
-import { Camera, Maximize, PhoneOff, TriangleAlert } from "lucide-react";
+import { useEffect, useRef, useCallback, useState } from "react";
+import { Camera, Maximize, PhoneOff, TriangleAlert, Monitor, Terminal, FolderTree } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -13,7 +13,9 @@ import {
   remoteMouseButtonEvents,
   shouldBlockRemoteContextMenu,
 } from "@/components/control/remote-geometry";
-import { RemoteTools } from "@/components/control/remote-tools";
+import { CommandPanel, FilePanel, TabButton } from "@/components/control/remote-tools";
+
+type ToolTab = "remote" | "cmd" | "file";
 
 type RemoteSessionProps = {
   targetName: string;
@@ -41,6 +43,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   const remoteQuality = useStore((s) => s.remoteQuality);
   const setRemoteQuality = useStore((s) => s.setRemoteQuality);
   const containerRef = useRef<HTMLDivElement>(null);
+  // 三标签：远程控制（画面）/ 命令行 / 文件传输。仅「远程控制」标签转发键鼠到被控端。
+  const [tab, setTab] = useState<ToolTab>("remote");
 
   // 全屏：对远程画面容器请求浏览器全屏（再次点击退出）。
   const toggleFullscreen = useCallback(() => {
@@ -82,10 +86,10 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
     [remoteSessionId, sendEnvelope],
   );
 
-  // G-2：监听键鼠事件并发 Input 信封
+  // G-2：监听键鼠事件并发 Input 信封（仅「远程控制」标签生效）
   useEffect(() => {
     const el = containerRef.current;
-    if (!el) return;
+    if (!el || tab !== "remote") return;
 
     function onMouseMove(e: MouseEvent) {
       e.preventDefault();
@@ -123,7 +127,7 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
       el.removeEventListener("mouseup", onMouseUp);
       el.removeEventListener("contextmenu", onContextMenu);
     };
-  }, [toFrameCoords, sendInput]);
+  }, [toFrameCoords, sendInput, tab]);
 
   // 键盘事件挂在 window（焦点无关）。
   // 用 e.key（已按 Shift/CapsLock 解析出大小写与上档符，如 "A"/"!"/"/"），而非 e.code（物理键
@@ -145,12 +149,12 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
       );
     }
     function onKeyDown(e: KeyboardEvent) {
-      if (isEditableTarget()) return;
+      if (tab !== "remote" || isEditableTarget()) return;
       e.preventDefault();
       sendInput({ kind: "key", code: e.key, down: true });
     }
     function onKeyUp(e: KeyboardEvent) {
-      if (isEditableTarget()) return;
+      if (tab !== "remote" || isEditableTarget()) return;
       e.preventDefault();
       sendInput({ kind: "key", code: e.key, down: false });
     }
@@ -160,7 +164,7 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [sendInput]);
+  }, [sendInput, tab]);
 
   return (
     <div className="flex h-full min-h-[calc(100vh-7rem)] w-full flex-col bg-background">
@@ -193,31 +197,37 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
 
         {/* 右：操作按钮 */}
         <div className="flex shrink-0 items-center gap-2">
-          {/* 画质档位切换：流畅 / 高清 */}
-          <div className="flex items-center overflow-hidden rounded-md border border-border">
-            <button
-              type="button"
-              onClick={() => setRemoteQuality("smooth")}
-              className={`px-2.5 py-1 text-xs ${remoteQuality === "smooth" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
-            >
-              流畅
-            </button>
-            <button
-              type="button"
-              onClick={() => setRemoteQuality("high_quality")}
-              className={`px-2.5 py-1 text-xs ${remoteQuality === "high_quality" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
-            >
-              高清
-            </button>
-          </div>
-          <Button variant="outline" size="sm" onClick={toggleFullscreen}>
-            <Maximize data-icon="inline-start" />
-            <span className="hidden sm:inline">全屏</span>
-          </Button>
-          <Button variant="outline" size="sm" onClick={saveScreenshot} disabled={!remoteFrame}>
-            <Camera data-icon="inline-start" />
-            <span className="hidden sm:inline">截图</span>
-          </Button>
+          {/* 画质档位切换：流畅 / 高清（仅远程控制标签） */}
+          {tab === "remote" && (
+            <div className="flex items-center overflow-hidden rounded-md border border-border">
+              <button
+                type="button"
+                onClick={() => setRemoteQuality("smooth")}
+                className={`px-2.5 py-1 text-xs ${remoteQuality === "smooth" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
+              >
+                流畅
+              </button>
+              <button
+                type="button"
+                onClick={() => setRemoteQuality("high_quality")}
+                className={`px-2.5 py-1 text-xs ${remoteQuality === "high_quality" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
+              >
+                高清
+              </button>
+            </div>
+          )}
+          {tab === "remote" && (
+            <>
+              <Button variant="outline" size="sm" onClick={toggleFullscreen}>
+                <Maximize data-icon="inline-start" />
+                <span className="hidden sm:inline">全屏</span>
+              </Button>
+              <Button variant="outline" size="sm" onClick={saveScreenshot} disabled={!remoteFrame}>
+                <Camera data-icon="inline-start" />
+                <span className="hidden sm:inline">截图</span>
+              </Button>
+            </>
+          )}
           <Button
             size="sm"
             onClick={onDisconnect}
@@ -229,44 +239,67 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
         </div>
       </header>
 
-      {/* 主体：上=远程画面，下=命令行/文件传输停靠面板（连接态才渲染整个 RemoteSession，天然门控） */}
+      {/* 三标签栏：远程控制 / 命令行 / 文件传输（连接态才渲染整个 RemoteSession，天然门控） */}
+      <nav className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-2">
+        <TabButton active={tab === "remote"} onClick={() => setTab("remote")} icon={<Monitor className="size-3.5" />}>
+          远程控制
+        </TabButton>
+        <TabButton active={tab === "cmd"} onClick={() => setTab("cmd")} icon={<Terminal className="size-3.5" />}>
+          命令行
+        </TabButton>
+        <TabButton active={tab === "file"} onClick={() => setTab("file")} icon={<FolderTree className="size-3.5" />}>
+          文件传输
+        </TabButton>
+      </nav>
+
+      {/* 主体：按标签切换。命令行/文件传输与远程画面平级（不再是底部停靠面板）。 */}
       <div className="flex min-h-0 flex-1 flex-col">
-      {/* G-1：主体远程画面，<img src=data:image/jpeg;base64,> 消费 frame */}
-      <main className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black p-3 md:p-6">
-        <div
-          ref={containerRef}
-          className="relative flex h-full w-full max-w-[1920px] items-center justify-center overflow-hidden rounded-lg ring-1 ring-border cursor-pointer"
+        {/* 远程控制标签：始终挂载（隐藏而非卸载），保持 containerRef 与第一帧不丢；非 remote 标签时 hidden。 */}
+        <main
+          className={`relative min-h-0 flex-1 items-center justify-center overflow-hidden bg-black p-3 md:p-6 ${tab === "remote" ? "flex" : "hidden"}`}
         >
-          {remoteFrame ? (
-            <img
-              src={frameSrc({ data: remoteFrame.data })}
-              alt={`${targetName} 的远程桌面画面`}
-              className="max-h-full max-w-full object-contain"
-              draggable={false}
-            />
-          ) : remoteNotice ? (
-            <div className="absolute inset-0 flex items-center justify-center bg-secondary px-8">
-              <div className="flex max-w-md items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning">
-                <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-                <span className="leading-relaxed">{remoteNotice}</span>
+          <div
+            ref={containerRef}
+            className="relative flex h-full w-full max-w-[1920px] items-center justify-center overflow-hidden rounded-lg ring-1 ring-border cursor-pointer"
+          >
+            {remoteFrame ? (
+              <img
+                src={frameSrc({ data: remoteFrame.data })}
+                alt={`${targetName} 的远程桌面画面`}
+                className="max-h-full max-w-full object-contain"
+                draggable={false}
+              />
+            ) : remoteNotice ? (
+              <div className="absolute inset-0 flex items-center justify-center bg-secondary px-8">
+                <div className="flex max-w-md items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning">
+                  <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+                  <span className="leading-relaxed">{remoteNotice}</span>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="absolute inset-0 flex items-center justify-center bg-secondary text-sm text-muted-foreground">
-              等待第一帧…
-            </div>
-          )}
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center bg-secondary text-sm text-muted-foreground">
+                等待第一帧…
+              </div>
+            )}
 
-          {/* 左上角常驻安全提示条 */}
-          <div className="absolute left-3 top-3 flex items-center gap-2 rounded-md bg-warning/90 px-3 py-1.5 text-xs font-medium text-warning-foreground shadow-lg backdrop-blur-sm">
-            <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
-            此终端正在被 管理员 远程协助
+            {/* 左上角常驻安全提示条 */}
+            <div className="absolute left-3 top-3 flex items-center gap-2 rounded-md bg-warning/90 px-3 py-1.5 text-xs font-medium text-warning-foreground shadow-lg backdrop-blur-sm">
+              <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
+              此终端正在被 管理员 远程协助
+            </div>
           </div>
+        </main>
 
-          {/* O-2 裁决：删除"会话录制中"标记 */}
-        </div>
-      </main>
-        <RemoteTools />
+        {tab === "cmd" && (
+          <div className="min-h-0 flex-1">
+            <CommandPanel />
+          </div>
+        )}
+        {tab === "file" && (
+          <div className="min-h-0 flex-1">
+            <FilePanel />
+          </div>
+        )}
       </div>
     </div>
   );

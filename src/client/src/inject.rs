@@ -20,33 +20,32 @@ const MOD_CTRL: u8 = 1;
 const MOD_ALT: u8 = 2;
 const MOD_META: u8 = 4;
 
-/// 键鼠注入器：持有 enigo + 被控真实屏尺寸 + 当前帧尺寸（用于坐标换算）。
+/// 键鼠注入器：持有 enigo + 被控真实屏尺寸（坐标换算的帧尺寸按当前画质档位实时派生）。
 pub struct Injector {
     enigo: Enigo,
     real_w: u32,
     real_h: u32,
-    frame_w: u32,
-    frame_h: u32,
     /// 当前按住的非 Shift 修饰键（Ctrl/Alt/Meta）位掩码，从事件流推断，用于组合键注入。
     mods_held: u8,
 }
 
 impl Injector {
-    /// `real_*` = 被控真实屏，`frame_*` = 首帧缩放后尺寸（从 Frame 消息取）。
-    pub fn new(real_w: u32, real_h: u32, frame_w: u32, frame_h: u32) -> anyhow::Result<Self> {
+    /// `real_*` = 被控真实屏。帧尺寸不再构造时固定，而是每次注入按当前画质档位实时取
+    /// （见 [`to_real`]），保证主控切换高清/流畅后点击坐标不偏。
+    pub fn new(real_w: u32, real_h: u32) -> anyhow::Result<Self> {
         Ok(Injector {
             enigo: Enigo::new(&Settings::default())?,
             real_w,
             real_h,
-            frame_w: frame_w.max(1),
-            frame_h: frame_h.max(1),
             mods_held: 0,
         })
     }
 
-    /// 帧内坐标 → 真实屏坐标（纯换算，单测覆盖）。
+    /// 帧内坐标 → 真实屏坐标。帧尺寸取当前画质档位下的推帧分辨率（与采集线程同源），
+    /// 故高清/流畅切换后即时跟随，不会用陈旧尺寸还原坐标（修复「切高清后点击错位」）。
     fn to_real(&self, x: i32, y: i32) -> (i32, i32) {
-        map_frame_to_real(x, y, self.frame_w, self.frame_h, self.real_w, self.real_h)
+        let (frame_w, frame_h) = crate::capture::current_frame_dims(self.real_w, self.real_h);
+        map_frame_to_real(x, y, frame_w, frame_h, self.real_w, self.real_h)
     }
 
     /// 注入一个输入事件。
