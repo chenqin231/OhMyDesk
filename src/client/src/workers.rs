@@ -130,7 +130,13 @@ pub async fn consume_capture(
                     // 懒构造截屏器（依赖 X11；失败则回执主控端并停推帧，避免刷屏告警）
                     if capturer.is_none() {
                         match capture::Capturer::new() {
-                            Ok(c) => capturer = Some(c),
+                            Ok(c) => {
+                                // 诊断画面发虚：打印被控实际抓屏分辨率。DPI 感知前(虚拟化)会偏小
+                                // (如 1280x720)，感知后应为物理分辨率(如 1920x1080)。
+                                let (cw, ch) = c.real_size();
+                                tracing::info!("被控截屏器就绪 抓屏分辨率={cw}x{ch}");
+                                capturer = Some(c);
+                            }
                             Err(e) => {
                                 if notified_for.as_deref() != Some(sid.as_str()) {
                                     let _ = from_ui_tx.send(net::FromUi::Notice {

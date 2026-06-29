@@ -33,6 +33,9 @@ slint::include_modules!();
 pub(crate) type SharedSession = Arc<std::sync::Mutex<Option<String>>>;
 
 fn main() -> anyhow::Result<()> {
+    // 最先声明 DPI 感知：必须早于任何窗口/GDI/截屏初始化，否则缩放屏上 xcap 抓到模糊的虚拟化画面。
+    elevate::set_dpi_aware();
+
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "client=info".into());
     // Windows 被控端是无控制台子系统、看不到 stderr 日志；设 OHMYDESK_LOG_FILE=<路径>
