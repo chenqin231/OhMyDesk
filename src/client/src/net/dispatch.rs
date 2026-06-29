@@ -31,6 +31,29 @@ fn send_file_error(
     }
 }
 
+/// 给控制方回一条 `FileDone`（被控端收齐 push 文件并落盘后，告知最终绝对路径）。
+fn send_file_done(
+    out_tx: &mpsc::UnboundedSender<String>,
+    self_id: &str,
+    session_id: String,
+    transfer_id: String,
+    path: String,
+) {
+    let env = Envelope {
+        from: self_id.to_string(),
+        to: None,
+        ts: now(),
+        payload: Message::FileDone {
+            session_id,
+            transfer_id,
+            path,
+        },
+    };
+    if let Ok(s) = serde_json::to_string(&env) {
+        let _ = out_tx.send(s);
+    }
+}
+
 /// 处理一条下行消息。
 pub(super) async fn handle_downlink(
     text: &str,
@@ -173,18 +196,21 @@ pub(super) async fn handle_downlink(
             name,
             size,
             dir,
+            dest,
         } => {
             let controlled =
                 session.lock().await.controlled.as_deref() == Some(session_id.as_str());
             if controlled && dir == protocol::FileDir::Push {
-                if let Err(reason) = crate::transfer::open_recv(&transfer_id, &name, size) {
+                if let Err(reason) =
+                    crate::transfer::open_recv(&transfer_id, &name, size, dest.as_deref())
+                {
                     send_file_error(out_tx, self_id, session_id, transfer_id, reason);
                 }
             }
             // dir==Pull：本端作为控制方收到回流首包 → P1（端到端 UI）
         }
 
-        // ── 被控端：收 push 数据块 → 落盘（失败回 FileError）────────────────────
+        // ── 被控端：收 push 数据块 → 落盘；末块成功回 FileDone(带最终路径)，失败回 FileError ──
         Message::FileChunk {
             session_id,
             transfer_id,
@@ -195,8 +221,18 @@ pub(super) async fn handle_downlink(
             let controlled =
                 session.lock().await.controlled.as_deref() == Some(session_id.as_str());
             if controlled {
-                if let Err(reason) = crate::transfer::write_chunk(&transfer_id, &data, last) {
-                    send_file_error(out_tx, self_id, session_id, transfer_id, reason);
+                match crate::transfer::write_chunk(&transfer_id, &data, last) {
+                    Ok(Some(path)) => send_file_done(
+                        out_tx,
+                        self_id,
+                        session_id,
+                        transfer_id,
+                        path.to_string_lossy().to_string(),
+                    ),
+                    Ok(None) => {}
+                    Err(reason) => {
+                        send_file_error(out_tx, self_id, session_id, transfer_id, reason)
+                    }
                 }
             }
             // 控制方收 pull 回流块 → P1
@@ -218,6 +254,47 @@ pub(super) async fn handle_downlink(
                     transfer_id,
                     path,
                 ));
+            }
+        }
+
+        // ── 被控端：收远端目录浏览请求 → 列目录回 FileListResp（独立任务，IO 不阻塞分发）──
+        Message::FileListRequest {
+            session_id,
+            transfer_id,
+            path,
+        } => {
+            let controlled =
+                session.lock().await.controlled.as_deref() == Some(session_id.as_str());
+            if controlled {
+                let out = out_tx.clone();
+                let from = self_id.to_string();
+                tokio::spawn(async move {
+                    let payload = match crate::transfer::list_dir(&path) {
+                        Ok((dir, entries)) => Message::FileListResp {
+                            session_id,
+                            transfer_id,
+                            path: dir,
+                            entries,
+                            error: None,
+                        },
+                        Err(reason) => Message::FileListResp {
+                            session_id,
+                            transfer_id,
+                            path,
+                            entries: Vec::new(),
+                            error: Some(reason),
+                        },
+                    };
+                    let env = Envelope {
+                        from,
+                        to: None,
+                        ts: now(),
+                        payload,
+                    };
+                    if let Ok(s) = serde_json::to_string(&env) {
+                        let _ = out.send(s);
+                    }
+                });
             }
         }
 

@@ -108,12 +108,27 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   // 位 "KeyA"/"Digit1"）——被控端注入侧对单字符直接走 Unicode，能正确还原所输入的字符；
   // 具名功能键（"Enter"/"Backspace"/"ArrowUp"/"Shift"…）由被控端映射为对应 enigo Key。
   // preventDefault 拦掉浏览器自身的按键行为（空格滚动、"/" 快速查找、F 键等），远控期间独占键盘。
+  // 守卫：焦点在本地输入控件（命令行输入框/文件路径框等）时不拦截、不转发——否则用户无法打字
+  //（Bug：全局键盘捕获会吞掉所有按键，导致底部「命令行」标签页输入框形同失效）。
   useEffect(() => {
+    function isEditableTarget(): boolean {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = el.tagName;
+      return (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        (el as HTMLElement).isContentEditable
+      );
+    }
     function onKeyDown(e: KeyboardEvent) {
+      if (isEditableTarget()) return;
       e.preventDefault();
       sendInput({ kind: "key", code: e.key, down: true });
     }
     function onKeyUp(e: KeyboardEvent) {
+      if (isEditableTarget()) return;
       e.preventDefault();
       sendInput({ kind: "key", code: e.key, down: false });
     }
@@ -175,10 +190,10 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
         </div>
       </header>
 
-      {/* 主体：远程画面 + 右侧命令/文件工具栏 */}
-      <div className="flex min-h-0 flex-1">
+      {/* 主体：上=远程画面，下=命令行/文件传输停靠面板（连接态才渲染整个 RemoteSession，天然门控） */}
+      <div className="flex min-h-0 flex-1 flex-col">
       {/* G-1：主体远程画面，<img src=data:image/jpeg;base64,> 消费 frame */}
-      <main className="relative flex flex-1 items-center justify-center overflow-hidden bg-black p-3 md:p-6">
+      <main className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black p-3 md:p-6">
         <div
           ref={containerRef}
           className="relative flex h-full w-full max-w-[1920px] items-center justify-center overflow-hidden rounded-lg ring-1 ring-border cursor-pointer"

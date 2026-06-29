@@ -3,3 +3,5 @@
 # --config.dangerouslyAllowAllBuilds 处理（pnpm 11 下 onlyBuiltDependencies 此场景不生效）。
 packages:
   - '.'
+allowBuilds:
+  esbuild: set this to true or false
