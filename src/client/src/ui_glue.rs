@@ -118,7 +118,6 @@ pub fn wire_ui_callbacks(
         let sess = cur_session.clone();
         ui.on_on_pointer_move(move |x, y| {
             let sid = sess.lock().unwrap().clone();
-            tracing::debug!("主控采集·移动 ({x},{y}) session={}", sid.as_deref().unwrap_or("<无>"));
             if let Some(sid) = sid {
                 let _ = tx.send(net::FromUi::Input {
                     session_id: sid,
