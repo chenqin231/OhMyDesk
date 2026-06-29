@@ -242,7 +242,24 @@ impl Hub {
             }
             Message::FileChunk { session_id, .. }
             | Message::FilePullRequest { session_id, .. }
-            | Message::FileError { session_id, .. } => {
+            | Message::FileError { session_id, .. }
+            | Message::FileDone { session_id, .. }
+            | Message::FileListResp { session_id, .. } => {
+                self.route_to_peer(session_id, &env);
+            }
+
+            // ── 远端目录浏览请求：按 session 路由；落 FileTransfer 审计 ──────────
+            Message::FileListRequest {
+                session_id, path, ..
+            } => {
+                self.audit
+                    .log(
+                        session_id,
+                        &env.from,
+                        AuditType::FileTransfer,
+                        &format!("浏览目录: {path}"),
+                    )
+                    .await;
                 self.route_to_peer(session_id, &env);
             }
 
@@ -362,6 +379,46 @@ mod tests {
         match env.payload {
             Message::ExecRequest { command, .. } => assert_eq!(command, "whoami"),
             other => panic!("应为 ExecRequest，实际 {other:?}"),
+        }
+    }
+
+    /// 远端目录浏览回归：FileListRequest 必须按 session 路由给被控端（落审计不 panic）。
+    #[tokio::test]
+    async fn file_list_request_forwarded_to_controlled_peer() {
+        let hub = test_hub();
+        let (_admin_tx, _admin_rx) = mpsc::unbounded_channel::<String>();
+        let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-1".into(), _admin_tx);
+        hub.add_client("ep-victim".into(), victim_tx);
+
+        let sid = "sess-ls".to_string();
+        hub.sessions.insert(Session {
+            id: sid.clone(),
+            mode: Mode::A,
+            from_id: "admin-1".into(),
+            to_id: "ep-victim".into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        let env = Envelope {
+            from: "admin-1".into(),
+            to: None,
+            ts: 200,
+            payload: Message::FileListRequest {
+                session_id: sid.clone(),
+                transfer_id: "t-ls".into(),
+                path: "/tmp".into(),
+            },
+        };
+        hub.handle(env, 200).await;
+
+        let got = victim_rx.try_recv().expect("被控端应收到 FileListRequest");
+        let env: Envelope = serde_json::from_str(&got).unwrap();
+        match env.payload {
+            Message::FileListRequest { path, .. } => assert_eq!(path, "/tmp"),
+            other => panic!("应为 FileListRequest，实际 {other:?}"),
         }
     }
 }

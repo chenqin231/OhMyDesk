@@ -154,7 +154,7 @@ export const mockTransport: Transport = {
           from: "server",
           to: internal._selfId ?? "admin",
           ts: BigInt(Math.floor(Date.now() / 1000)),
-          payload: { type: "file_open", session_id, transfer_id, name, size: BigInt(content.length), dir: "pull" },
+          payload: { type: "file_open", session_id, transfer_id, name, size: BigInt(content.length), dir: "pull", dest: null },
         });
         onEnvelope({
           from: "server",
@@ -166,8 +166,55 @@ export const mockTransport: Transport = {
       return;
     }
 
-    // 文件下发 / 传输错误：mock 直接消费（被控端落盘，前端无回执）
-    if (payload.type === "file_open" || payload.type === "file_chunk" || payload.type === "file_error") {
+    // 文件下发首包：mock 模拟被控端落盘后回 file_done（最终路径 = dest 当前目录或 recv 目录）
+    if (payload.type === "file_open") {
+      if (payload.dir === "push") {
+        const { session_id, transfer_id, name, dest } = payload;
+        const baseDir = dest && dest.trim() ? dest : "/home/mock/.config/OhMyDesk/recv";
+        const sep = baseDir.includes("\\") ? "\\" : "/";
+        const finalPath = `${baseDir.replace(/[\\/]$/, "")}${sep}${name}`;
+        setTimeout(() => {
+          onEnvelope({
+            from: "server",
+            to: internal._selfId ?? "admin",
+            ts: BigInt(Math.floor(Date.now() / 1000)),
+            payload: { type: "file_done", session_id, transfer_id, path: finalPath },
+          });
+        }, 500);
+      }
+      return;
+    }
+
+    // 数据块 / 传输错误：mock 直接消费
+    if (payload.type === "file_chunk" || payload.type === "file_error") {
+      return;
+    }
+
+    // 远端目录浏览：mock 回一份固定的目录树
+    if (payload.type === "file_list_request") {
+      const { session_id, transfer_id, path } = payload;
+      const dir = path && path.trim() ? path : "/home/mock";
+      setTimeout(() => {
+        onEnvelope({
+          from: "server",
+          to: internal._selfId ?? "admin",
+          ts: BigInt(Math.floor(Date.now() / 1000)),
+          payload: {
+            type: "file_list_resp",
+            session_id,
+            transfer_id,
+            path: dir,
+            entries: [
+              { name: "Documents", is_dir: true, size: 0n },
+              { name: "Downloads", is_dir: true, size: 0n },
+              { name: "Desktop", is_dir: true, size: 0n },
+              { name: "report.xlsx", is_dir: false, size: 20480n },
+              { name: "notes.txt", is_dir: false, size: 512n },
+            ],
+            error: null,
+          },
+        });
+      }, 350);
       return;
     }
 
