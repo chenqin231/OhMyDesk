@@ -342,6 +342,11 @@ pub(super) async fn handle_downlink(
     Ok(())
 }
 
+/// 伙伴密码归一:空串视为「未填」→ None(选填语义,server 据此走同意流程)。
+pub(super) fn opt_password(p: String) -> Option<String> {
+    if p.is_empty() { None } else { Some(p) }
+}
+
 /// 处理一条 UI 上行动作 → 出站。
 pub(super) async fn handle_uplink(
     act: FromUi,
@@ -363,7 +368,7 @@ pub(super) async fn handle_uplink(
             payload: Message::ConnectRequest {
                 mode: protocol::Mode::B,
                 target: target_id,
-                password: Some(password),
+                password: opt_password(password),
                 force: false,
             },
         },
@@ -459,6 +464,20 @@ pub(super) async fn handle_uplink(
     };
     if let Ok(s) = serde_json::to_string(&env) {
         let _ = out_tx.send(s);
+    }
+}
+
+#[cfg(test)]
+mod uplink_tests {
+    use super::opt_password;
+
+    #[test]
+    fn 空密码映射为_none() {
+        assert_eq!(opt_password(String::new()), None);
+    }
+    #[test]
+    fn 非空密码映射为_some() {
+        assert_eq!(opt_password("123456".into()), Some("123456".into()));
     }
 }
 

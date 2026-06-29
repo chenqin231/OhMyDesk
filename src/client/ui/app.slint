@@ -513,7 +513,7 @@ export component AppWindow inherits Window {
                                 }
                                 PrimaryButton {
                                     label: "开始控制";
-                                    enabled: root.target_id != "" && root.target_password != "";
+                                    enabled: root.target_id != "";
                                     clicked => {
                                         root.try-start();
                                     }
@@ -912,7 +912,7 @@ export component AppWindow inherits Window {
 
     // 发起远控：校验非空 → 置连接中 → 触发回调（Slint 内联，避免空请求）
     function try-start() {
-        if (root.target_id != "" && root.target_password != "") {
+        if (root.target_id != "") {
             root.connecting = true;
             root.connect_b();
         }
