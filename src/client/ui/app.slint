@@ -195,6 +195,7 @@ component ValueRow inherits Rectangle {
     in property <string> caption;
     in property <string> value;
     in property <color> value-color: Theme.fg;
+    in property <bool> masked: false;
     border-radius: 10px;
     background: Theme.inset;
     border-width: 1px;
@@ -210,7 +211,7 @@ component ValueRow inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             Text {
-                text: root.value;
+                text: root.masked ? "••••••" : root.value;
                 color: root.value-color;
                 font-size: 24px;
                 font-weight: 700;
@@ -294,6 +295,7 @@ export component AppWindow inherits Window {
     // ── 被控端状态 ──
     in property <string> self_id;                 // 本机注册 id（已分组展示）
     in property <string> self_password;           // 本机临时密码（展示给授权用）
+    in-out property <bool> password_visible: false;  // 临时密码是否明文显示(眼睛切换)
     in property <bool> connected: false;          // 是否已连上服务器（Header 在线灯）
     in property <bool> being_controlled: false;   // 是否正在被远程
     in property <string> peer_name;               // 控制方名称（提示条用）
@@ -471,14 +473,21 @@ export component AppWindow inherits Window {
                                     caption: "临时密码";
                                     value: root.self_password;
                                     value-color: Theme.emerald;
+                                    masked: !root.password_visible;
                                     GhostButton {
-                                        label: "换";
+                                        label: root.password_visible ? "○" : "◉";
+                                        clicked => {
+                                            root.password_visible = !root.password_visible;
+                                        }
+                                    }
+                                    GhostButton {
+                                        label: "↻";
                                         clicked => {
                                             root.refresh_password();
                                         }
                                     }
                                     GhostButton {
-                                        label: "复制";
+                                        label: "⧉";
                                         clicked => {
                                             root.copy_text(root.self_password);
                                         }
