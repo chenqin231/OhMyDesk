@@ -37,12 +37,30 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
-/// 把原始字节按 UTF-8（lossy）转字符串并截断到 [`MAX_OUTPUT`] 字节边界，
-/// 返回 (文本, 是否被截断)。
+/// 解码控制台原始字节为字符串：优先严格 UTF-8；失败时 Windows 按 GBK/CP936 解码
+/// （中文 Windows 的 cmd 输出默认是 GBK，用 UTF-8 解码会乱码），非 Windows 退 lossy。
+fn decode_console(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => {
+            #[cfg(windows)]
+            {
+                // GBK 解码器实为 GB18030 超集，覆盖简体中文 cmd 输出。
+                encoding_rs::GBK.decode(bytes).0.into_owned()
+            }
+            #[cfg(not(windows))]
+            {
+                String::from_utf8_lossy(bytes).into_owned()
+            }
+        }
+    }
+}
+
+/// 解码控制台字节（UTF-8/GBK）→ 截断到 [`MAX_OUTPUT`] 字节边界，返回 (文本, 是否被截断)。
 pub fn truncate_output(bytes: &[u8]) -> (String, bool) {
-    let s = String::from_utf8_lossy(bytes);
+    let s = decode_console(bytes);
     if s.len() <= MAX_OUTPUT {
-        return (s.into_owned(), false);
+        return (s, false);
     }
     let mut end = MAX_OUTPUT;
     while end > 0 && !s.is_char_boundary(end) {

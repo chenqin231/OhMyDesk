@@ -5,6 +5,7 @@ import type { AuditLog } from "@/lib/types/AuditLog";
 import type { Session } from "@/lib/types/Session";
 import type { Message } from "@/lib/types/Message";
 import type { FileEntry } from "@/lib/types/FileEntry";
+import type { QualityMode } from "@/lib/types/QualityMode";
 import { transport } from "@/lib/transport";
 import {
   bytesToB64,
@@ -66,6 +67,8 @@ type State = {
   remoteEntries: FileEntry[];
   remoteListLoading: boolean;
   remoteListError: string | null;
+  // 画质档位（高清/流畅）——主控选择，发 set_quality 给被控端
+  remoteQuality: QualityMode;
 
   // actions
   initTransport: () => void;
@@ -82,6 +85,7 @@ type State = {
   pushFile: (file: File, dest?: string) => Promise<void>;
   pullFile: (path: string) => void;
   listRemote: (path: string) => void;
+  setRemoteQuality: (mode: QualityMode) => void;
 };
 
 const selfId = "admin-" + Math.random().toString(36).slice(2, 8);
@@ -104,6 +108,7 @@ export const useStore = create<State>((set, get) => ({
   remoteEntries: [],
   remoteListLoading: false,
   remoteListError: null,
+  remoteQuality: "smooth",
 
   initTransport() {
     transport.connect(selfId, (env) => {
@@ -293,6 +298,7 @@ export const useStore = create<State>((set, get) => ({
       remoteNotice: null,
       remotePath: "",
       remoteEntries: [],
+      remoteQuality: "smooth",
       remoteListLoading: false,
       remoteListError: null,
     });
@@ -397,5 +403,13 @@ export const useStore = create<State>((set, get) => ({
       transfer_id: genId("l"),
       path,
     });
+  },
+
+  // 切换画质档位（高清/流畅）→ 发 set_quality 给被控端
+  setRemoteQuality(mode) {
+    const sessionId = get().remoteSessionId;
+    set({ remoteQuality: mode });
+    if (!sessionId) return;
+    get().sendEnvelope({ type: "set_quality", session_id: sessionId, mode });
   },
 }));

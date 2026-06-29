@@ -45,6 +45,22 @@ function fmtSize(n: bigint): string {
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
 }
+// Windows 盘符根（如 "C:" / "C:\"）：从这里向上回到「此电脑」(空路径)。
+function isDriveRoot(p: string): boolean {
+  return /^[A-Za-z]:[\\/]?$/.test(p);
+}
+// 进入子目录的路径：盘符根（remotePath 为空且 entry 是盘符）→ "C:\"; 否则常规拼接。
+function childPath(remotePath: string, name: string): string {
+  if (remotePath === "") return name.endsWith(":") ? name + "\\" : name;
+  return joinPath(remotePath, name);
+}
+// 上级目录：盘符根→「此电脑」("")；Windows 退化成裸盘符 "C:" 时补根 "C:\"。
+function upPath(remotePath: string): string {
+  if (isDriveRoot(remotePath)) return "";
+  let p = parentPath(remotePath);
+  if (/^[A-Za-z]:$/.test(p)) p = p + "\\";
+  return p;
+}
 
 export function RemoteTools() {
   const [tab, setTab] = useState<"cmd" | "file">("cmd");
@@ -306,7 +322,7 @@ function RemotePane() {
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
-            onClick={() => remotePath && listRemote(parentPath(remotePath))}
+            onClick={() => remotePath && listRemote(upPath(remotePath))}
             disabled={!remotePath}
             className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-40"
             title="上级目录"
@@ -327,7 +343,7 @@ function RemotePane() {
       </div>
 
       <div className="mb-1 shrink-0 truncate font-mono text-[11px] text-muted-foreground" title={remotePath}>
-        {remotePath || "（加载中…）"}
+        {remotePath !== "" ? remotePath : loading ? "（加载中…）" : "此电脑"}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto rounded-md border border-border bg-background p-1">
@@ -348,7 +364,7 @@ function RemotePane() {
               {entry.is_dir ? (
                 <button
                   type="button"
-                  onClick={() => listRemote(joinPath(remotePath, entry.name))}
+                  onClick={() => listRemote(childPath(remotePath, entry.name))}
                   className="flex min-w-0 flex-1 items-center gap-2 text-left text-foreground"
                   title="进入目录"
                 >
