@@ -138,6 +138,7 @@ impl Hub {
                 mode,
                 target,
                 password,
+                force,
             } => {
                 handlers::handle_connect_request(
                     self,
@@ -145,6 +146,7 @@ impl Hub {
                     mode,
                     target,
                     password.as_deref(),
+                    *force,
                     now,
                 )
                 .await;
@@ -192,7 +194,8 @@ impl Hub {
             // ── Frame / RemoteNotice / SetQuality：按 session 对端路由 ──────────
             Message::Frame { session_id, .. }
             | Message::RemoteNotice { session_id, .. }
-            | Message::SetQuality { session_id, .. } => {
+            | Message::SetQuality { session_id, .. }
+            | Message::ClipboardSync { session_id, .. } => {
                 self.route_to_peer(session_id, &env);
             }
 

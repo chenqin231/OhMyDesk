@@ -31,13 +31,14 @@ use crate::asset;
 pub enum ToUi {
     /// 注册成功，携本机 id + 明文密码（展示给用户报给主控方）。
     Registered { id: String, password: String },
-    /// 收到远程控制请求（被控端弹授权框）。requester 为请求方展示名，session_id 为 server 分配的会话。
+    /// 收到远程控制请求（被控端弹授权框）。requester 为请求方展示名，session_id 为 server 分配的会话，source 为来源中文标签。
     ControlRequest {
         requester: String,
         session_id: String,
+        source: String,
     },
-    /// 会话已建立为被控态（授权通过 / 对端 ack）。
-    BeingControlled { peer_name: String },
+    /// 会话已建立为被控态（授权通过 / 对端 ack）。forced=true 表示管理员强制控制。
+    BeingControlled { peer_name: String, forced: bool, session_id: String },
     /// 主控发起结果：收到对端首帧前的 ack。
     RemoteAck { session_id: String },
     /// 主控发起被拒（密码错/被拒）。
@@ -95,8 +96,14 @@ pub enum FromUi {
     },
     /// 主动断开当前会话。
     Disconnect { session_id: String },
+    /// 本端剪贴板变化 → 推给对端(会话内双向同步)。
+    ClipboardSync { session_id: String, text: String },
+    /// 被控端主动断开当前被控会话。
+    StopControlled { session_id: String },
     /// 刷新本机临时密码：重新生成并重发 Register（server DashMap 按 id upsert 覆盖旧密码）。
     RefreshPassword,
+    /// 主控取消尚未建立的申请(无 session_id):置取消标记,迟到 ConnectAck 时收尾。
+    CancelRemote,
 }
 
 // ── M-CLI3：工具函数 ──────────────────────────────────────────────
@@ -152,6 +159,8 @@ pub static INJECT_TX: InjectBridge = InjectBridge(OnceLock::new());
 pub static SCREENSHOT_TX: ScreenshotBridge = ScreenshotBridge(OnceLock::new());
 /// 被控端推帧启停旁路。
 pub static CAPTURE_CTRL: CaptureCtrlBridge = CaptureCtrlBridge(OnceLock::new());
+/// 剪贴板控制/写入旁路:net 收下行/会话启停 → 交 clipboard worker 线程(独占 arboard)。
+pub static CLIPBOARD_TX: ClipboardBridge = ClipboardBridge(OnceLock::new());
 
 pub struct InjectBridge(OnceLock<mpsc::UnboundedSender<(String, protocol::InputEvent)>>);
 impl InjectBridge {
@@ -198,6 +207,30 @@ impl CaptureCtrlBridge {
     }
 }
 
+/// 剪贴板 worker 控制消息:会话启停 + 对端写入。
+#[derive(Debug, Clone)]
+pub enum ClipboardMsg {
+    /// 会话激活:开始轮询本地剪贴板,变化推 `session_id` 对端。
+    Start { session_id: String },
+    /// 会话结束:停止轮询并清空 last_synced。
+    Stop,
+    /// 收到对端剪贴板文本:写本地 + 更新 last_synced(防回环)。
+    Incoming { text: String },
+}
+
+pub struct ClipboardBridge(OnceLock<mpsc::UnboundedSender<ClipboardMsg>>);
+impl ClipboardBridge {
+    pub fn init(&self, tx: mpsc::UnboundedSender<ClipboardMsg>) {
+        let _ = self.0.set(tx);
+    }
+    // 私有 fn(与 CaptureCtrlBridge::send 一致):私有项对子模块 net::dispatch 可见。
+    fn send(&self, m: ClipboardMsg) {
+        if let Some(tx) = self.0.get() {
+            let _ = tx.send(m);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +264,7 @@ mod tests {
                 mode: protocol::Mode::B,
                 target: "ep-b".into(),
                 password: Some("123456".into()),
+                force: false,
             },
         };
         let json = serde_json::to_string(&env).unwrap();

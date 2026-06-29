@@ -84,6 +84,8 @@ fn main() -> anyhow::Result<()> {
     net::SCREENSHOT_TX.init(shot_tx);
     let (cap_tx, cap_rx) = tokio::sync::mpsc::unbounded_channel::<net::CaptureCtrl>();
     net::CAPTURE_CTRL.init(cap_tx);
+    let (clip_tx, clip_rx) = tokio::sync::mpsc::unbounded_channel::<net::ClipboardMsg>();
+    net::CLIPBOARD_TX.init(clip_tx);
 
     // 共享：当前主控会话 id（键鼠回传需要）+ 当前被控会话 id（授权回传需要）
     let cur_session: SharedSession = Arc::new(std::sync::Mutex::new(None));
@@ -109,7 +111,8 @@ fn main() -> anyhow::Result<()> {
     ));
     rt.spawn(workers::consume_inject(inject_rx));
     rt.spawn(workers::consume_screenshot(shot_rx, from_ui_tx.clone()));
-    rt.spawn(workers::consume_capture(cap_rx, from_ui_tx));
+    rt.spawn(workers::consume_capture(cap_rx, from_ui_tx.clone()));
+    rt.spawn(workers::consume_clipboard(clip_rx, from_ui_tx));
 
     // 主线程进入 Slint 事件循环（阻塞）
     ui.run()?;

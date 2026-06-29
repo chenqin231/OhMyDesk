@@ -68,6 +68,7 @@ pub fn wire_ui_callbacks(
                 ui.set_auth_pending(false);
                 if accept {
                     ui.set_being_controlled(true);
+                    ui.set_controlled_forced(false);
                 }
             }
         };
@@ -99,6 +100,11 @@ pub fn wire_ui_callbacks(
                 // 记录最近连接（本地持久化）并刷新列表。
                 let list = history::record(&target);
                 ui.set_history(build_history_model(&list, net::now()));
+                // 无密码申请：进等待态（有密码则预期免同意，不显示等待态）
+                if password.is_empty() {
+                    ui.set_consent_countdown(60);
+                    ui.set_awaiting_consent(true);
+                }
                 let _ = tx.send(net::FromUi::StartRemote {
                     target_id: history::normalize_id(&target),
                     password,
@@ -220,6 +226,23 @@ pub fn wire_ui_callbacks(
             let _ = tx.send(net::FromUi::RefreshPassword);
         });
     }
+    // 被控端主动断开：发 SessionEnd 给控制方 + 本地重置被控态
+    {
+        let tx = from_ui_tx.clone();
+        let sess = ctrl_session.clone();
+        ui.on_stop_being_controlled(move || {
+            if let Some(sid) = sess.lock().unwrap().clone() {
+                let _ = tx.send(net::FromUi::StopControlled { session_id: sid });
+            }
+        });
+    }
+    // 主控取消申请（无密码等待态下取消/超时）
+    {
+        let tx = from_ui_tx.clone();
+        ui.on_cancel_remote(move || {
+            let _ = tx.send(net::FromUi::CancelRemote);
+        });
+    }
 }
 
 /// 该帧是否属于「已断开」会话——是则丢弃，不渲染、不复活远程态（修复需点两次断开的 Bug）。
@@ -262,21 +285,26 @@ pub async fn consume_to_ui(
             net::ToUi::ControlRequest {
                 requester,
                 session_id,
+                source,
             } => {
                 // 记下被控会话 id，授权回调据此回传 AuthResult
                 *ctrl_session.lock().unwrap() = Some(session_id);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_auth_requester(requester.into());
+                        ui.set_auth_source(source.into());
+                        ui.set_auth_countdown(60);
                         ui.set_auth_pending(true);
                     }
                 });
             }
-            net::ToUi::BeingControlled { peer_name } => {
+            net::ToUi::BeingControlled { peer_name, forced, session_id } => {
+                *ctrl_session.lock().unwrap() = Some(session_id);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_auth_pending(false);
                         ui.set_peer_name(peer_name.into());
+                        ui.set_controlled_forced(forced);
                         ui.set_being_controlled(true);
                     }
                 });
@@ -286,6 +314,7 @@ pub async fn consume_to_ui(
                 *cur_session.lock().unwrap() = Some(session_id);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_awaiting_consent(false);
                         ui.set_connecting(false);
                         ui.set_remote_status("".into());
                         ui.set_remote_active(true);
@@ -298,6 +327,7 @@ pub async fn consume_to_ui(
                 *cur_session.lock().unwrap() = None;
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_awaiting_consent(false);
                         ui.set_connecting(false);
                         ui.set_remote_status(format!("连接失败：{reason}").into());
                         ui.set_remote_active(false);

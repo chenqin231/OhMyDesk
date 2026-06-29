@@ -6,7 +6,7 @@ use protocol::{Envelope, Message};
 use tokio::sync::mpsc;
 
 use super::conn::SessionCtx;
-use super::{now, CaptureCtrl, FromUi, ToUi, CAPTURE_CTRL, INJECT_TX, SCREENSHOT_TX};
+use super::{now, CaptureCtrl, ClipboardMsg, FromUi, ToUi, CAPTURE_CTRL, CLIPBOARD_TX, INJECT_TX, SCREENSHOT_TX};
 
 /// 给控制方回一条 `FileError`（被控端拒收/写盘失败时）。
 fn send_file_error(
@@ -64,16 +64,35 @@ pub(super) async fn handle_downlink(
 ) -> anyhow::Result<()> {
     let env: Envelope = serde_json::from_str(text)?;
     match env.payload {
-        // 被控端收到 server 转发的来控通知 → 通知 UI 弹授权框。
-        // server 已生成会话并分配真 session_id（I2 时序：主控 ConnectRequest → server 建会话 →
-        // 推 IncomingControl 给被控端），被控端授权时按此真 session_id 回 AuthResult。
+        // 被控端收 server 转发的来控通知。
+        // auto_accept=true:免同意(密码对/强制)→ 不弹框,直接进被控态(复用同意副作用);
+        // auto_accept=false:弹授权框,等用户同意。
         Message::IncomingControl {
-            session_id, from, ..
+            session_id,
+            from,
+            mode,
+            auto_accept,
         } => {
-            let _ = to_ui.send(ToUi::ControlRequest {
-                requester: from,
-                session_id,
-            });
+            if auto_accept {
+                session.lock().await.controlled = Some(session_id.clone());
+                CAPTURE_CTRL.send(CaptureCtrl::Start {
+                    session_id: session_id.clone(),
+                });
+                CLIPBOARD_TX.send(ClipboardMsg::Start {
+                    session_id: session_id.clone(),
+                });
+                let _ = to_ui.send(ToUi::BeingControlled {
+                    peer_name: from,
+                    forced: mode == protocol::Mode::A,
+                    session_id: session_id.clone(),
+                });
+            } else {
+                let _ = to_ui.send(ToUi::ControlRequest {
+                    requester: from,
+                    session_id,
+                    source: control_source(mode).to_string(),
+                });
+            }
         }
         // 鉴权结果（server 下发）：被控端据此进入被控态并回 ConnectAck 由 server 处理
         Message::AuthResult {
@@ -87,8 +106,13 @@ pub(super) async fn handle_downlink(
                 CAPTURE_CTRL.send(CaptureCtrl::Start {
                     session_id: session_id.clone(),
                 });
+                CLIPBOARD_TX.send(ClipboardMsg::Start {
+                    session_id: session_id.clone(),
+                });
                 let _ = to_ui.send(ToUi::BeingControlled {
                     peer_name: "远程方".into(),
+                    forced: false,
+                    session_id: session_id.clone(),
                 });
             } else {
                 let _ = to_ui.send(ToUi::RemoteRejected {
@@ -96,9 +120,29 @@ pub(super) async fn handle_downlink(
                 });
             }
         }
-        // 主控端收到 ack：进入主控态
+        // 主控端收到 ack：进入主控态（若已取消则收尾 server 会话，不进主控态）
         Message::ConnectAck { session_id } => {
-            session.lock().await.controlling = Some(session_id.clone());
+            let mut ctx = session.lock().await;
+            if ctx.initiate_cancelled {
+                // 申请已被主控取消/超时 → 收尾 server 会话，不进主控态。
+                ctx.initiate_cancelled = false;
+                drop(ctx);
+                let env = Envelope {
+                    from: self_id.to_string(),
+                    to: None,
+                    ts: now(),
+                    payload: Message::SessionEnd { session_id },
+                };
+                if let Ok(json) = serde_json::to_string(&env) {
+                    let _ = out_tx.send(json);
+                }
+                return Ok(());
+            }
+            ctx.controlling = Some(session_id.clone());
+            drop(ctx);
+            CLIPBOARD_TX.send(ClipboardMsg::Start {
+                session_id: session_id.clone(),
+            });
             let _ = to_ui.send(ToUi::RemoteAck { session_id });
         }
         // 主控端收到拒绝
@@ -162,6 +206,7 @@ pub(super) async fn handle_downlink(
                 ctx.controlled = None;
                 CAPTURE_CTRL.send(CaptureCtrl::Stop); // 停被控端推帧
             }
+            CLIPBOARD_TX.send(ClipboardMsg::Stop);
             let _ = to_ui.send(ToUi::SessionEnded);
         }
 
@@ -326,9 +371,32 @@ pub(super) async fn handle_downlink(
         Message::FileError { transfer_id, .. } => {
             crate::transfer::abort(&transfer_id);
         }
+        // 被控/主控收对端剪贴板 → 校验方向后交 worker 写本地(防回环由 worker 的 last_synced 处理)。
+        Message::ClipboardSync { session_id, text } => {
+            let ctx = session.lock().await;
+            let in_session = ctx.controlling.as_deref() == Some(session_id.as_str())
+                || ctx.controlled.as_deref() == Some(session_id.as_str());
+            drop(ctx);
+            if in_session {
+                CLIPBOARD_TX.send(ClipboardMsg::Incoming { text });
+            }
+        }
         _ => {}
     }
     Ok(())
+}
+
+/// 来控来源中文标签(管理端 mode A / 终端伙伴 mode B),用于被控端授权弹窗展示。
+pub(super) fn control_source(mode: protocol::Mode) -> &'static str {
+    match mode {
+        protocol::Mode::A => "管理员",
+        protocol::Mode::B => "终端伙伴",
+    }
+}
+
+/// 伙伴密码归一:空串视为「未填」→ None(选填语义,server 据此走同意流程)。
+pub(super) fn opt_password(p: String) -> Option<String> {
+    if p.is_empty() { None } else { Some(p) }
 }
 
 /// 处理一条 UI 上行动作 → 出站。
@@ -342,19 +410,30 @@ pub(super) async fn handle_uplink(
         // RefreshPassword 在 connect_once 的 select 处已拦截重注册，不进入本分发；
         // 此臂仅为穷尽匹配，理论不可达。
         FromUi::RefreshPassword => return,
+        FromUi::CancelRemote => {
+            let mut ctx = session.lock().await;
+            if ctx.controlling.is_none() {
+                ctx.initiate_cancelled = true;
+            }
+            return;
+        }
         FromUi::StartRemote {
             target_id,
             password,
-        } => Envelope {
-            from: self_id.to_string(),
-            to: Some(target_id.clone()),
-            ts: now(),
-            payload: Message::ConnectRequest {
-                mode: protocol::Mode::B,
-                target: target_id,
-                password: Some(password),
-            },
-        },
+        } => {
+            session.lock().await.initiate_cancelled = false;
+            Envelope {
+                from: self_id.to_string(),
+                to: Some(target_id.clone()),
+                ts: now(),
+                payload: Message::ConnectRequest {
+                    mode: protocol::Mode::B,
+                    target: target_id,
+                    password: opt_password(password),
+                    force: false,
+                },
+            }
+        }
         FromUi::AuthDecision { session_id, accept } => {
             if accept {
                 // 被控端授权通过 → 进入被控态 + 启动截屏推帧（主控才有画面）。
@@ -362,6 +441,9 @@ pub(super) async fn handle_uplink(
                 //（server 消费 AuthResult 后只把 ConnectAck 回给主控），挂下行分支等于永不触发。
                 session.lock().await.controlled = Some(session_id.clone());
                 CAPTURE_CTRL.send(CaptureCtrl::Start {
+                    session_id: session_id.clone(),
+                });
+                CLIPBOARD_TX.send(ClipboardMsg::Start {
                     session_id: session_id.clone(),
                 });
             }
@@ -416,8 +498,31 @@ pub(super) async fn handle_uplink(
             ts: now(),
             payload: Message::SetQuality { session_id, mode },
         },
+        FromUi::ClipboardSync { session_id, text } => Envelope {
+            from: self_id.to_string(),
+            to: None, // server 按 session_id 路由给对端
+            ts: now(),
+            payload: Message::ClipboardSync { session_id, text },
+        },
         FromUi::Disconnect { session_id } => {
             session.lock().await.controlling = None;
+            CLIPBOARD_TX.send(ClipboardMsg::Stop);
+            Envelope {
+                from: self_id.to_string(),
+                to: None,
+                ts: now(),
+                payload: Message::SessionEnd { session_id },
+            }
+        }
+        FromUi::StopControlled { session_id } => {
+            {
+                let mut ctx = session.lock().await;
+                if ctx.controlled.as_deref() == Some(session_id.as_str()) {
+                    ctx.controlled = None;
+                }
+            }
+            CAPTURE_CTRL.send(CaptureCtrl::Stop);
+            CLIPBOARD_TX.send(ClipboardMsg::Stop);
             Envelope {
                 from: self_id.to_string(),
                 to: None,
@@ -447,6 +552,25 @@ pub(super) async fn handle_uplink(
     };
     if let Ok(s) = serde_json::to_string(&env) {
         let _ = out_tx.send(s);
+    }
+}
+
+#[cfg(test)]
+mod uplink_tests {
+    use super::opt_password;
+
+    #[test]
+    fn 空密码映射为_none() {
+        assert_eq!(opt_password(String::new()), None);
+    }
+    #[test]
+    fn 非空密码映射为_some() {
+        assert_eq!(opt_password("123456".into()), Some("123456".into()));
+    }
+    #[test]
+    fn 来源标签_按模式() {
+        assert_eq!(super::control_source(protocol::Mode::A), "管理员");
+        assert_eq!(super::control_source(protocol::Mode::B), "终端伙伴");
     }
 }
 

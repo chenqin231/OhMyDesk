@@ -228,6 +228,13 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
             tracing::info!("客户端连接: {id}");
         }
 
+        // 防伪造：连接 id 绑定后，每条消息的 from 必须等于该 id，否则丢弃。
+        // 否则非 admin 连接可在后续消息伪造 from:"admin-" 发 force 强控，绕过被控同意。
+        if my_id.as_deref() != Some(env.from.as_str()) {
+            tracing::warn!("拒绝 from 伪造: bound={:?} got={}", my_id, env.from);
+            continue;
+        }
+
         hub.handle(env, now_sec()).await;
     }
 

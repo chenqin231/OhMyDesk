@@ -178,6 +178,9 @@ pub enum Message {
         mode: Mode,
         target: String,
         password: Option<String>,
+        /// WEB 强制远程：免被控端同意直连（仅 admin- 发起方有效，server 端硬校验）。
+        #[serde(default)]
+        force: bool,
     },
     /// server → 被控端：有主控发起控制，携带 server 生成的 session_id；
     /// 被控端授权后回 AuthResult 带此 session_id（解 task#8 时序缺口，统一会话 id 来源）。
@@ -185,6 +188,9 @@ pub enum Message {
         session_id: String,
         from: String,
         mode: Mode,
+        /// true=免同意直连（密码正确/强制），被控端跳过弹框直接进被控态；false=弹框等用户同意。
+        #[serde(default)]
+        auto_accept: bool,
     },
     AuthResult {
         session_id: String,
@@ -218,6 +224,11 @@ pub enum Message {
     /// 被控→主控：会话内提示（如 Wayland 无法截屏）。主控端在等待画面处展示，
     /// 把「无限等待第一帧」变成可操作的明确提示。按 session 对端路由（同 Frame）。
     RemoteNotice {
+        session_id: String,
+        text: String,
+    },
+    /// 会话内双向纯文本剪贴板同步(主控↔被控)。按 session 对端路由(同 RemoteNotice)。
+    ClipboardSync {
         session_id: String,
         text: String,
     },
