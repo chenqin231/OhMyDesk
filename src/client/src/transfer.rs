@@ -174,7 +174,7 @@ fn display_path(p: &std::path::Path) -> String {
     let s = p.to_string_lossy().to_string();
     #[cfg(windows)]
     {
-        return s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s);
+        s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s)
     }
     #[cfg(not(windows))]
     {

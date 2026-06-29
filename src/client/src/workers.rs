@@ -19,15 +19,14 @@ pub async fn consume_inject(
         .ok()
         .flatten();
     let (real_w, real_h) = real.unwrap_or((geom::MAX_W, geom::MAX_H));
-    // 帧尺寸 = 被控端推帧的等比缩放尺寸（主控点击坐标基于此帧），注入按 real/frame 还原。
-    let (frame_w, frame_h) = geom::scaled_dims(real_w, real_h, geom::MAX_W, geom::MAX_H);
 
     // 注入器在专用线程内构造并独占；用 std::sync::mpsc 把事件转进去。
+    // 帧尺寸（坐标还原基准）随画质档位实时派生，不在此固定，避免切高清后点击错位。
     let (blk_tx, blk_rx) = std::sync::mpsc::channel::<protocol::InputEvent>();
     std::thread::spawn(move || {
-        let mut injector = match inject::Injector::new(real_w, real_h, frame_w, frame_h) {
+        let mut injector = match inject::Injector::new(real_w, real_h) {
             Ok(i) => {
-                tracing::info!("注入器就绪 real={real_w}x{real_h} frame={frame_w}x{frame_h}");
+                tracing::info!("注入器就绪 real={real_w}x{real_h}（帧尺寸随档位动态）");
                 i
             }
             Err(e) => {

@@ -7,6 +7,17 @@ CREATE TABLE IF NOT EXISTS endpoints (
   last_seen INTEGER
 );
 
+-- 终端注册表持久化（修复「服务器重启/升级后终端列表为空」）：
+-- 内存 Registry 在 upsert/remove 时同步落库，启动时回灌（恢复为离线，agent 重连后转在线）。
+-- info 存完整 EndpointInfo JSON（无损，避免结构化列丢字段）。
+-- 刻意不落 password：模式 B 密码是每次客户端启动轮换的临时码，离线终端本就不可被控，
+-- agent 重连会以新密码重注册覆盖内存值——故持久化密码既无用又徒增明文落盘泄露面。
+CREATE TABLE IF NOT EXISTS endpoint_registry (
+  id TEXT PRIMARY KEY,
+  info TEXT NOT NULL,
+  last_seen INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY, mode TEXT, from_id TEXT, to_id TEXT,
   start_at INTEGER, end_at INTEGER, status TEXT
