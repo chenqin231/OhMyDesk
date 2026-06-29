@@ -196,6 +196,91 @@ pub async fn consume_capture(
     }
 }
 
+/// 剪贴板双向同步 worker。
+///
+/// arboard 句柄非 Send 且 Linux/X11 下需常驻持有,故独占一个 std::thread;`last_synced` 线程私有,
+/// 收(写本地)与发(poll)都更新它,值相同即不发 —— 单线程内无竞态、无 A→B→A 回弹。
+/// 控制信号(Start/Stop/Incoming)经 tokio mpsc 转进线程的 std mpsc。
+pub async fn consume_clipboard(
+    mut ctrl_rx: tokio::sync::mpsc::UnboundedReceiver<net::ClipboardMsg>,
+    from_ui_tx: tokio::sync::mpsc::UnboundedSender<net::FromUi>,
+) {
+    let active: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let (blk_tx, blk_rx) = std::sync::mpsc::channel::<String>(); // 对端写入文本
+
+    // 剪贴板线程:独占 arboard,poll 本地 + 写对端。
+    {
+        let active = active.clone();
+        std::thread::spawn(move || {
+            if crate::capture::is_wayland_session() {
+                tracing::warn!("Wayland 会话:剪贴板同步禁用(arboard 在 Wayland 不可靠)");
+                return;
+            }
+            let mut clip = match arboard::Clipboard::new() {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("剪贴板不可用:{e},同步禁用");
+                    return;
+                }
+            };
+            let mut last_synced = String::new();
+            let mut prev_active: Option<String> = None;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                // 先处理对端写入(可能多条,取最后一条即可)。
+                while let Ok(text) = blk_rx.try_recv() {
+                    if clip.set_text(text.clone()).is_ok() {
+                        last_synced = text;
+                    }
+                }
+                let cur_active = active.lock().unwrap().clone();
+                // 会话切换:新会话用当前剪贴板做基线(不推送会话前的旧内容);结束清空。
+                if cur_active != prev_active {
+                    last_synced = clip.get_text().unwrap_or_default();
+                    prev_active = cur_active.clone();
+                }
+                let sid = match cur_active {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let cur = match clip.get_text() {
+                    Ok(t) => t,
+                    Err(_) => continue, // 空剪贴板/非文本:跳过
+                };
+                if cur.len() > 256 * 1024 {
+                    tracing::debug!("剪贴板文本过大({} 字节),跳过同步", cur.len());
+                    last_synced = cur; // 记为已同步,避免反复命中
+                    continue;
+                }
+                if should_push_clipboard(&cur, &last_synced) {
+                    last_synced = cur.clone();
+                    if from_ui_tx
+                        .send(net::FromUi::ClipboardSync { session_id: sid, text: cur })
+                        .is_err()
+                    {
+                        break; // net 已退出
+                    }
+                }
+            }
+        });
+    }
+
+    // 控制信号消费:更新活跃会话 / 转发对端写入。
+    while let Some(m) = ctrl_rx.recv().await {
+        match m {
+            net::ClipboardMsg::Start { session_id } => {
+                *active.lock().unwrap() = Some(session_id);
+            }
+            net::ClipboardMsg::Stop => {
+                *active.lock().unwrap() = None;
+            }
+            net::ClipboardMsg::Incoming { text } => {
+                let _ = blk_tx.send(text);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod clipboard_tests {
     use super::should_push_clipboard;
