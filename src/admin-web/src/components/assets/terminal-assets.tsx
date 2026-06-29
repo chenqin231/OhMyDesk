@@ -1,8 +1,16 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Monitor, MoreHorizontal, RefreshCw, Search, Terminal as TerminalIcon, Trash2 } from "lucide-react";
+import { Monitor, MoreHorizontal, RefreshCw, Search, Terminal as TerminalIcon, Trash2, Zap } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -61,6 +69,7 @@ export function TerminalAssets() {
   const [selected, setSelected] = useState<TerminalRow | null>(null);
   const [open, setOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [forceTarget, setForceTarget] = useState<{ id: string; name: string } | null>(null);
 
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -86,9 +95,17 @@ export function TerminalAssets() {
     setOpen(true);
   }
 
-  // 发起模式 A 远控：目标取终端 id，跳 /remote 进入「连接中→控制中」会话视图。
+  // 申请远程(模式 A,需被控同意):目标取终端 id,跳 /remote 进入会话视图。
   function handleRemote(id: string, name?: string) {
-    startRemote("a", id, null, name);
+    startRemote("a", id, null, name, false);
+    navigate("/remote");
+  }
+
+  // 强制远程(免被控同意):二次确认后发起。
+  function handleForceRemote() {
+    if (!forceTarget) return;
+    startRemote("a", forceTarget.id, null, forceTarget.name, true);
+    setForceTarget(null);
     navigate("/remote");
   }
 
@@ -262,7 +279,17 @@ export function TerminalAssets() {
                       onClick={() => handleRemote(t.id, t.user)}
                     >
                       <TerminalIcon className="size-3.5" />
-                      远程控制
+                      申请远程
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={t.status === "offline"}
+                      className="h-8 gap-1.5"
+                      onClick={() => setForceTarget({ id: t.id, name: t.user })}
+                    >
+                      <Zap className="size-3.5" />
+                      强制远程
                     </Button>
                     <DropdownMenu>
                       <DropdownMenuTrigger
@@ -316,6 +343,25 @@ export function TerminalAssets() {
         onOpenChange={setOpen}
         onRemoteControl={(id) => handleRemote(id, selected?.user)}
       />
+
+      <Dialog open={forceTarget !== null} onOpenChange={(o) => !o && setForceTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认强制控制</DialogTitle>
+            <DialogDescription>
+              将强制远程控制 {forceTarget?.name} 的终端，对方不会收到同意请求、无法拒绝。请确认已获授权。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setForceTarget(null)}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={handleForceRemote}>
+              确认强制控制
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

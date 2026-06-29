@@ -77,7 +77,7 @@ type State = {
   fetchAudit: (from?: number, to?: number, endpoint?: string, result?: string) => Promise<void>;
   deleteEndpoints: (ids: string[]) => Promise<void>;
   requestBatchScreenshot: () => void;
-  startRemote: (mode: "a" | "b", target: string, password: string | null, name?: string) => void;
+  startRemote: (mode: "a" | "b", target: string, password: string | null, name?: string, force?: boolean) => void;
   endRemote: () => void;
   resetRemote: () => void;
   // 远控会话内：执行命令 / 下发文件 / 取回文件 / 浏览远端目录
@@ -263,7 +263,7 @@ export const useStore = create<State>((set, get) => ({
     get().sendEnvelope({ type: "screenshot_req", req_id: reqId });
   },
 
-  startRemote(mode, target, password, name) {
+  startRemote(mode, target, password, name, force = false) {
     set({
       remotePhase: "connecting",
       remoteTarget: name ?? target,
@@ -276,6 +276,7 @@ export const useStore = create<State>((set, get) => ({
       mode,
       target,
       password,
+      force,
     });
   },
 
