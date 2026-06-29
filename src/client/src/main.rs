@@ -85,9 +85,12 @@ fn main() -> anyhow::Result<()> {
     // 共享：当前主控会话 id（键鼠回传需要）+ 当前被控会话 id（授权回传需要）
     let cur_session: SharedSession = Arc::new(std::sync::Mutex::new(None));
     let ctrl_session: SharedSession = Arc::new(std::sync::Mutex::new(None));
+    // 已断开的主控会话 id：断开后到下次连接前，丢弃该会话迟到的帧，避免在途帧把已断开的
+    // 远程态「复活」（Bug：点断开后窗口先缩小、迟到帧又重开远程视图，需点两次才真断开）。
+    let ended_session: SharedSession = Arc::new(std::sync::Mutex::new(None));
 
     // UI 回调注册（UI 线程）
-    ui_glue::wire_ui_callbacks(&ui, &from_ui_tx, &cur_session, &ctrl_session);
+    ui_glue::wire_ui_callbacks(&ui, &from_ui_tx, &cur_session, &ctrl_session, &ended_session);
 
     // 后台 tokio runtime
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -99,6 +102,7 @@ fn main() -> anyhow::Result<()> {
         ui.as_weak(),
         cur_session,
         ctrl_session,
+        ended_session,
     ));
     rt.spawn(workers::consume_inject(inject_rx));
     rt.spawn(workers::consume_screenshot(shot_rx, from_ui_tx.clone()));

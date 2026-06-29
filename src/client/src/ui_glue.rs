@@ -49,6 +49,7 @@ pub fn wire_ui_callbacks(
     from_ui_tx: &tokio::sync::mpsc::UnboundedSender<net::FromUi>,
     cur_session: &SharedSession,
     ctrl_session: &SharedSession,
+    ended_session: &SharedSession,
 ) {
     // 授权：同意 / 拒绝（用被控会话 id 回传）
     for accept in [true, false] {
@@ -79,8 +80,11 @@ pub fn wire_ui_callbacks(
     // 模式 B 发起远控
     {
         let tx = from_ui_tx.clone();
+        let ended = ended_session.clone();
         let ui_weak = ui.as_weak();
         ui.on_connect_b(move || {
+            // 新连接意图：清掉「已断开会话」标记，否则若复用同一 id 会话，帧会被误丢。
+            *ended.lock().unwrap() = None;
             if let Some(ui) = ui_weak.upgrade() {
                 let target = ui.get_target_id().to_string();
                 let password = ui.get_target_password().to_string();
@@ -108,9 +112,12 @@ pub fn wire_ui_callbacks(
     {
         let tx = from_ui_tx.clone();
         let sess = cur_session.clone();
+        let ended = ended_session.clone();
         let ui_weak = ui.as_weak();
         ui.on_disconnect_remote(move || {
             if let Some(sid) = sess.lock().unwrap().take() {
+                // 标记该会话已断开：迟到的在途帧据此被丢弃，不再「复活」远程态（一次点击即真断开）。
+                *ended.lock().unwrap() = Some(sid.clone());
                 let _ = tx.send(net::FromUi::Disconnect { session_id: sid });
             }
             if let Some(ui) = ui_weak.upgrade() {
@@ -215,12 +222,18 @@ pub fn wire_ui_callbacks(
     }
 }
 
+/// 该帧是否属于「已断开」会话——是则丢弃，不渲染、不复活远程态（修复需点两次断开的 Bug）。
+fn frame_belongs_to_ended(ended: &Option<String>, session_id: &str) -> bool {
+    ended.as_deref() == Some(session_id)
+}
+
 /// 拉 ToUi 流，逐条应用到 UI（invoke_from_event_loop），并维护主控/被控会话 id。
 pub async fn consume_to_ui(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<net::ToUi>,
     ui_weak: slint::Weak<AppWindow>,
     cur_session: SharedSession,
     ctrl_session: SharedSession,
+    ended_session: SharedSession,
 ) {
     while let Some(mut ev) = rx.recv().await {
         // 丢过期帧：收到 Frame 时若通道里还有积压，丢弃当前帧取下一条——只解码/渲染最新帧，
@@ -266,6 +279,7 @@ pub async fn consume_to_ui(
                 });
             }
             net::ToUi::RemoteAck { session_id } => {
+                *ended_session.lock().unwrap() = None; // 新会话建立：解除丢帧标记
                 *cur_session.lock().unwrap() = Some(session_id);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
@@ -288,6 +302,10 @@ pub async fn consume_to_ui(
                 });
             }
             net::ToUi::Frame { session_id, data, w, h } => {
+                // 丢弃已断开会话的迟到帧：否则在途帧会把已断开的远程态「复活」（需点两次断开）。
+                if frame_belongs_to_ended(&ended_session.lock().unwrap(), &session_id) {
+                    continue;
+                }
                 // 统一会话态：收到帧即把 cur_session 设为该会话——保证「有画面时输入一定有目标」，
                 // 即便 RemoteAck 因时序/路由未设上 cur_session，输入也不会被静默丢弃。
                 {
@@ -313,7 +331,11 @@ pub async fn consume_to_ui(
                 }
             }
             net::ToUi::SessionEnded => {
-                *cur_session.lock().unwrap() = None;
+                // 记下结束的会话 id，丢弃其迟到帧（与本地断开同样防「复活」）。
+                let prev = cur_session.lock().unwrap().take();
+                if prev.is_some() {
+                    *ended_session.lock().unwrap() = prev;
+                }
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         let was_controlling = ui.get_remote_active();
@@ -378,5 +400,16 @@ mod tests {
             Err("您不能远程自己！")
         );
         assert_eq!(validate_remote_target("987654321", "123456789"), Ok(()));
+    }
+
+    #[test]
+    fn 已断开会话的迟到帧应被丢弃() {
+        // 已断开 sess-1：其迟到帧必须丢弃（否则复活远程态，需点两次断开）。
+        let ended = Some("sess-1".to_string());
+        assert!(frame_belongs_to_ended(&ended, "sess-1"), "已断开会话的帧应丢弃");
+        // 新会话 sess-2 的帧不受影响，正常渲染。
+        assert!(!frame_belongs_to_ended(&ended, "sess-2"), "其它会话的帧不应丢弃");
+        // 无断开标记时一律不丢。
+        assert!(!frame_belongs_to_ended(&None, "sess-1"));
     }
 }

@@ -72,6 +72,19 @@ impl Injector {
                         self.mods_held &= !m;
                     }
                 }
+                // 可打印字符 + 无 Ctrl/Alt/Meta 组合：走 enigo.text() 可靠注入 Unicode。
+                // 主控已把 Shift 上档符解析成最终字符（如 Shift+6→"%"、Shift+2→"@"），text() 用
+                // KEYEVENTF_UNICODE 直输该字符、与键盘修饰态无关，避免 key(Key::Unicode) 对部分
+                // 符号/应用注入不稳导致「上档符打不出」。仅按下时落字一次，松开无需处理。
+                // 组合键（Ctrl+C 等）与具名键（Enter/Tab/方向键…）仍走下方 key() 路径。
+                if self.mods_held == 0 {
+                    if let Some(c) = printable_char(code) {
+                        if *down {
+                            self.enigo.text(&c.to_string())?;
+                        }
+                        return Ok(());
+                    }
+                }
                 if let Some(key) = resolve_key_with_mods(code, self.mods_held) {
                     self.enigo
                         .key(key, if *down { Press } else { Release })?;
@@ -82,6 +95,21 @@ impl Injector {
             }
         }
         Ok(())
+    }
+}
+
+/// 单个可打印字符（用于 `text()` 直输路径）。多字符（具名键如 "Enter"）或控制符
+/// （`< 0x20` / DEL）返回 None——它们交给 [`code_to_key`] 走 enigo `key()` 注入。
+fn printable_char(code: &str) -> Option<char> {
+    let mut it = code.chars();
+    let c = it.next()?;
+    if it.next().is_some() {
+        return None; // 多字符 = 具名键
+    }
+    if (c as u32) >= 0x20 && c != '\u{7f}' {
+        Some(c)
+    } else {
+        None
     }
 }
 
@@ -279,6 +307,25 @@ mod tests {
     fn 键码_标点() {
         assert_eq!(code_to_key("Slash"), Some(Key::Unicode('/')));
         assert_eq!(code_to_key("Period"), Some(Key::Unicode('.')));
+    }
+
+    #[test]
+    fn 可打印字符_识别上档符与普通字符_排除具名键和控制符() {
+        use super::printable_char;
+        // 上档符（主控已解析）：走 text() 直输路径
+        assert_eq!(printable_char("%"), Some('%'));
+        assert_eq!(printable_char("@"), Some('@'));
+        assert_eq!(printable_char("^"), Some('^'));
+        assert_eq!(printable_char("a"), Some('a'));
+        assert_eq!(printable_char("A"), Some('A'));
+        assert_eq!(printable_char("中"), Some('中'));
+        // 具名键（多字符）→ None，交给 key() 路径
+        assert_eq!(printable_char("Enter"), None);
+        assert_eq!(printable_char("ArrowUp"), None);
+        // 控制符（Slint 修饰键/控制字符）→ None
+        assert_eq!(printable_char("\u{15}"), None); // 右 Shift 残留控制符
+        assert_eq!(printable_char("\r"), None);
+        assert_eq!(printable_char(""), None);
     }
 
     #[test]
