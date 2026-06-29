@@ -7,6 +7,11 @@ use std::sync::Arc;
 
 use crate::{capture, geom, inject, net};
 
+/// 是否应把本地剪贴板变化推给对端:非空且与上次同步值不同(防回环核心)。
+pub fn should_push_clipboard(current: &str, last_synced: &str) -> bool {
+    !current.is_empty() && current != last_synced
+}
+
 /// 注入消费：被控态收到的 Input 事件 → enigo 注入。
 ///
 /// 注入器留在专用线程独占持有。按本机截屏 `real_size` + 等比缩放帧尺寸构造，坐标按 real/frame 还原。
@@ -188,5 +193,24 @@ pub async fn consume_capture(
                 *active.lock().unwrap() = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::should_push_clipboard;
+
+    #[test]
+    fn 非空且变化_应推送() {
+        assert!(should_push_clipboard("hello", ""));
+        assert!(should_push_clipboard("world", "hello"));
+    }
+    #[test]
+    fn 空文本_不推送() {
+        assert!(!should_push_clipboard("", "hello"));
+    }
+    #[test]
+    fn 未变化_不推送() {
+        assert!(!should_push_clipboard("same", "same"));
     }
 }

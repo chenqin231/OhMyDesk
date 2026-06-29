@@ -337,6 +337,8 @@ pub(super) async fn handle_downlink(
         Message::FileError { transfer_id, .. } => {
             crate::transfer::abort(&transfer_id);
         }
+        // 剪贴板同步(后续 Task 接入写本地剪贴板)
+        Message::ClipboardSync { .. } => {}
         _ => {}
     }
     Ok(())
