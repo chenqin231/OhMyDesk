@@ -4,6 +4,7 @@ import type { EndpointView } from "@/lib/types/EndpointView";
 import type { AuditLog } from "@/lib/types/AuditLog";
 import type { Session } from "@/lib/types/Session";
 import type { Message } from "@/lib/types/Message";
+import type { FileEntry } from "@/lib/types/FileEntry";
 import { transport } from "@/lib/transport";
 import {
   bytesToB64,
@@ -57,6 +58,14 @@ type State = {
   execResults: ExecEntry[];
   // 文件传输提示（下发/取回的状态/错误）
   fileNotice: string | null;
+  // 被控端会话内提示（如 Wayland 无法截屏）——主控端在等待画面处展示，替代「无限等待第一帧」
+  remoteNotice: string | null;
+
+  // 远端文件浏览：当前目录绝对路径 + 条目列表 + 加载/错误态
+  remotePath: string;
+  remoteEntries: FileEntry[];
+  remoteListLoading: boolean;
+  remoteListError: string | null;
 
   // actions
   initTransport: () => void;
@@ -68,10 +77,11 @@ type State = {
   startRemote: (mode: "a" | "b", target: string, password: string | null, name?: string) => void;
   endRemote: () => void;
   resetRemote: () => void;
-  // 远控会话内：执行命令 / 下发文件 / 取回文件
+  // 远控会话内：执行命令 / 下发文件 / 取回文件 / 浏览远端目录
   execCommand: (command: string) => void;
-  pushFile: (file: File) => Promise<void>;
+  pushFile: (file: File, dest?: string) => Promise<void>;
   pullFile: (path: string) => void;
+  listRemote: (path: string) => void;
 };
 
 const selfId = "admin-" + Math.random().toString(36).slice(2, 8);
@@ -89,6 +99,11 @@ export const useStore = create<State>((set, get) => ({
   activeReqId: null,
   execResults: [],
   fileNotice: null,
+  remoteNotice: null,
+  remotePath: "",
+  remoteEntries: [],
+  remoteListLoading: false,
+  remoteListError: null,
 
   initTransport() {
     transport.connect(selfId, (env) => {
@@ -109,6 +124,12 @@ export const useStore = create<State>((set, get) => ({
 
       if (p.type === "frame") {
         set({ remoteFrame: { data: p.data, w: p.w, h: p.h, seq: p.seq } });
+        return;
+      }
+
+      // 被控端会话内提示（如 Wayland 无法截屏）→ 在等待画面处展示
+      if (p.type === "remote_notice") {
+        set({ remoteNotice: p.text });
         return;
       }
 
@@ -177,6 +198,27 @@ export const useStore = create<State>((set, get) => ({
         set({ fileNotice: `传输失败：${p.reason}` });
         return;
       }
+
+      // push 下发落盘回执：告知被控端最终绝对路径（解「不知下发到哪了」）
+      if (p.type === "file_done") {
+        set({ fileNotice: `已下发到被控端：${p.path}` });
+        return;
+      }
+
+      // 远端目录列表回流：刷新右侧文件浏览器
+      if (p.type === "file_list_resp") {
+        if (p.error) {
+          set({ remoteListLoading: false, remoteListError: p.error });
+        } else {
+          set({
+            remotePath: p.path,
+            remoteEntries: p.entries,
+            remoteListLoading: false,
+            remoteListError: null,
+          });
+        }
+        return;
+      }
     });
 
     // 预加载审计数据
@@ -222,6 +264,7 @@ export const useStore = create<State>((set, get) => ({
       remoteTarget: name ?? target,
       remoteRejectReason: null,
       remoteFrame: null,
+      remoteNotice: null,
     });
     get().sendEnvelope({
       type: "connect_request",
@@ -247,6 +290,11 @@ export const useStore = create<State>((set, get) => ({
       remoteRejectReason: null,
       execResults: [],
       fileNotice: null,
+      remoteNotice: null,
+      remotePath: "",
+      remoteEntries: [],
+      remoteListLoading: false,
+      remoteListError: null,
     });
   },
 
@@ -279,8 +327,9 @@ export const useStore = create<State>((set, get) => ({
     });
   },
 
-  // 下发本地文件到被控端（分块 push）
-  async pushFile(file) {
+  // 下发本地文件到被控端（分块 push）；dest 为远端文件浏览器当前目录（留空落被控端 recv 目录）。
+  // 不在发完分片即宣称成功——等被控端 file_done 回执显示最终落盘路径。
+  async pushFile(file, dest) {
     const sessionId = get().remoteSessionId;
     if (!sessionId) return;
     const transfer_id = genId("t");
@@ -293,6 +342,7 @@ export const useStore = create<State>((set, get) => ({
       name: file.name,
       size: BigInt(buf.length),
       dir: "push",
+      dest: dest && dest.trim() ? dest : null,
     });
     if (buf.length === 0) {
       get().sendEnvelope({
@@ -319,7 +369,7 @@ export const useStore = create<State>((set, get) => ({
         seq++;
       }
     }
-    set({ fileNotice: `已下发 ${file.name}（${buf.length} 字节）` });
+    set({ fileNotice: `${file.name} 已发送（${buf.length} 字节），等待被控端写入确认…` });
   },
 
   // 从被控端取回指定路径文件（pull）
@@ -332,6 +382,19 @@ export const useStore = create<State>((set, get) => ({
       type: "file_pull_request",
       session_id: sessionId,
       transfer_id,
+      path,
+    });
+  },
+
+  // 列出被控端某目录（path 空 = 被控端默认目录 home）
+  listRemote(path) {
+    const sessionId = get().remoteSessionId;
+    if (!sessionId) return;
+    set({ remoteListLoading: true, remoteListError: null });
+    get().sendEnvelope({
+      type: "file_list_request",
+      session_id: sessionId,
+      transfer_id: genId("l"),
       path,
     });
   },
