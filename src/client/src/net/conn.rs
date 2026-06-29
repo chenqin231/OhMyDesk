@@ -17,6 +17,8 @@ pub(super) struct SessionCtx {
     pub(super) controlling: Option<String>,
     /// 被控态：本端被控制的会话 id（收 Input 注入用）。
     pub(super) controlled: Option<String>,
+    /// 主控已取消/超时本次申请:收到迟到的 ConnectAck 时据此发 SessionEnd 收尾、不进主控态。
+    pub(super) initiate_cancelled: bool,
 }
 
 /// 单次连接生命周期：连接 → 注册 → 起出站泵/心跳 → 收下行 + 处理 UI 上行。

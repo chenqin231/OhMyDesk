@@ -143,7 +143,7 @@ export function TerminalDetailSheet({ terminal, open, onOpenChange, onRemoteCont
                 onClick={() => onRemoteControl?.(terminal.id)}
               >
                 <TerminalIcon className="size-4" />
-                远程控制
+                申请远程
               </Button>
             </SheetFooter>
           </>

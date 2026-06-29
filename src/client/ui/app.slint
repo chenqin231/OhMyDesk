@@ -195,6 +195,7 @@ component ValueRow inherits Rectangle {
     in property <string> caption;
     in property <string> value;
     in property <color> value-color: Theme.fg;
+    in property <bool> masked: false;
     border-radius: 10px;
     background: Theme.inset;
     border-width: 1px;
@@ -210,7 +211,7 @@ component ValueRow inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             Text {
-                text: root.value;
+                text: root.masked ? "••••••" : root.value;
                 color: root.value-color;
                 font-size: 24px;
                 font-weight: 700;
@@ -294,6 +295,7 @@ export component AppWindow inherits Window {
     // ── 被控端状态 ──
     in property <string> self_id;                 // 本机注册 id（已分组展示）
     in property <string> self_password;           // 本机临时密码（展示给授权用）
+    in-out property <bool> password_visible: false;  // 临时密码是否明文显示(眼睛切换)
     in property <bool> connected: false;          // 是否已连上服务器（Header 在线灯）
     in property <bool> being_controlled: false;   // 是否正在被远程
     in property <string> peer_name;               // 控制方名称（提示条用）
@@ -301,15 +303,22 @@ export component AppWindow inherits Window {
     // 授权弹窗
     in property <bool> auth_pending: false;
     in property <string> auth_requester;
+    in property <string> auth_source;
+    in-out property <int> auth_countdown: 60;
+    in property <bool> controlled_forced: false;
     callback auth_accept();
     callback auth_reject();
+    callback stop_being_controlled();
 
     // ── 主控端状态（模式 B：client→client 发起）──
     in property <bool> remote_active: false;      // 已进入主控画面态
     in-out property <bool> connecting: false;     // 发起后等待对端授权（遮罩）；Slint try-start 也写它
+    in-out property <bool> awaiting_consent: false;   // 无密码申请:等待对方同意态
+    in-out property <int> consent_countdown: 60;
+    callback cancel_remote();
     in-out property <string> target_id;
     in-out property <string> target_password;
-    in property <string> remote_status;           // 失败提示（"密码错误"等）
+    in-out property <string> remote_status;        // 失败提示（"密码错误"等）
     in-out property <image> frame;
     in property <int> frame_w: 1;
     in property <int> frame_h: 1;
@@ -346,9 +355,9 @@ export component AppWindow inherits Window {
         // 被控提示条（常驻顶部，仅 being_controlled 时显示）
         if root.being_controlled: Rectangle {
             height: 42px;
-            background: #211a0d;
+            background: root.controlled_forced ? #2a1416 : #211a0d;
             border-width: 1px;
-            border-color: #4a3a18;
+            border-color: root.controlled_forced ? Theme.danger : #4a3a18;
             HorizontalLayout {
                 alignment: center;
                 spacing: 8px;
@@ -356,14 +365,22 @@ export component AppWindow inherits Window {
                     width: 7px;
                     height: 7px;
                     border-radius: 4px;
-                    background: Theme.amber;
+                    background: root.controlled_forced ? Theme.danger : Theme.amber;
                 }
                 Text {
-                    text: "此设备正在被 " + root.peer_name + " 远程控制";
-                    color: Theme.amber;
+                    text: root.controlled_forced
+                        ? "管理员正在强制远程控制本机"
+                        : "此设备正在被 " + root.peer_name + " 远程控制";
+                    color: root.controlled_forced ? Theme.danger : Theme.amber;
                     font-size: 13px;
                     font-weight: 500;
                     vertical-alignment: center;
+                }
+                GhostButton {
+                    label: "我要断开";
+                    clicked => {
+                        root.stop_being_controlled();
+                    }
                 }
             }
         }
@@ -460,10 +477,19 @@ export component AppWindow inherits Window {
                                     caption: "本机 ID";
                                     value: root.self_id;
                                     value-color: Theme.fg;
-                                    GhostButton {
-                                        label: "复制";
-                                        clicked => {
-                                            root.copy_text(root.self_id);
+                                    Rectangle {
+                                        property <bool> copied: false;
+                                        GhostButton {
+                                            label: parent.copied ? "✓" : "复制";
+                                            clicked => {
+                                                root.copy_text(root.self_id);
+                                                parent.copied = true;
+                                            }
+                                        }
+                                        Timer {
+                                            interval: 0.8s;
+                                            running: parent.copied;
+                                            triggered => { parent.copied = false; }
                                         }
                                     }
                                 }
@@ -471,16 +497,32 @@ export component AppWindow inherits Window {
                                     caption: "临时密码";
                                     value: root.self_password;
                                     value-color: Theme.emerald;
+                                    masked: !root.password_visible;
                                     GhostButton {
-                                        label: "换";
+                                        label: root.password_visible ? "○" : "◉";
+                                        clicked => {
+                                            root.password_visible = !root.password_visible;
+                                        }
+                                    }
+                                    GhostButton {
+                                        label: "↻";
                                         clicked => {
                                             root.refresh_password();
                                         }
                                     }
-                                    GhostButton {
-                                        label: "复制";
-                                        clicked => {
-                                            root.copy_text(root.self_password);
+                                    Rectangle {
+                                        property <bool> copied: false;
+                                        GhostButton {
+                                            label: parent.copied ? "✓" : "⧉";
+                                            clicked => {
+                                                root.copy_text(root.self_password);
+                                                parent.copied = true;
+                                            }
+                                        }
+                                        Timer {
+                                            interval: 0.8s;
+                                            running: parent.copied;
+                                            triggered => { parent.copied = false; }
                                         }
                                     }
                                 }
@@ -513,7 +555,7 @@ export component AppWindow inherits Window {
                                 }
                                 PrimaryButton {
                                     label: "开始控制";
-                                    enabled: root.target_id != "" && root.target_password != "";
+                                    enabled: root.target_id != "";
                                     clicked => {
                                         root.try-start();
                                     }
@@ -795,7 +837,9 @@ export component AppWindow inherits Window {
                         }
                     }
                     Text {
-                        text: "正在建立加密通道，等待对端授权…";
+                        text: root.awaiting_consent
+                            ? "已向 " + root.target_id + " 发送控制请求"
+                            : "正在建立加密连接…";
                         color: Theme.fg;
                         font-size: 14px;
                         font-weight: 500;
@@ -815,6 +859,34 @@ export component AppWindow inherits Window {
                         Rectangle { width: 32px; height: 4px; border-radius: 2px; background: Theme.primary; }
                         Rectangle { width: 32px; height: 4px; border-radius: 2px; background: Theme.primary; }
                         Rectangle { width: 32px; height: 4px; border-radius: 2px; background: Theme.muted; }
+                    }
+                    if root.awaiting_consent: Text {
+                        text: "等待对方在终端上点击同意 · " + root.consent_countdown + "s";
+                        color: Theme.fg-muted;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                    }
+                    if root.awaiting_consent: PrimaryButton {
+                        label: "取消请求";
+                        clicked => {
+                            root.awaiting_consent = false;
+                            root.connecting = false;
+                            root.cancel_remote();
+                        }
+                    }
+                    Timer {
+                        interval: 1s;
+                        running: root.awaiting_consent;
+                        triggered => {
+                            if (root.consent_countdown > 1) {
+                                root.consent_countdown -= 1;
+                            } else {
+                                root.awaiting_consent = false;
+                                root.connecting = false;
+                                root.remote_status = "对方未响应(60s 未同意),请求已取消";
+                                root.cancel_remote();
+                            }
+                        }
                     }
                 }
             }
@@ -869,6 +941,29 @@ export component AppWindow inherits Window {
                             horizontal-alignment: center;
                             wrap: word-wrap;
                         }
+                        Text {
+                            text: "来源：" + root.auth_source;
+                            color: Theme.fg-muted;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: root.auth_countdown + " 秒后自动拒绝";
+                            color: Theme.amber;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                        }
+                        Timer {
+                            interval: 1s;
+                            running: root.auth_pending;
+                            triggered => {
+                                if (root.auth_countdown > 1) {
+                                    root.auth_countdown -= 1;
+                                } else {
+                                    root.auth_reject();
+                                }
+                            }
+                        }
                         Rectangle { height: 8px; }
                         HorizontalLayout {
                             spacing: 12px;
@@ -912,7 +1007,7 @@ export component AppWindow inherits Window {
 
     // 发起远控：校验非空 → 置连接中 → 触发回调（Slint 内联，避免空请求）
     function try-start() {
-        if (root.target_id != "" && root.target_password != "") {
+        if (root.target_id != "") {
             root.connecting = true;
             root.connect_b();
         }
