@@ -89,6 +89,7 @@ fn incoming_control_tagged() {
             session_id: "s-1".into(),
             from: "ep-1".into(),
             mode: Mode::B,
+            auto_accept: false,
         },
     };
     let json = serde_json::to_string(&env).unwrap();
