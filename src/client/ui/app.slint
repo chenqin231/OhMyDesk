@@ -334,10 +334,10 @@ export component AppWindow inherits Window {
     // 导致组合键（Ctrl+C/V）的修饰态不被跟踪。这里把修饰键归一成被控端认得的名字串；
     // 其余按键（字母/数字/Enter/Backspace 等控制符）原样透传，被控端 code_to_key 已能处理。
     pure function key_code(t: string) -> string {
-        return t == Key.Control ? "Control"
-            : t == Key.Shift ? "Shift"
-            : t == Key.Alt ? "Alt"
-            : t == Key.Meta ? "Meta"
+        return (t == Key.Control || t == Key.ControlR) ? "Control"
+            : (t == Key.Shift || t == Key.ShiftR) ? "Shift"
+            : (t == Key.Alt || t == Key.AltGr) ? "Alt"
+            : (t == Key.Meta || t == Key.MetaR) ? "Meta"
             : t;
     }
 

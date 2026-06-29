@@ -131,6 +131,10 @@ pub(super) async fn handle_downlink(
             if matched {
                 drop(ctx);
                 let _ = out_tx; // Input 不回发，交注入侧
+                // 诊断键盘问题（组合键/上档符）：记录被控实际收到的键事件原文。
+                if let protocol::InputEvent::Key { code, down } = &event {
+                    tracing::info!("被控收到按键 code={code:?} down={down}");
+                }
                 INJECT_TX.with_send(session_id, event);
             }
         }
@@ -138,8 +142,11 @@ pub(super) async fn handle_downlink(
         Message::SetQuality { session_id, mode } => {
             let controlled =
                 session.lock().await.controlled.as_deref() == Some(session_id.as_str());
+            tracing::info!("被控收到画质切换 mode={mode:?} controlled={controlled} session={session_id}");
             if controlled {
                 crate::capture::set_quality(mode);
+                let p = crate::capture::current_params();
+                tracing::info!("被控已应用画质 上限={}x{} q={} 间隔={}ms", p.max_w, p.max_h, p.jpeg_q, p.interval_ms);
             }
         }
         // 截图请求：被控端截一帧回 ScreenshotResp（Phase 5，主控/被控共用截屏能力）
@@ -273,20 +280,33 @@ pub(super) async fn handle_downlink(
                 let out = out_tx.clone();
                 let from = self_id.to_string();
                 tokio::spawn(async move {
-                    let payload = match crate::transfer::list_dir(&path) {
-                        Ok((dir, entries)) => Message::FileListResp {
+                    // 列目录是阻塞文件 IO（read_dir/metadata/canonicalize），放 spawn_blocking 执行，
+                    // 不占用 async 工作线程——否则大目录会卡住同线程的出站泵/心跳，拖慢整体响应。
+                    let listed = {
+                        let path = path.clone();
+                        tokio::task::spawn_blocking(move || crate::transfer::list_dir(&path)).await
+                    };
+                    let payload = match listed {
+                        Ok(Ok((dir, entries))) => Message::FileListResp {
                             session_id,
                             transfer_id,
                             path: dir,
                             entries,
                             error: None,
                         },
-                        Err(reason) => Message::FileListResp {
+                        Ok(Err(reason)) => Message::FileListResp {
                             session_id,
                             transfer_id,
                             path,
                             entries: Vec::new(),
                             error: Some(reason),
+                        },
+                        Err(join_err) => Message::FileListResp {
+                            session_id,
+                            transfer_id,
+                            path,
+                            entries: Vec::new(),
+                            error: Some(format!("列目录任务失败: {join_err}")),
                         },
                     };
                     let env = Envelope {
