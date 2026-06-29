@@ -37,7 +37,7 @@ pub async fn consume_inject(
         };
         while let Ok(ev) = blk_rx.recv() {
             match injector.apply(&ev) {
-                Ok(()) => tracing::debug!("注入成功 ev={ev:?}"),
+                Ok(()) => {}
                 Err(e) => tracing::warn!("注入失败 ev={ev:?}：{e}"),
             }
         }

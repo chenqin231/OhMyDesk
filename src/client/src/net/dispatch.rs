@@ -128,10 +128,6 @@ pub(super) async fn handle_downlink(
         Message::Input { session_id, event } => {
             let ctx = session.lock().await;
             let matched = ctx.controlled.as_deref() == Some(session_id.as_str());
-            tracing::debug!(
-                "被控收到输入 session={session_id} matched={matched} controlled={:?}",
-                ctx.controlled
-            );
             if matched {
                 drop(ctx);
                 let _ = out_tx; // Input 不回发，交注入侧
