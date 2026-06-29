@@ -227,6 +227,11 @@ pub enum Message {
         session_id: String,
         text: String,
     },
+    /// 会话内双向纯文本剪贴板同步(主控↔被控)。按 session 对端路由(同 RemoteNotice)。
+    ClipboardSync {
+        session_id: String,
+        text: String,
+    },
     ScreenshotReq {
         req_id: String,
     },
