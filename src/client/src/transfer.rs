@@ -1,7 +1,10 @@
 //! 文件传输被控侧：接收下发(push)落盘 + 响应取回(pull)回流。分块 base64 over WS。
 //!
-//! 安全约束：单文件 ≤ [`MAX_FILE`]；接收一律落到固定目录 [`recv_dir`] 且文件名经
-//! [`safe_name`] basename 化（防目录穿越）；取回前校验路径为常规文件且未超限。
+//! 安全约束：单文件 ≤ [`MAX_FILE`]；文件名始终经 [`safe_name`] basename 化（防目录穿越）。
+//! 接收目录：控制方在远端文件浏览器选定的 dest 目录（经 canonicalize 解析软链后须为现存目录），
+//! dest 缺省/非法时回退固定目录 [`recv_dir`]；取回前校验路径为常规文件且未超限。
+//! 注：已授权会话内，控制方可向被控端任意可写目录落文件、读取任意 ≤MAX_FILE 文件——
+//! 这是远控文件管理的预期能力，由会话鉴权 + server 端审计约束。
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -58,9 +61,13 @@ pub fn open_recv(
     if size > MAX_FILE {
         return Err(format!("文件超过上限 {}MB", MAX_FILE / 1024 / 1024));
     }
-    // 目标目录：dest 是已存在目录则用之，否则回退 recv_dir
+    // 目标目录：dest 经 canonicalize 解析软链后须为现存目录，命中则用之，否则回退 recv_dir
+    // （canonicalize 避免 dest 是指向别处的软链时落点与显示路径不一致）
     let dir = match dest {
-        Some(d) if !d.trim().is_empty() && Path::new(d).is_dir() => PathBuf::from(d),
+        Some(d) if !d.trim().is_empty() => match std::fs::canonicalize(d) {
+            Ok(real) if real.is_dir() => real,
+            _ => recv_dir(),
+        },
         _ => recv_dir(),
     };
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建接收目录失败: {e}"))?;
