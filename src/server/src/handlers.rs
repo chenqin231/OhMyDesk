@@ -90,7 +90,6 @@ pub async fn handle_connect_request(
                 .log(&session_id, from_id, AuditType::AuthFail, "密码错误")
                 .await;
             send_reject(hub, from_id, session_id, "密码错误", now);
-            return;
         }
         ConnectDecision::AutoAccept => {
             let session_id = Uuid::new_v4().to_string();
