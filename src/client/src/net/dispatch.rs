@@ -435,6 +435,12 @@ pub(super) async fn handle_uplink(
             ts: now(),
             payload: Message::SetQuality { session_id, mode },
         },
+        FromUi::ClipboardSync { session_id, text } => Envelope {
+            from: self_id.to_string(),
+            to: None, // server 按 session_id 路由给对端
+            ts: now(),
+            payload: Message::ClipboardSync { session_id, text },
+        },
         FromUi::Disconnect { session_id } => {
             session.lock().await.controlling = None;
             Envelope {

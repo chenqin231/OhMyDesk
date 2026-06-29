@@ -95,6 +95,8 @@ pub enum FromUi {
     },
     /// 主动断开当前会话。
     Disconnect { session_id: String },
+    /// 本端剪贴板变化 → 推给对端(会话内双向同步)。
+    ClipboardSync { session_id: String, text: String },
     /// 刷新本机临时密码：重新生成并重发 Register（server DashMap 按 id upsert 覆盖旧密码）。
     RefreshPassword,
 }
@@ -152,6 +154,8 @@ pub static INJECT_TX: InjectBridge = InjectBridge(OnceLock::new());
 pub static SCREENSHOT_TX: ScreenshotBridge = ScreenshotBridge(OnceLock::new());
 /// 被控端推帧启停旁路。
 pub static CAPTURE_CTRL: CaptureCtrlBridge = CaptureCtrlBridge(OnceLock::new());
+/// 剪贴板控制/写入旁路:net 收下行/会话启停 → 交 clipboard worker 线程(独占 arboard)。
+pub static CLIPBOARD_TX: ClipboardBridge = ClipboardBridge(OnceLock::new());
 
 pub struct InjectBridge(OnceLock<mpsc::UnboundedSender<(String, protocol::InputEvent)>>);
 impl InjectBridge {
@@ -194,6 +198,30 @@ impl CaptureCtrlBridge {
     fn send(&self, c: CaptureCtrl) {
         if let Some(tx) = self.0.get() {
             let _ = tx.send(c);
+        }
+    }
+}
+
+/// 剪贴板 worker 控制消息:会话启停 + 对端写入。
+#[derive(Debug, Clone)]
+pub enum ClipboardMsg {
+    /// 会话激活:开始轮询本地剪贴板,变化推 `session_id` 对端。
+    Start { session_id: String },
+    /// 会话结束:停止轮询并清空 last_synced。
+    Stop,
+    /// 收到对端剪贴板文本:写本地 + 更新 last_synced(防回环)。
+    Incoming { text: String },
+}
+
+pub struct ClipboardBridge(OnceLock<mpsc::UnboundedSender<ClipboardMsg>>);
+impl ClipboardBridge {
+    pub fn init(&self, tx: mpsc::UnboundedSender<ClipboardMsg>) {
+        let _ = self.0.set(tx);
+    }
+    // 私有 fn(与 CaptureCtrlBridge::send 一致):私有项对子模块 net::dispatch 可见。
+    fn send(&self, m: ClipboardMsg) {
+        if let Some(tx) = self.0.get() {
+            let _ = tx.send(m);
         }
     }
 }
