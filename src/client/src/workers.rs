@@ -103,7 +103,9 @@ pub async fn consume_capture(
             // 已就「截屏不可用」回执过的会话 id：每会话只回一次，避免刷屏。
             let mut notified_for: Option<String> = None;
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(350));
+                // 帧率随画质档位：流畅优先 ~16fps，高清优先 ~10fps（被控端 CPU 弱时由档位调控）。
+                let qp = capture::current_params();
+                std::thread::sleep(std::time::Duration::from_millis(qp.interval_ms));
                 let sid = match active.lock().unwrap().clone() {
                     Some(s) => s,
                     None => continue, // 未在被控态，空转
@@ -144,7 +146,7 @@ pub async fn consume_capture(
                             }
                         }
                     }
-                    let f = capturer.as_ref().unwrap().frame();
+                    let f = capturer.as_ref().unwrap().frame_q(&qp);
                     if f.is_ok() {
                         seq += 1;
                     }

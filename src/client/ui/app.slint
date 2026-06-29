@@ -315,6 +315,8 @@ export component AppWindow inherits Window {
     in property <int> frame_h: 1;
     callback connect_b();
     callback disconnect_remote();
+    in-out property <bool> high_quality: false;   // 画质档位：true=高清优先，false=流畅优先
+    callback set_quality(bool /*high*/);          // 主控切换画质档位
 
     // 设备卡动作
     callback copy_text(string);                   // 复制 ID/密码到剪贴板
@@ -686,6 +688,56 @@ export component AppWindow inherits Window {
                     }
                 }
                 Rectangle { } // 撑开
+                // 画质档位切换：流畅 / 高清
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 132px;
+                        height: 28px;
+                        border-radius: 8px;
+                        background: #1a1a1edd;
+                        HorizontalLayout {
+                            padding: 2px;
+                            spacing: 2px;
+                            Rectangle {
+                                border-radius: 6px;
+                                background: !root.high_quality ? Theme.emerald : transparent;
+                                Text {
+                                    text: "流畅";
+                                    color: white;
+                                    font-size: 11px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.high_quality = false;
+                                        root.set_quality(false);
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                border-radius: 6px;
+                                background: root.high_quality ? Theme.emerald : transparent;
+                                Text {
+                                    text: "高清";
+                                    color: white;
+                                    font-size: 11px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.high_quality = true;
+                                        root.set_quality(true);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // 右：断开
                 VerticalLayout {
                     alignment: center;
