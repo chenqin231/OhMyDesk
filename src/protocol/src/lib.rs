@@ -432,6 +432,7 @@ pub enum AuditType {
     Disconnect,
     Command,      // 远程命令执行
     FileTransfer, // 文件传输（下发/取回）
+    Chat,         // 会话内即时消息
 }
 
 // ── 测试拆分到 src/protocol/src/tests.rs（modularity 规范：测试与实现分离）──
