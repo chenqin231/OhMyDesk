@@ -55,6 +55,7 @@ pub enum ToUi {
         data: String,
         w: u32,
         h: u32,
+        seq: u64,
     },
     /// 会话结束（任一端断开）。
     SessionEnded,

@@ -167,13 +167,14 @@ pub(super) async fn handle_downlink(
             data,
             w,
             h,
-            ..
+            seq,
         } => {
             let _ = to_ui.send(ToUi::Frame {
                 session_id,
                 data,
                 w,
                 h,
+                seq,
             });
         }
         // 主控端收到被控端会话内提示（如 Wayland 无法截屏）→ 复用拒绝态 UI 展示原因
