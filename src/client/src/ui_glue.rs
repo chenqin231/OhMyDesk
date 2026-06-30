@@ -692,7 +692,7 @@ pub async fn consume_to_ui(
                 let t_dec = std::time::Instant::now();
                 let decoded = decode_frame_rgba(&data);
                 let decode_ms = t_dec.elapsed().as_millis() as u32;
-                if let Some(line) = recv_stats.on_frame(seq, decode_ms, now_ms_ui()) {
+                if let Some(line) = recv_stats.on_frame(seq, decode_ms, crate::update::now_ms()) {
                     tracing::info!("{line}");
                 }
                 if let Ok((rgba, iw, ih)) = decoded {
@@ -922,13 +922,6 @@ fn decode_frame_rgba(data: &str) -> anyhow::Result<(Vec<u8>, u32, u32)> {
     let rgba = dyn_img.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     Ok((rgba.into_raw(), w, h))
-}
-
-fn now_ms_ui() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -261,7 +261,6 @@ pub async fn consume_capture(
             let fake = capture::fake_capture_enabled();
             let mut capturer: Option<capture::Capturer> = None;
             let mut seq: u64 = 0;
-            let mut last_sent_seq: u64 = 0;
             let mut skip = crate::framediff::SkipState::default();
             let mut notified_for: Option<String> = None;
             let mut last_cap_ms: u64 = 0;
@@ -355,7 +354,9 @@ pub async fn consume_capture(
                 }
 
                 // ── 新路径：capture_raw → 瓦片哈希 → 决策 → (跳过 | 编码发送) + 遥测 ──
-                let t_cap = now_ms();
+                // tick 入口取一次时间戳：用于决策与 FrameSample.ts_ms，省去热路径多次 syscall。
+                let tick_now = now_ms();
+                let t_cap = tick_now;
                 let raw = match cap.capture_raw() {
                     Ok(img) => img,
                     Err(e) => {
@@ -370,13 +371,13 @@ pub async fn consume_capture(
                 let quality = capture::quality_u8();
                 let frameskip = crate::render_mode::frameskip_on();
                 let tele_on = crate::render_mode::telemetry_on();
-                let d = skip.decide(now_ms(), cur_tiles, quality, &sid, frameskip);
+                let d = skip.decide(tick_now, cur_tiles, quality, &sid, frameskip);
 
                 if !d.send {
                     if tele_on {
                         let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Frame(crate::telemetry::FrameSample {
-                            ts_ms: now_ms(),
-                            seq: last_sent_seq,
+                            ts_ms: tick_now,
+                            seq, // 跳过帧沿用最后发送的 seq（seq 仅在发送时 +1）
                             capture_ms,
                             skipped: true,
                             dirty_ratio: d.dirty_ratio,
@@ -397,10 +398,9 @@ pub async fn consume_capture(
                         let encode_ms = now_ms().saturating_sub(t_enc) as u32;
                         let encoded_bytes = data.len(); // base64 长度=上网字节(JSON 内即此串)
                         seq += 1;
-                        last_sent_seq = seq;
                         if tele_on {
                             let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Frame(crate::telemetry::FrameSample {
-                                ts_ms: now_ms(),
+                                ts_ms: tick_now,
                                 seq,
                                 capture_ms,
                                 skipped: false,
