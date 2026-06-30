@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useStore } from "@/store";
 import { navPrev, navNext, pushHistory } from "@/lib/cmd-history";
+import { percent, type FileProgress } from "@/lib/file-progress";
 
 // 远控会话的「命令行」「文件传输」面板。由 RemoteSession 作为与「远程控制」平级的标签页渲染
 // （三标签：远程控制 / 命令行 / 文件传输），整体仅在 remotePhase==="connected" 时挂载——
@@ -188,6 +189,8 @@ export function CommandPanel() {
 // ── 文件传输标签页：左本地暂存区 ↔ 右远端目录浏览 ─────────────────────────────
 export function FilePanel() {
   const fileNotice = useStore((s) => s.fileNotice);
+  const fileProgress = useStore((s) => s.fileProgress);
+  const transfers = Object.values(fileProgress);
 
   return (
     <div className="flex h-full flex-col">
@@ -195,11 +198,45 @@ export function FilePanel() {
         <LocalPane />
         <RemotePane />
       </div>
-      {fileNotice && (
-        <div className="shrink-0 border-t border-border px-3 py-1.5 text-xs text-muted-foreground">
-          {fileNotice}
+
+      {(transfers.length > 0 || fileNotice) && (
+        <div className="shrink-0 border-t border-border px-3 py-2">
+          {transfers.length > 0 && (
+            <div className="mb-1.5 flex flex-col gap-1.5">
+              {transfers.map((t) => (
+                <TransferBar key={t.transfer_id} t={t} />
+              ))}
+            </div>
+          )}
+          {fileNotice && <div className="text-xs text-muted-foreground">{fileNotice}</div>}
         </div>
       )}
+    </div>
+  );
+}
+
+// 单条传输进度条：方向标签 + 文件名 + 进度条 + 百分比/状态。
+function TransferBar({ t }: { t: FileProgress }) {
+  const pct = percent(t);
+  const dirLabel = t.dir === "push" ? "下发" : "取回";
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="shrink-0 text-muted-foreground">{dirLabel}</span>
+      <span className="min-w-0 max-w-[40%] truncate text-foreground" title={t.name}>
+        {t.name}
+      </span>
+      <div className="relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-secondary">
+        <div
+          className={
+            "absolute inset-y-0 left-0 rounded-full transition-[width] duration-200 " +
+            (t.failed ? "bg-destructive" : "bg-primary")
+          }
+          style={{ width: t.failed ? "100%" : pct === null ? "100%" : `${pct}%` }}
+        />
+      </div>
+      <span className="w-12 shrink-0 text-right font-mono text-[11px] text-muted-foreground">
+        {t.failed ? "失败" : pct === null ? "…" : `${pct}%`}
+      </span>
     </div>
   );
 }
