@@ -227,6 +227,12 @@ pub enum Message {
         session_id: String,
         mode: QualityMode,
     },
+    /// 主控→被控:会话内帧推流开关(懒推流——主控仅在「远程桌面」标签需要帧)。
+    /// active=false 暂停采集推帧, true 恢复。按 session 对端路由(同 SetQuality);不审计(纯传输优化)。
+    SetCapture {
+        session_id: String,
+        active: bool,
+    },
     /// 被控→主控：会话内提示（如 Wayland 无法截屏）。主控端在等待画面处展示，
     /// 把「无限等待第一帧」变成可操作的明确提示。按 session 对端路由（同 Frame）。
     RemoteNotice {
