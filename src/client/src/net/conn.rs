@@ -28,6 +28,7 @@ pub(super) async fn connect_once(
     password: &Arc<std::sync::Mutex<String>>,
     to_ui: &mpsc::UnboundedSender<ToUi>,
     from_ui: &mut mpsc::UnboundedReceiver<FromUi>,
+    telemetry_tx: &mpsc::UnboundedSender<crate::telemetry::TelemetryMsg>,
 ) -> anyhow::Result<()> {
     let (ws, _) = connect_async(server_url).await?;
     let (mut write, mut read) = ws.split();
@@ -36,7 +37,8 @@ pub(super) async fn connect_once(
 
     // ── 出站泵：控制消息走可靠 FIFO out_tx；帧走 frame watch（单槽最新，drop-stale）──
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
-    let (frame_tx, mut frame_rx) = tokio::sync::watch::channel::<Option<String>>(None);
+    let (frame_tx, mut frame_rx) = tokio::sync::watch::channel::<Option<(u64, String)>>(None);
+    let tele_pump = telemetry_tx.clone();
     let pump = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -58,8 +60,15 @@ pub(super) async fn connect_once(
                         break;
                     }
                     let latest = frame_rx.borrow_and_update().clone();
-                    if let Some(text) = latest {
-                        if write.send(WsMsg::Text(text)).await.is_err() { break; }
+                    if let Some((seq, text)) = latest {
+                        let t0 = std::time::Instant::now();
+                        let res = write.send(WsMsg::Text(text)).await;
+                        let stall = t0.elapsed().as_millis() as u32;
+                        let ws_error = res.is_err();
+                        let _ = tele_pump.send(crate::telemetry::TelemetryMsg::Egress(crate::telemetry::EgressSample {
+                            seq, send_stall_ms: stall, sent_ok: !ws_error, ws_error,
+                        }));
+                        if ws_error { break; }
                     }
                 }
             }
@@ -160,7 +169,7 @@ pub(super) async fn connect_once(
                             payload: Message::Frame { session_id, data, w, h, seq },
                         };
                         if let Ok(s) = serde_json::to_string(&env) {
-                            let _ = frame_tx.send_replace(Some(s));
+                            let _ = frame_tx.send_replace(Some((seq, s)));
                         }
                     }
                     Some(a) => handle_uplink(a, &id, &out_tx, &session).await,
