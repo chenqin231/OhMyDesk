@@ -2,7 +2,7 @@
 //!
 //! UI 更新一律 `invoke_from_event_loop` + `Weak`（AppWindow 强句柄非 Send）。
 
-use crate::{history, net, AppWindow, HistoryItem, SharedSession};
+use crate::{history, net, AppWindow, FileEntry, HistoryItem, SharedSession};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 /// 把 9 位 id 按 3-3-3 分组展示（"617343065" → "617 343 065"）。复制时 Rust 侧再去空白。
@@ -41,6 +41,71 @@ pub fn build_history_model(items: &[history::RecentConn], now_ms: i64) -> ModelR
         })
         .collect();
     ModelRc::new(VecModel::from(rows))
+}
+
+/// 把 protocol::FileEntry 列表构造为 Slint 列表模型（必须在 UI 线程调用）。
+pub fn build_file_model(items: &[protocol::FileEntry]) -> ModelRc<FileEntry> {
+    let rows: Vec<FileEntry> = items
+        .iter()
+        .map(|e| FileEntry {
+            name: e.name.clone().into(),
+            is_dir: e.is_dir,
+            // u64→i32：仅展示用，超 i32 的文件大小极少见，饱和截断不影响功能。
+            size: e.size.min(i32::MAX as u64) as i32,
+        })
+        .collect();
+    ModelRc::new(VecModel::from(rows))
+}
+
+/// 解析 Slint 传来的路径指令串 → 目标绝对路径。
+/// "<up>:当前路径" → 父目录；"<cd>:当前路径|子名" → 子目录；其余原样（首次/直填路径）。
+pub fn resolve_path_arg(arg: &str, cur: &str) -> String {
+    if let Some(rest) = arg.strip_prefix("<up>:") {
+        parent_of(rest)
+    } else if let Some(rest) = arg.strip_prefix("<cd>:") {
+        match rest.split_once('|') {
+            Some((base, name)) => join_path(base, name),
+            None => cur.to_string(),
+        }
+    } else {
+        arg.to_string()
+    }
+}
+
+/// 父目录：去掉最后一段；到顶（无分隔或仅根）返回空串（被控端空路径=home/盘符列表）。
+pub fn parent_of(path: &str) -> String {
+    let win = path.contains('\\');
+    let sep = if win { '\\' } else { '/' };
+    let trimmed = path.trim_end_matches(sep);
+    match trimmed.rsplit_once(sep) {
+        // head 为空（如 "/home" 的父）→ 空（回根列表）
+        Some(("", _)) => String::new(),
+        // Windows 盘根 "C:" → 保留 "C:\"（回盘根而非此电脑）
+        Some((head, _)) if win && head.ends_with(':') => format!("{head}{sep}"),
+        Some((head, _)) => head.to_string(),
+        // 无分隔符（如 "C:" 去尾后无 '\'）→ 空（回此电脑）
+        None => String::new(),
+    }
+}
+
+/// 拼接目录 + 子名（按 base 是否含 '\' 选分隔符）。base 为空时返回 name 本身。
+pub fn join_path(base: &str, name: &str) -> String {
+    if base.is_empty() {
+        return name.to_string();
+    }
+    let win = base.contains('\\');
+    let sep = if win { '\\' } else { '/' };
+    let base = base.trim_end_matches(sep);
+    format!("{base}{sep}{name}")
+}
+
+/// 聊天记录追加一行（"发送者: 文本"），保持纯文本累积（Slint Text 渲染）。
+pub fn append_line(log: &str, who: &str, text: &str) -> String {
+    if log.is_empty() {
+        format!("{who}: {text}")
+    } else {
+        format!("{log}\n{who}: {text}")
+    }
 }
 
 /// 注册全部 UI 回调（运行在 UI 线程，把动作经 from_ui_tx 投给 net）。
@@ -255,6 +320,173 @@ pub fn wire_ui_callbacks(
             let _ = tx.send(net::FromUi::CancelRemote { target });
         });
     }
+    // ── tab 切换 → 懒推流：tab 0(远程桌面)发 SetCapture{active:true}，其余 false ──
+    {
+        let tx = from_ui_tx.clone();
+        let sess = cur_session.clone();
+        ui.on_tab_changed(move |tab| {
+            if let Some(sid) = sess.lock().unwrap().clone() {
+                let _ = tx.send(net::FromUi::SetCapture {
+                    session_id: sid,
+                    active: tab == 0,
+                });
+            }
+        });
+    }
+    // ── 远程命令：执行 ──
+    {
+        let tx = from_ui_tx.clone();
+        let sess = cur_session.clone();
+        ui.on_run_command(move |command| {
+            let command = command.to_string();
+            if command.trim().is_empty() {
+                return;
+            }
+            if let Some(sid) = sess.lock().unwrap().clone() {
+                let _ = tx.send(net::FromUi::ExecCommand {
+                    session_id: sid,
+                    command,
+                });
+            }
+        });
+    }
+    // ── 远程文件：浏览本机目录（左栏，复用 transfer::list_dir 列本机任意路径）──
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_list_local(move |arg| {
+            let arg = arg.to_string();
+            let ui_weak = ui_weak.clone();
+            // 解析 Slint 传来的指令串（<up>:/<cd>: 标记）→ 目标绝对路径
+            let cur = ui_weak
+                .upgrade()
+                .map(|u| u.get_local_path().to_string())
+                .unwrap_or_default();
+            let target = resolve_path_arg(&arg, &cur);
+            // 列目录是阻塞 IO，放后台线程，完成后投回 UI 线程 set。
+            std::thread::spawn(move || {
+                let listed = crate::transfer::list_dir(&target);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        match listed {
+                            Ok((dir, entries)) => {
+                                ui.set_local_path(dir.into());
+                                ui.set_local_entries(build_file_model(&entries));
+                            }
+                            Err(reason) => {
+                                ui.set_file_notice(format!("本机目录读取失败：{reason}").into());
+                            }
+                        }
+                    }
+                });
+            });
+        });
+    }
+    // ── 远程文件：浏览远端目录（右栏）──
+    {
+        let tx = from_ui_tx.clone();
+        let sess = cur_session.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_list_remote(move |arg| {
+            let arg = arg.to_string();
+            let cur = ui_weak
+                .upgrade()
+                .map(|u| u.get_remote_path().to_string())
+                .unwrap_or_default();
+            let target = resolve_path_arg(&arg, &cur);
+            if let Some(sid) = sess.lock().unwrap().clone() {
+                let _ = tx.send(net::FromUi::ListRemote {
+                    session_id: sid,
+                    path: target,
+                });
+            }
+        });
+    }
+    // ── 远程文件：下发（左栏选中文件 → 右栏当前目录）──
+    {
+        let tx = from_ui_tx.clone();
+        let sess = cur_session.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_push_file(move |name| {
+            let name = name.to_string();
+            if let Some(ui) = ui_weak.upgrade() {
+                let local_dir = ui.get_local_path().to_string();
+                let dest_dir = ui.get_remote_path().to_string();
+                let local_path = join_path(&local_dir, &name);
+                if let Some(sid) = sess.lock().unwrap().clone() {
+                    let _ = tx.send(net::FromUi::PushFile {
+                        session_id: sid,
+                        local_path,
+                        dest_dir,
+                    });
+                }
+            }
+        });
+    }
+    // ── 远程文件：取回（右栏选中文件 → 左栏当前目录）──
+    {
+        let tx = from_ui_tx.clone();
+        let sess = cur_session.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_pull_file(move |name| {
+            let name = name.to_string();
+            if let Some(ui) = ui_weak.upgrade() {
+                let remote_dir = ui.get_remote_path().to_string();
+                let local_dir = ui.get_local_path().to_string();
+                let remote_path = join_path(&remote_dir, &name);
+                if let Some(sid) = sess.lock().unwrap().clone() {
+                    let _ = tx.send(net::FromUi::PullFile {
+                        session_id: sid,
+                        remote_path,
+                        local_dir,
+                    });
+                }
+            }
+        });
+    }
+    // ── 即时消息：主控发送（本地即时回显「我」）──
+    {
+        let tx = from_ui_tx.clone();
+        let sess = cur_session.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_send_chat(move |text| {
+            let text = text.to_string();
+            if text.trim().is_empty() {
+                return;
+            }
+            if let Some(sid) = sess.lock().unwrap().clone() {
+                let _ = tx.send(net::FromUi::SendChat {
+                    session_id: sid,
+                    text: text.clone(),
+                });
+                if let Some(ui) = ui_weak.upgrade() {
+                    let log = ui.get_chat_log().to_string();
+                    ui.set_chat_log(append_line(&log, "我", &text).into());
+                }
+            }
+        });
+    }
+    // ── 即时消息：被控发送（用被控会话 ctrl_session，本地即时回显「我」）──
+    {
+        let tx = from_ui_tx.clone();
+        let sess = ctrl_session.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_send_controlled_chat(move |text| {
+            let text = text.to_string();
+            if text.trim().is_empty() {
+                return;
+            }
+            if let Some(sid) = sess.lock().unwrap().clone() {
+                let _ = tx.send(net::FromUi::SendChat {
+                    session_id: sid,
+                    text: text.clone(),
+                });
+                if let Some(ui) = ui_weak.upgrade() {
+                    let log = ui.get_controlled_chat_log().to_string();
+                    ui.set_controlled_chat_log(append_line(&log, "我", &text).into());
+                }
+            }
+        });
+    }
 }
 
 /// 该帧是否属于「已断开」会话——是则丢弃，不渲染、不复活远程态（修复需点两次断开的 Bug）。
@@ -310,7 +542,11 @@ pub async fn consume_to_ui(
                     }
                 });
             }
-            net::ToUi::BeingControlled { peer_name, forced, session_id } => {
+            net::ToUi::BeingControlled {
+                peer_name,
+                forced,
+                session_id,
+            } => {
                 *ctrl_session.lock().unwrap() = Some(session_id);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
@@ -332,6 +568,10 @@ pub async fn consume_to_ui(
                         ui.set_remote_active(true);
                         // 进入主控画面态：放大窗口给远程桌面腾空间
                         ui.window().set_size(slint::LogicalSize::new(1280.0, 820.0));
+                        // 进入工作台：左栏列本机 home、右栏列远端默认目录（空路径=被控 home）。
+                        // invoke_<callback> 主动触发已接线的列目录逻辑，不重复写。
+                        ui.invoke_list_local("".into());
+                        ui.invoke_list_remote("".into());
                     }
                 });
             }
@@ -346,14 +586,21 @@ pub async fn consume_to_ui(
                     }
                 });
             }
-            net::ToUi::Frame { session_id, data, w, h } => {
+            net::ToUi::Frame {
+                session_id,
+                data,
+                w,
+                h,
+            } => {
                 // 丢弃已断开会话的迟到帧：否则在途帧会把已断开的远程态「复活」（需点两次断开）。
                 if frame_belongs_to_ended(&ended_session.lock().unwrap(), &session_id) {
                     continue;
                 }
                 let dims_changed = last_frame_dims != Some((w, h));
                 if dims_changed {
-                    tracing::info!("主控收到帧分辨率={w}x{h}（流畅档≤1280×720 / 高清档≤1920×1080）");
+                    tracing::info!(
+                        "主控收到帧分辨率={w}x{h}（流畅档≤1280×720 / 高清档≤1920×1080）"
+                    );
                     last_frame_dims = Some((w, h));
                 }
                 // 统一会话态：收到帧即把 cur_session 设为该会话——保证「有画面时输入一定有目标」，
@@ -384,8 +631,7 @@ pub async fn consume_to_ui(
                                 let sf = ui.window().scale_factor().max(1.0);
                                 let win_w = (w.min(1920) as f32) / sf;
                                 let win_h = (h.min(1080) as f32) / sf;
-                                ui.window()
-                                    .set_size(slint::LogicalSize::new(win_w, win_h));
+                                ui.window().set_size(slint::LogicalSize::new(win_w, win_h));
                             }
                         }
                     });
@@ -423,12 +669,103 @@ pub async fn consume_to_ui(
                     }
                 });
             }
-            // ── 远程命令/文件/即时消息回执:UI 渲染在 Task 7~9(ui_glue)实装,此处先桩处理保证穷尽匹配 ──
-            net::ToUi::ExecResult { .. }
-            | net::ToUi::RemoteEntries { .. }
-            | net::ToUi::FileProgress { .. }
-            | net::ToUi::FileNotice { .. }
-            | net::ToUi::ChatIncoming { .. } => {}
+            // ── 远程命令：被控回执 → 累积到命令输出区 ──
+            net::ToUi::ExecResult {
+                exit_code,
+                stdout,
+                stderr,
+                truncated,
+                duration_ms,
+                ..
+            } => {
+                let code = exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "无(超时/未启动)".into());
+                let mut block = format!("退出码 {code} · 耗时 {duration_ms}ms");
+                if !stdout.is_empty() {
+                    block.push_str(&format!("\n{stdout}"));
+                }
+                if !stderr.is_empty() {
+                    block.push_str(&format!("\n[stderr] {stderr}"));
+                }
+                if truncated {
+                    block.push_str("\n[输出已截断]");
+                }
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        let prev = ui.get_cmd_output().to_string();
+                        let next = if prev.is_empty() {
+                            block
+                        } else {
+                            format!("{prev}\n\n{block}")
+                        };
+                        ui.set_cmd_output(next.into());
+                    }
+                });
+            }
+            // ── 远程文件：远端目录列表 → 右栏渲染 ──
+            net::ToUi::RemoteEntries {
+                path,
+                entries,
+                error,
+            } => {
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        match error {
+                            Some(reason) => {
+                                ui.set_file_notice(format!("远端目录读取失败：{reason}").into())
+                            }
+                            None => {
+                                ui.set_remote_path(path.into());
+                                ui.set_remote_entries(build_file_model(&entries));
+                            }
+                        }
+                    }
+                });
+            }
+            // ── 文件传输进度 → 状态行 ──
+            net::ToUi::FileProgress {
+                name, done, total, ..
+            } => {
+                let pct = (done * 100).checked_div(total).unwrap_or(0);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_file_notice(format!("传输中 {name} {pct}%").into());
+                    }
+                });
+            }
+            // ── 文件传输一次性通知 → 状态行 ──
+            net::ToUi::FileNotice { text } => {
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_file_notice(text.into());
+                    }
+                });
+            }
+            // ── 即时消息：据当前会话角色渲染到主控聊天页或被控聊天面板 ──
+            net::ToUi::ChatIncoming {
+                session_id, text, ..
+            } => {
+                let is_controlling =
+                    cur_session.lock().unwrap().as_deref() == Some(session_id.as_str());
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        if is_controlling {
+                            let log = ui.get_chat_log().to_string();
+                            ui.set_chat_log(append_line(&log, "对方", &text).into());
+                            if ui.get_active_tab() != 3 {
+                                ui.set_chat_unread(true);
+                            }
+                        } else {
+                            let log = ui.get_controlled_chat_log().to_string();
+                            ui.set_controlled_chat_log(append_line(&log, "对方", &text).into());
+                            if !ui.get_chat_panel_open() {
+                                ui.set_controlled_chat_unread(true);
+                            }
+                        }
+                    }
+                });
+            }
         }
     }
 }
@@ -477,10 +814,44 @@ mod tests {
     fn 已断开会话的迟到帧应被丢弃() {
         // 已断开 sess-1：其迟到帧必须丢弃（否则复活远程态，需点两次断开）。
         let ended = Some("sess-1".to_string());
-        assert!(frame_belongs_to_ended(&ended, "sess-1"), "已断开会话的帧应丢弃");
+        assert!(
+            frame_belongs_to_ended(&ended, "sess-1"),
+            "已断开会话的帧应丢弃"
+        );
         // 新会话 sess-2 的帧不受影响，正常渲染。
-        assert!(!frame_belongs_to_ended(&ended, "sess-2"), "其它会话的帧不应丢弃");
+        assert!(
+            !frame_belongs_to_ended(&ended, "sess-2"),
+            "其它会话的帧不应丢弃"
+        );
         // 无断开标记时一律不丢。
         assert!(!frame_belongs_to_ended(&None, "sess-1"));
+    }
+
+    #[test]
+    fn 路径父级_unix与windows() {
+        assert_eq!(parent_of("/home/me/docs"), "/home/me");
+        assert_eq!(parent_of("/home"), "");
+        assert_eq!(parent_of(r"C:\Users\me"), r"C:\Users");
+        assert_eq!(parent_of(r"C:\"), ""); // 盘根回此电脑
+    }
+
+    #[test]
+    fn 路径拼接_按分隔符() {
+        assert_eq!(join_path("/home/me", "a.txt"), "/home/me/a.txt");
+        assert_eq!(join_path(r"C:\Users", "a.txt"), r"C:\Users\a.txt");
+        assert_eq!(join_path("", "a.txt"), "a.txt");
+    }
+
+    #[test]
+    fn 指令串解析_up与cd() {
+        assert_eq!(resolve_path_arg("<up>:/home/me/docs", ""), "/home/me");
+        assert_eq!(resolve_path_arg("<cd>:/home/me|docs", ""), "/home/me/docs");
+        assert_eq!(resolve_path_arg("/etc", "/home"), "/etc"); // 直填原样
+    }
+
+    #[test]
+    fn 聊天行追加() {
+        assert_eq!(append_line("", "我", "hi"), "我: hi");
+        assert_eq!(append_line("我: hi", "对方", "yo"), "我: hi\n对方: yo");
     }
 }
