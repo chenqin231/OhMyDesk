@@ -208,6 +208,65 @@ impl<R: std::io::Read> std::io::Read for CapReader<R> {
     }
 }
 
+/// 下载并校验新 exe，落盘到 exe 同目录隐藏临时文件，返回临时路径。仅 Windows 调用。
+#[cfg(windows)]
+pub fn download_verified(
+    url: &str,
+    expect_sha: &str,
+    expect_size: u64,
+    exe_dir: &std::path::Path,
+) -> anyhow::Result<tempfile::TempPath> {
+    use std::time::Duration;
+    const CAP: u64 = 50 * 1024 * 1024;
+    if expect_size > CAP {
+        anyhow::bail!("size {expect_size} 超 50MB 上限");
+    }
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(120))
+        .build();
+    // ureq 启用 gzip 特性后自动加 Accept-Encoding 并透明解压；sha256/size 针对解压后字节。
+    let resp = agent.get(url).call()?;
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".ohmydesk-update-")
+        .tempfile_in(exe_dir)?;
+    let mut reader = CapReader::new(resp.into_reader(), CAP);
+    std::io::copy(&mut reader, tmp.as_file_mut())?; // 磁盘满则此处 IO 错误，上限已兜底
+    let got_size = reader.total();
+    let got_sha = reader.finish_hex();
+    if got_size != expect_size {
+        anyhow::bail!("size 不符：期望 {expect_size} 实得 {got_size}");
+    }
+    if !got_sha.eq_ignore_ascii_case(expect_sha) {
+        anyhow::bail!("sha256 不符");
+    }
+    Ok(tmp.into_temp_path())
+}
+
+/// 用已校验的临时文件替换运行中 exe 并重启。仅 Windows。
+/// self_replace：现 exe 改名 → 新文件放回原路径（绕开运行中 exe 不可覆盖）。
+#[cfg(windows)]
+pub fn apply(staged: &std::path::Path) -> anyhow::Result<()> {
+    self_replace::self_replace(staged)?;
+    let exe = std::env::current_exe()?;
+    // 默认 spawn 继承当前进程令牌（不 runas）：已提权则新进程仍提权，不二次弹 UAC。
+    std::process::Command::new(exe).spawn()?;
+    Ok(())
+}
+
+/// 启动时 best-effort 清理本模块遗留的更新临时文件（仅按自有前缀，安全）。
+#[cfg(windows)]
+pub fn cleanup_stale_temp(exe_dir: &std::path::Path) {
+    if let Ok(rd) = std::fs::read_dir(exe_dir) {
+        for e in rd.flatten() {
+            let name = e.file_name();
+            if name.to_string_lossy().starts_with(".ohmydesk-update-") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
