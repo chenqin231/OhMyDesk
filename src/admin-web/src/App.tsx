@@ -5,7 +5,7 @@ import { Grid } from "@/pages/Grid";
 import { Remote } from "@/pages/Remote";
 import { Audit } from "@/pages/Audit";
 import { Assistant } from "@/pages/Assistant";
-import { Settings } from "@/pages/Settings";
+import { LoginLogs } from "@/pages/LoginLogs";
 import { Login } from "@/pages/Login";
 import { useStore } from "@/store";
 import { useAuthStore } from "@/store/auth";
@@ -113,10 +113,10 @@ export function App() {
           }
         />
         <Route
-          path="/settings"
+          path="/login-logs"
           element={
             <RequireAuth>
-              <Settings />
+              <LoginLogs />
             </RequireAuth>
           }
         />

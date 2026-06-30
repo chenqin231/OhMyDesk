@@ -96,7 +96,7 @@ export function AppSidebar() {
       <SidebarFooter className="border-t border-sidebar-border">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" render={<Link to="/settings" />}>
+            <SidebarMenuButton size="lg">
               <Avatar className="size-8 rounded-md">
                 <AvatarFallback className="rounded-md bg-secondary text-xs">
                   {user ? user.slice(0, 2).toUpperCase() : "管理"}
