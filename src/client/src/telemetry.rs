@@ -246,10 +246,31 @@ impl Collector {
         self.ring.iter()
     }
 
-    /// 获取 sid 字符串引用。
-    pub fn sid_str(&self) -> &str {
-        &self.sid
+    /// 获取 sid 字符串（用于日志格式化）。
+    pub fn sid_str(&self) -> String {
+        self.sid.clone()
     }
+}
+
+use std::path::{Path, PathBuf};
+
+/// 遥测通道消息（worker 与 conn.rs 各投一种；Event 为离散事件）。
+pub enum TelemetryMsg {
+    Frame(FrameSample),
+    Egress(EgressSample),
+    Event(String),
+}
+
+/// 把窗口聚合格式化成一行可 grep 的日志（spec §4.2）。
+pub fn format_log(s: &WindowStats, sid: &str) -> String {
+    format!(
+        "遥测 sid={sid} win=10s effective_fps={:.1} skip_pct={:.2} dirty_p50={:.2} dirty_p95={:.2} \
+         sent_frames={} egress_writes={} egress_drop={} enc_Bps={} bytes_avg={} bytes_p95={} \
+         cap_p95_ms={} enc_avg_ms={} enc_p95_ms={} stall_p95_ms={}",
+        s.effective_fps, s.skip_pct, s.dirty_p50, s.dirty_p95,
+        s.sent, s.egress_writes, s.egress_drop, s.enc_bps, s.bytes_avg, s.bytes_p95,
+        s.cap_p95_ms, s.enc_avg_ms, s.enc_p95_ms, s.stall_p95_ms
+    )
 }
 
 #[cfg(test)]
@@ -381,5 +402,79 @@ mod tests {
         assert!(!c.should_dump(10_000 + 1000, &anomalies), "去抖窗内不重复");
         assert!(c.should_dump(10_000 + DUMP_DEBOUNCE_MS + 1, &anomalies), "过去抖窗→再 dump");
         assert!(!c.should_dump(99_999_999, &[]), "无异常→不 dump");
+    }
+
+    #[test]
+    fn format_log含关键字段() {
+        let s = WindowStats { sent: 2, egress_writes: 2, egress_drop: 0, skip_pct: 0.8, effective_fps: 0.2, enc_bps: 12_000, stall_p95_ms: 180, ..Default::default() };
+        let line = format_log(&s, "ab12");
+        assert!(line.contains("sid=ab12"));
+        assert!(line.contains("skip_pct=0.80"));
+        assert!(line.contains("egress_drop=0"));
+        assert!(line.contains("stall_p95_ms=180"));
+    }
+}
+
+/// 把环形缓冲 dump 成 JSONL 诊断包（脱敏：只含指标，绝不含像素/剪贴板/文件内容）。
+/// 单包封顶 2MB，超出截断旧样本。
+pub fn dump_ring(c: &Collector, diag_dir: &Path, ts_ms: u64) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    std::fs::create_dir_all(diag_dir)?;
+    let path = diag_dir.join(format!("diag-{ts_ms}-{}.jsonl", c.sid));
+    let mut f = std::fs::File::create(&path)?;
+    let mut written = 0usize;
+    const CAP: usize = 2 * 1024 * 1024;
+    for m in c.ring_iter() {
+        let line = format!(
+            "{{\"ts_ms\":{},\"seq\":{},\"skipped\":{},\"dirty\":{:.3},\"keyframe\":{},\"cap_ms\":{},\"enc_ms\":{},\"bytes\":{},\"stall_ms\":{},\"w\":{},\"h\":{}}}\n",
+            m.frame.ts_ms, m.frame.seq, m.frame.skipped, m.frame.dirty_ratio, m.frame.keyframe_forced,
+            m.frame.capture_ms, m.frame.encode_ms, m.frame.encoded_bytes,
+            m.send_stall_ms.map(|v| v as i64).unwrap_or(-1), m.frame.w, m.frame.h
+        );
+        if written + line.len() > CAP {
+            break;
+        }
+        f.write_all(line.as_bytes())?;
+        written += line.len();
+    }
+    Ok(path)
+}
+
+/// 异步 collector 任务：收两源消息 → 10s 窗聚合日志 + 异常分类 + 命中即落盘。
+pub async fn run_collector(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<TelemetryMsg>,
+    diag_dir: PathBuf,
+) {
+    let mut collector = Collector::new(String::new());
+    let mut win_frames: Vec<FrameSample> = vec![];
+    let mut win_egress: Vec<EgressSample> = vec![];
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10));
+    loop {
+        tokio::select! {
+            msg = rx.recv() => match msg {
+                Some(TelemetryMsg::Frame(f)) => { win_frames.push(f.clone()); collector.on_frame(f); }
+                Some(TelemetryMsg::Egress(e)) => { win_egress.push(e.clone()); collector.on_egress(e); }
+                Some(TelemetryMsg::Event(ev)) => tracing::info!("遥测事件 {ev}"),
+                None => break,
+            },
+            _ = ticker.tick() => {
+                if win_frames.is_empty() { continue; }
+                let stats = aggregate(&win_frames, &win_egress, 10_000);
+                tracing::info!("{}", format_log(&stats, &collector.sid_str()));
+                let anomalies = classify(&stats);
+                if !anomalies.is_empty() {
+                    tracing::warn!("遥测异常 {anomalies:?}");
+                    let now = win_frames.last().map(|f| f.ts_ms).unwrap_or(0);
+                    if collector.should_dump(now, &anomalies) {
+                        match dump_ring(&collector, &diag_dir, now) {
+                            Ok(p) => tracing::warn!("诊断包已落盘 {}", p.display()),
+                            Err(e) => tracing::warn!("诊断包落盘失败 {e}"),
+                        }
+                    }
+                }
+                win_frames.clear();
+                win_egress.clear();
+            }
+        }
     }
 }
