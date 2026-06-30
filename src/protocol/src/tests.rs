@@ -133,7 +133,10 @@ fn set_capture_tagged() {
     assert!(json.contains("\"type\":\"set_capture\""));
     assert!(json.contains("\"active\":false"));
     let back: Envelope = serde_json::from_str(&json).unwrap();
-    assert!(matches!(back.payload, Message::SetCapture { active: false, .. }));
+    assert!(matches!(
+        back.payload,
+        Message::SetCapture { active: false, .. }
+    ));
 }
 
 #[test]
