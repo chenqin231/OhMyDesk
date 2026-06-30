@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { Camera, Maximize, PhoneOff, TriangleAlert, Monitor, Terminal, FolderTree, MessageSquare } from "lucide-react";
+import { Camera, Download, Maximize, PhoneOff, TriangleAlert, Monitor, Terminal, FolderTree, MessageSquare } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -69,6 +69,19 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
     a.click();
     a.remove();
   }, [remoteFrame, targetName]);
+
+  const diagRing = useStore((s) => s.diagRing);
+  // 下载诊断 JSON：仅标量指标，绝不含帧像素（脱敏）。
+  const downloadDiag = useCallback(() => {
+    const blob = new Blob([JSON.stringify({ target: targetName, exported_at: Date.now(), samples: diagRing }, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${targetName}-diag-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }, [diagRing, targetName]);
 
   // G-2：坐标映射：将容器内鼠标坐标映射到帧分辨率
   const toFrameCoords = useCallback(
@@ -236,6 +249,10 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
               <Button variant="outline" size="sm" onClick={saveScreenshot} disabled={!remoteFrame}>
                 <Camera data-icon="inline-start" />
                 <span className="hidden sm:inline">截图</span>
+              </Button>
+              <Button variant="outline" size="sm" onClick={downloadDiag} disabled={diagRing.length === 0}>
+                <Download data-icon="inline-start" />
+                <span className="hidden sm:inline">诊断</span>
               </Button>
             </>
           )}
