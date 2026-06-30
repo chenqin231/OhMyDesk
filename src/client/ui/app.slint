@@ -1015,19 +1015,115 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                // tab 1/2/3 占位（Task 7/8 填充）
-                if root.active_tab == 1: Text {
-                    text: "远程命令（待填充）";
-                    color: Theme.fg-muted;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                // tab 1：远程命令
+                if root.active_tab == 1: VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+                    Text {
+                        text: "远程命令（被控端 Shell 一次性执行）";
+                        color: Theme.fg-muted;
+                        font-size: 11px;
+                        font-weight: 600;
+                        letter-spacing: 1px;
+                    }
+                    // 输出区（可滚动累积）
+                    Rectangle {
+                        vertical-stretch: 1;
+                        border-radius: 10px;
+                        background: #0d0d10;
+                        border-width: 1px;
+                        border-color: Theme.card-border;
+                        Flickable {
+                            width: 100%;
+                            height: 100%;
+                            viewport-width: self.width;
+                            viewport-height: out_text.preferred-height + 20px;
+                            out_text := Text {
+                                x: 12px;
+                                y: 10px;
+                                width: parent.width - 24px;
+                                text: root.cmd_output == "" ? "输入命令并回车执行，如 whoami / ls / ipconfig" : root.cmd_output;
+                                color: root.cmd_output == "" ? Theme.fg-muted : Theme.fg;
+                                font-size: 13px;
+                                font-family: "monospace";
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    // 输入行
+                    HorizontalLayout {
+                        spacing: 8px;
+                        FieldInput {
+                            horizontal-stretch: 1;
+                            placeholder: "whoami / ls / ipconfig …";
+                            text <=> root.cmd_input;
+                            accepted => {
+                                if (root.cmd_input != "") {
+                                    root.run_command(root.cmd_input);
+                                    root.cmd_input = "";
+                                }
+                            }
+                        }
+                        PrimaryButton {
+                            label: "执行";
+                            enabled: root.cmd_input != "";
+                            clicked => {
+                                root.run_command(root.cmd_input);
+                                root.cmd_input = "";
+                            }
+                        }
+                    }
                 }
-                if root.active_tab == 2: Text {
-                    text: "远程文件（待填充）";
-                    color: Theme.fg-muted;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+
+                // tab 2：远程文件（左本机 / 右远端）
+                if root.active_tab == 2: VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        spacing: 12px;
+                        FilePane {
+                            horizontal-stretch: 1;
+                            title: "本机（主控）";
+                            path: root.local_path;
+                            entries: root.local_entries;
+                            action_label: "下发→";
+                            open_dir(p) => {
+                                root.list_local(p);
+                            }
+                            refresh => {
+                                root.list_local(root.local_path);
+                            }
+                            act(name) => {
+                                root.push_file(name);
+                            }
+                        }
+                        FilePane {
+                            horizontal-stretch: 1;
+                            title: "远端（被控）";
+                            path: root.remote_path;
+                            entries: root.remote_entries;
+                            action_label: "←取回";
+                            open_dir(p) => {
+                                root.list_remote(p);
+                            }
+                            refresh => {
+                                root.list_remote(root.remote_path);
+                            }
+                            act(name) => {
+                                root.pull_file(name);
+                            }
+                        }
+                    }
+                    // 传输状态行
+                    if root.file_notice != "": Text {
+                        text: root.file_notice;
+                        color: Theme.fg-muted;
+                        font-size: 12px;
+                        font-family: "monospace";
+                        wrap: word-wrap;
+                    }
                 }
+
                 if root.active_tab == 3: Text {
                     text: "即时消息（待填充）";
                     color: Theme.fg-muted;
