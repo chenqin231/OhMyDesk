@@ -53,12 +53,19 @@ function fmtDur(sec: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function summarize(items: TimelineItem[]): string {
-  const shots = items.filter((i) => i.kind === "screenshot").length;
+export function summarize(items: TimelineItem[]): string {
+  const count = (kind: AuditType) => items.filter((i) => i.kind === kind).length;
+  const shots = count("screenshot");
   const inputs = items.filter((i) => i.kind === "input");
+  const commands = count("command");
+  const files = count("file_transfer");
+  const chats = count("chat");
   const parts: string[] = [];
   if (shots > 0) parts.push(`截图 ${shots} 次`);
   if (inputs.length > 0) parts.push(inputs.map((i) => i.text).join("、"));
+  if (commands > 0) parts.push(`命令 ${commands} 条`);
+  if (files > 0) parts.push(`文件传输 ${files} 次`);
+  if (chats > 0) parts.push(`消息 ${chats} 条`);
   return parts.join("，") || "无操作记录";
 }
 
