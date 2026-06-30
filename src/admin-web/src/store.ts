@@ -16,6 +16,13 @@ import {
   EXEC_TIMEOUT_MS,
 } from "@/lib/file-transfer";
 import { appendChat, type ChatEntry } from "@/lib/chat";
+import {
+  startProgress,
+  advanceProgress,
+  completeProgress,
+  failProgress,
+  type ProgressMap,
+} from "@/lib/file-progress";
 
 // 截图缓存：req_id → { endpoint_id: base64 }
 export type ScreenshotCache = Record<string, Record<string, string>>;
@@ -73,6 +80,8 @@ type State = {
 
   // 会话内即时消息（时间正序，最新在末尾）
   chatMessages: ChatEntry[];
+  // 文件传输进度：transfer_id → 进度条目（push + pull 共用）
+  fileProgress: ProgressMap;
 
   // actions
   initTransport: () => void;
@@ -116,6 +125,7 @@ export const useStore = create<State>((set, get) => ({
   remoteListError: null,
   remoteQuality: "smooth",
   chatMessages: [],
+  fileProgress: {},
 
   initTransport() {
     transport.connect(selfId, (env) => {
@@ -195,37 +205,54 @@ export const useStore = create<State>((set, get) => ({
         return;
       }
 
-      // 取回（pull）回流首包：开缓冲
+      // 取回（pull）回流首包：开缓冲 + 开进度条目
       if (p.type === "file_open") {
         pullBuffers.set(p.transfer_id, { name: p.name, parts: [] });
-        set({ fileNotice: `正在取回 ${p.name}…` });
+        set((s) => ({
+          fileProgress: startProgress(s.fileProgress, {
+            transfer_id: p.transfer_id,
+            name: p.name,
+            total: Number(p.size),
+            dir: "pull",
+          }),
+        }));
         return;
       }
 
-      // 取回数据块：累积，末块触发浏览器下载
+      // 取回数据块：累积 + 进度推进，末块触发浏览器下载并标完成
       if (p.type === "file_chunk") {
         const buf = pullBuffers.get(p.transfer_id);
         if (buf) {
-          if (p.data) buf.parts.push(b64ToBytes(p.data));
+          const bytes = p.data ? b64ToBytes(p.data) : new Uint8Array();
+          if (p.data) buf.parts.push(bytes);
+          set((s) => ({
+            fileProgress: advanceProgress(s.fileProgress, p.transfer_id, bytes.length),
+          }));
           if (p.last) {
             pullBuffers.delete(p.transfer_id);
             downloadBytes(buf.name, buf.parts);
-            set({ fileNotice: `已取回 ${buf.name}` });
+            set((s) => ({ fileProgress: completeProgress(s.fileProgress, p.transfer_id) }));
           }
         }
         return;
       }
 
-      // 传输失败
+      // 传输失败：标进度失败 + 文字兜底
       if (p.type === "file_error") {
         pullBuffers.delete(p.transfer_id);
-        set({ fileNotice: `传输失败：${p.reason}` });
+        set((s) => ({
+          fileProgress: failProgress(s.fileProgress, p.transfer_id),
+          fileNotice: `传输失败：${p.reason}`,
+        }));
         return;
       }
 
-      // push 下发落盘回执：告知被控端最终绝对路径（解「不知下发到哪了」）
+      // push 下发落盘回执：标完成 + 文字告知最终绝对路径
       if (p.type === "file_done") {
-        set({ fileNotice: `已下发到被控端：${p.path}` });
+        set((s) => ({
+          fileProgress: completeProgress(s.fileProgress, p.transfer_id),
+          fileNotice: `已下发到被控端：${p.path}`,
+        }));
         return;
       }
 
@@ -317,7 +344,13 @@ export const useStore = create<State>((set, get) => ({
     if (sessionId) {
       get().sendEnvelope({ type: "session_end", session_id: sessionId });
     }
-    set({ remotePhase: "launch", remoteSessionId: null, remoteFrame: null, chatMessages: [] });
+    set({
+      remotePhase: "launch",
+      remoteSessionId: null,
+      remoteFrame: null,
+      chatMessages: [],
+      fileProgress: {},
+    });
   },
 
   resetRemote() {
@@ -335,6 +368,7 @@ export const useStore = create<State>((set, get) => ({
       remoteListLoading: false,
       remoteListError: null,
       chatMessages: [],
+      fileProgress: {},
     });
   },
 
@@ -374,7 +408,14 @@ export const useStore = create<State>((set, get) => ({
     if (!sessionId) return;
     const transfer_id = genId("t");
     const buf = new Uint8Array(await file.arrayBuffer());
-    set({ fileNotice: `正在下发 ${file.name}…` });
+    set((s) => ({
+      fileProgress: startProgress(s.fileProgress, {
+        transfer_id,
+        name: file.name,
+        total: buf.length,
+        dir: "push",
+      }),
+    }));
     get().sendEnvelope({
       type: "file_open",
       session_id: sessionId,
@@ -406,10 +447,10 @@ export const useStore = create<State>((set, get) => ({
           data: bytesToB64(slice),
           last,
         });
+        set((s) => ({ fileProgress: advanceProgress(s.fileProgress, transfer_id, slice.length) }));
         seq++;
       }
     }
-    set({ fileNotice: `${file.name} 已发送（${buf.length} 字节），等待被控端写入确认…` });
   },
 
   // 从被控端取回指定路径文件（pull）
