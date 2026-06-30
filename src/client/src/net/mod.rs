@@ -38,7 +38,11 @@ pub enum ToUi {
         source: String,
     },
     /// 会话已建立为被控态（授权通过 / 对端 ack）。forced=true 表示管理员强制控制。
-    BeingControlled { peer_name: String, forced: bool, session_id: String },
+    BeingControlled {
+        peer_name: String,
+        forced: bool,
+        session_id: String,
+    },
     /// 主控发起结果：收到对端首帧前的 ack。
     RemoteAck { session_id: String },
     /// 主控发起被拒（密码错/被拒）。
@@ -56,6 +60,43 @@ pub enum ToUi {
     SessionEnded,
     /// 连接断开（UI 可提示"重连中…"）。
     Disconnected,
+    /// 主控端收被控回执的命令执行结果（远程命令标签渲染）。
+    #[allow(dead_code)] // UI 层(Task 7~9)接入后移除
+    ExecResult {
+        exec_id: String,
+        command: String,
+        exit_code: Option<i32>,
+        stdout: String,
+        stderr: String,
+        truncated: bool,
+        duration_ms: u32,
+    },
+    /// 主控端收远端目录列表（远程文件标签右栏渲染）。path 为实际列出的绝对目录。
+    #[allow(dead_code)] // UI 层(Task 7~9)接入后移除
+    RemoteEntries {
+        path: String,
+        entries: Vec<protocol::FileEntry>,
+        /// 列目录失败原因（被控回 FileListResp.error）；None 表示成功。
+        error: Option<String>,
+    },
+    /// 文件传输进度（下发/取回通用）：done/total 字节。total=0 表示未知。
+    #[allow(dead_code)] // UI 层(Task 7~9)接入后移除
+    FileProgress {
+        transfer_id: String,
+        name: String,
+        done: u64,
+        total: u64,
+    },
+    /// 文件传输一次性通知（完成/失败提示，远程文件标签底部状态行）。
+    #[allow(dead_code)] // UI 层(Task 7~9)接入后移除
+    FileNotice { text: String },
+    /// 收到会话内即时消息（即时消息标签 / 被控聊天面板渲染，对端发来）。
+    #[allow(dead_code)] // UI 层(Task 7~9)接入后移除
+    ChatIncoming {
+        session_id: String,
+        msg_id: String,
+        text: String,
+    },
 }
 
 /// UI → net：上行动作（用户操作转成出站消息）。
@@ -105,6 +146,32 @@ pub enum FromUi {
     /// 主控取消尚未建立的申请(无 session_id):置本地取消标记(迟到 ConnectAck 时收尾) +
     /// 带 target 发 CancelRequest 给 server,令其撤销被控端授权弹窗。
     CancelRemote { target: String },
+    /// 主控端发起一次性远程命令 → 发 ExecRequest 给被控端。
+    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
+    ExecCommand { session_id: String, command: String },
+    /// 主控端浏览远端目录 → 发 FileListRequest 给被控端。
+    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
+    ListRemote { session_id: String, path: String },
+    /// 主控端下发本机文件到远端当前目录（push）。
+    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
+    PushFile {
+        session_id: String,
+        local_path: String,
+        dest_dir: String,
+    },
+    /// 主控端从远端取回文件到本机目录（pull）：记 transfer_id→local_dir 后发 FilePullRequest。
+    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
+    PullFile {
+        session_id: String,
+        remote_path: String,
+        local_dir: String,
+    },
+    /// 会话内发送即时消息（主控/被控通用）→ 发 ChatMessage 给对端。
+    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
+    SendChat { session_id: String, text: String },
+    /// 切换桌面帧推流（懒推流）：主控切到/离开「远程桌面」标签 → 发 SetCapture 给被控端。
+    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
+    SetCapture { session_id: String, active: bool },
 }
 
 // ── M-CLI3：工具函数 ──────────────────────────────────────────────
@@ -159,7 +226,7 @@ pub static INJECT_TX: InjectBridge = InjectBridge(OnceLock::new());
 /// 截图请求旁路：(req_id, requester_from)。
 pub static SCREENSHOT_TX: ScreenshotBridge = ScreenshotBridge(OnceLock::new());
 /// 被控端推帧启停旁路。
-pub static CAPTURE_CTRL: CaptureCtrlBridge = CaptureCtrlBridge(OnceLock::new());
+pub static CAPTURE_CTRL: CaptureCtrlBridge = CaptureCtrlBridge(std::sync::Mutex::new(None));
 /// 剪贴板控制/写入旁路:net 收下行/会话启停 → 交 clipboard worker 线程(独占 arboard)。
 pub static CLIPBOARD_TX: ClipboardBridge = ClipboardBridge(OnceLock::new());
 
@@ -196,13 +263,15 @@ pub enum CaptureCtrl {
     Stop,
 }
 
-pub struct CaptureCtrlBridge(OnceLock<mpsc::UnboundedSender<CaptureCtrl>>);
+// 用 Mutex<Option> 而非 OnceLock：init 可重入（production 仅启动调一次，语义不变；
+// 测试中允许多个用例各自重装接收端，规避 OnceLock「首次 init 独占、后续静默失效」导致的跨用例串扰）。
+pub struct CaptureCtrlBridge(std::sync::Mutex<Option<mpsc::UnboundedSender<CaptureCtrl>>>);
 impl CaptureCtrlBridge {
     pub fn init(&self, tx: mpsc::UnboundedSender<CaptureCtrl>) {
-        let _ = self.0.set(tx);
+        *self.0.lock().unwrap() = Some(tx);
     }
     fn send(&self, c: CaptureCtrl) {
-        if let Some(tx) = self.0.get() {
+        if let Some(tx) = self.0.lock().unwrap().as_ref() {
             let _ = tx.send(c);
         }
     }
