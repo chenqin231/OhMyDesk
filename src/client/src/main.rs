@@ -18,6 +18,7 @@ mod capture;
 mod elevate;
 mod exec;
 mod framediff;
+mod telemetry;
 mod geom;
 mod history;
 mod inject;
