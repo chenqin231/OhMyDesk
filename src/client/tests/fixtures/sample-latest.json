@@ -1,0 +1,1 @@
+{"version":"0.3.0","assets":{"windows_x86_64":{"url":"https://rc.guoziweb.com/downloads/ohmydesk-client-windows-x86_64-0.3.0.exe","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size":1,"auto":true}},"enabled":true,"rollout_percent":100,"min_version":null,"allow_downgrade":false,"notes":"fixture"}
