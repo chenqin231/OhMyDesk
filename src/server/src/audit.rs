@@ -181,6 +181,7 @@ fn audit_type_str(t: AuditType) -> &'static str {
         AuditType::Disconnect => "disconnect",
         AuditType::Command => "command",
         AuditType::FileTransfer => "file_transfer",
+        AuditType::Chat => "chat",
     }
 }
 
@@ -222,6 +223,7 @@ impl From<AuditLogRow> for AuditLog {
             "input" => AuditType::Input,
             "command" => AuditType::Command,
             "file_transfer" => AuditType::FileTransfer,
+            "chat" => AuditType::Chat,
             _ => AuditType::Disconnect,
         };
         AuditLog {
@@ -267,4 +269,27 @@ fn session_from_row(r: SessionRow) -> Option<Session> {
         end_at: r.end_at,
         status,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_audit_type_str_and_back() {
+        // 枚举 → 字符串
+        assert_eq!(audit_type_str(AuditType::Chat), "chat");
+        // 字符串行 → 枚举(往返)
+        let row = AuditLogRow {
+            id: "a1".into(),
+            session_id: "s1".into(),
+            ts: 0,
+            actor_id: "ep-1".into(),
+            event_type: "chat".into(),
+            text: "你好".into(),
+        };
+        let log = AuditLog::from(row);
+        assert!(matches!(log.kind, AuditType::Chat));
+        assert_eq!(log.text, "你好");
+    }
 }
