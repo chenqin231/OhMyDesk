@@ -182,6 +182,12 @@ pub enum Message {
         #[serde(default)]
         force: bool,
     },
+    /// 主控 → server：取消尚未建立的远控申请（此时主控无 session_id）。
+    /// server 据 (from, target) 定位挂起会话，向被控端转发 SessionEnd 撤销授权弹窗并结束会话。
+    /// 解「主控取消申请后被控端弹窗仍倒计时」。
+    CancelRequest {
+        target: String,
+    },
     /// server → 被控端：有主控发起控制，携带 server 生成的 session_id；
     /// 被控端授权后回 AuthResult 带此 session_id（解 task#8 时序缺口，统一会话 id 来源）。
     IncomingControl {

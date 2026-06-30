@@ -152,6 +152,11 @@ impl Hub {
                 .await;
             }
 
+            // ── 主控取消挂起申请（委托 handlers：通知被控撤弹窗 + 结束会话）──────
+            Message::CancelRequest { target } => {
+                handlers::handle_cancel_request(self, &env.from, target, now).await;
+            }
+
             // ── 被控端授权结果（委托 handlers）────────────────────────────────
             Message::AuthResult {
                 session_id,
@@ -343,6 +348,56 @@ mod tests {
         assert!(
             admin_rx.try_recv().is_err(),
             "结束通知不应回发给发起方 admin"
+        );
+    }
+
+    /// Bug 回归（issue#4）：主控取消挂起申请 → server 必须把 SessionEnd 转发给被控端
+    /// （撤销其授权弹窗），并移除会话；不得回发给主控自身。
+    #[tokio::test]
+    async fn cancel_request_notifies_controlled_and_ends_session() {
+        let hub = test_hub();
+        let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<String>();
+        let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("ep-ctrl".into(), ctrl_tx);
+        hub.add_client("ep-victim".into(), victim_tx);
+
+        let sid = "sess-pending".to_string();
+        hub.sessions.insert(Session {
+            id: sid.clone(),
+            mode: Mode::B,
+            from_id: "ep-ctrl".into(),
+            to_id: "ep-victim".into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        // 主控发 CancelRequest（带 target=被控）
+        let env = Envelope {
+            from: "ep-ctrl".into(),
+            to: None,
+            ts: 200,
+            payload: Message::CancelRequest {
+                target: "ep-victim".into(),
+            },
+        };
+        hub.handle(env, 200).await;
+
+        // 被控端收到 SessionEnd（据此撤弹窗）
+        let got = victim_rx
+            .try_recv()
+            .expect("被控端应收到 SessionEnd 以撤销授权弹窗");
+        let env: Envelope = serde_json::from_str(&got).unwrap();
+        match env.payload {
+            Message::SessionEnd { session_id } => assert_eq!(session_id, sid),
+            other => panic!("被控端收到的应为 SessionEnd，实际 {other:?}"),
+        }
+        // 会话已移除
+        assert!(!hub.sessions.contains(&sid), "取消后会话应被移除");
+        // 主控不应收到回发
+        assert!(
+            ctrl_rx.try_recv().is_err(),
+            "取消通知不应回发给发起方主控"
         );
     }
 

@@ -410,12 +410,20 @@ pub(super) async fn handle_uplink(
         // RefreshPassword 在 connect_once 的 select 处已拦截重注册，不进入本分发；
         // 此臂仅为穷尽匹配，理论不可达。
         FromUi::RefreshPassword => return,
-        FromUi::CancelRemote => {
-            let mut ctx = session.lock().await;
-            if ctx.controlling.is_none() {
-                ctx.initiate_cancelled = true;
+        FromUi::CancelRemote { target } => {
+            {
+                let mut ctx = session.lock().await;
+                if ctx.controlling.is_none() {
+                    ctx.initiate_cancelled = true;
+                }
             }
-            return;
+            // 通知 server 据 (from, target) 定位挂起会话并撤销被控端弹窗。
+            Envelope {
+                from: self_id.to_string(),
+                to: None,
+                ts: now(),
+                payload: Message::CancelRequest { target },
+            }
         }
         FromUi::StartRemote {
             target_id,
@@ -557,11 +565,46 @@ pub(super) async fn handle_uplink(
 
 #[cfg(test)]
 mod uplink_tests {
-    use super::opt_password;
+    use std::sync::Arc;
+
+    use protocol::{Envelope, Message};
+    use tokio::sync::mpsc;
+
+    use super::super::conn::SessionCtx;
+    use super::super::FromUi;
+    use super::{handle_uplink, opt_password};
 
     #[test]
     fn 空密码映射为_none() {
         assert_eq!(opt_password(String::new()), None);
+    }
+
+    /// Bug 回归（issue#4）：主控取消申请 → 上行须发 CancelRequest（带 target），
+    /// 且 controlling 为 None 时置 initiate_cancelled（迟到 ConnectAck 收尾）。
+    #[tokio::test]
+    async fn cancel_remote_uplink_sends_cancel_request_with_target() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let session = Arc::new(tokio::sync::Mutex::new(SessionCtx::default()));
+        handle_uplink(
+            FromUi::CancelRemote {
+                target: "638924533".into(),
+            },
+            "ep-self",
+            &tx,
+            &session,
+        )
+        .await;
+        let s = rx.recv().await.expect("应发出 CancelRequest");
+        assert!(s.contains("\"type\":\"cancel_request\""), "缺 cancel_request: {s}");
+        let env: Envelope = serde_json::from_str(&s).unwrap();
+        match env.payload {
+            Message::CancelRequest { target } => assert_eq!(target, "638924533"),
+            other => panic!("应为 CancelRequest，实际 {other:?}"),
+        }
+        assert!(
+            session.lock().await.initiate_cancelled,
+            "controlling 为 None 时应置 initiate_cancelled"
+        );
     }
     #[test]
     fn 非空密码映射为_some() {
