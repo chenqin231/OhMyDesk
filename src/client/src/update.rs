@@ -1,6 +1,20 @@
 //! 在线自动更新：检测/验签/决策（纯逻辑，跨平台单测）+ 下载/替换（仅 Windows）。
 //! 设计见 docs/superpowers/specs/2026-06-30-windows-client-auto-update-design.md。
 use std::collections::HashMap;
+use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::OnceLock;
+
+static NUDGE_TX: OnceLock<SyncSender<()>> = OnceLock::new();
+pub fn set_nudge_sender(tx: SyncSender<()>) { let _ = NUDGE_TX.set(tx); }
+/// net 每次成功 Register/重连后调用：唤醒守护提前检测。
+pub fn nudge() { if let Some(tx) = NUDGE_TX.get() { let _ = tx.try_send(()); } }
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// manifest 字节上限，超出即拒绝解析（防超大清单 DoS）。
 pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
@@ -252,6 +266,107 @@ pub fn apply(staged: &std::path::Path) -> anyhow::Result<()> {
     // 默认 spawn 继承当前进程令牌（不 runas）：已提权则新进程仍提权，不二次弹 UAC。
     std::process::Command::new(exe).spawn()?;
     Ok(())
+}
+
+use std::sync::Arc;
+use std::time::Duration;
+use crate::activity::ClientActivityState;
+use crate::net::ToUi;
+use tokio::sync::mpsc::UnboundedSender;
+
+/// 启动更新守护（独立 std 线程）。触发：启动延迟 30s + 周期 + nudge。
+pub fn spawn_update_daemon(
+    server_url: String,
+    endpoint_id: String,
+    state: Arc<ClientActivityState>,
+    to_ui: UnboundedSender<ToUi>,
+    nudge_rx: Receiver<()>,
+) {
+    std::thread::spawn(move || {
+        let base = match resolve_base(&server_url, std::env::var("OHMYDESK_UPDATE_BASE_URL").ok().as_deref()) {
+            Some(b) => b,
+            None => { tracing::warn!("自动更新已禁用：服务器非 wss 且未设 OHMYDESK_UPDATE_BASE_URL(https)"); return; }
+        };
+        let interval = std::env::var("OHMYDESK_UPDATE_INTERVAL_SECS").ok()
+            .and_then(|s| s.parse::<u64>().ok()).unwrap_or(6 * 3600);
+        #[cfg(windows)]
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() { cleanup_stale_temp(dir); }
+        }
+        std::thread::sleep(Duration::from_secs(30)); // 启动延迟，避开连接抖动
+        loop {
+            if let Err(e) = run_once(&base, &endpoint_id, &state, &to_ui) {
+                tracing::warn!("更新检查失败：{e}");
+            }
+            let _ = nudge_rx.recv_timeout(Duration::from_secs(interval)); // nudge 或超时唤醒
+        }
+    });
+}
+
+fn run_once(base: &url::Url, endpoint_id: &str, state: &Arc<ClientActivityState>, to_ui: &UnboundedSender<ToUi>) -> anyhow::Result<()> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(30))
+        .build();
+    let manifest_url = base.join("latest.json")?;
+    let sig_url = base.join("latest.json.minisig")?;
+    // manifest（限 64KB）
+    let mut buf = Vec::new();
+    use std::io::Read;
+    agent.get(manifest_url.as_str()).call()?.into_reader().take(MAX_MANIFEST_BYTES as u64 + 1).read_to_end(&mut buf)?;
+    let sig = agent.get(sig_url.as_str()).call()?.into_string()?;
+    if !verify_manifest_sig(UPDATE_PUBKEY, &buf, &sig) {
+        anyhow::bail!("清单验签失败，丢弃");
+    }
+    let m = parse_manifest(&buf)?;
+    // 同源校验本平台 asset
+    if let Some(a) = current_asset(&m, platform_key()) {
+        if !same_origin(base, &a.url) {
+            anyhow::bail!("下载 URL 非同源 https，丢弃");
+        }
+    }
+    let current = env!("CARGO_PKG_VERSION");
+    match decide(&m, current, endpoint_id) {
+        UpdateAction::Skip => Ok(()),
+        UpdateAction::Notice { version, url, notes } => {
+            let _ = to_ui.send(ToUi::UpdateAvailable { version, url, notes });
+            Ok(())
+        }
+        UpdateAction::AutoUpdate { version, url, sha256, size } => {
+            apply_auto(state, to_ui, &version, &url, &sha256, size)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn apply_auto(state: &Arc<ClientActivityState>, to_ui: &UnboundedSender<ToUi>, version: &str, url: &str, sha256: &str, size: u64) -> anyhow::Result<()> {
+    let exe = std::env::current_exe()?;
+    let dir = exe.parent().ok_or_else(|| anyhow::anyhow!("无 exe 目录"))?;
+    let staged = match download_verified(url, sha256, size, dir) {
+        Ok(p) => p,
+        Err(e) => { // 下载/校验失败兜底提示手动
+            let _ = to_ui.send(ToUi::UpdateAvailable { version: version.into(), url: url.into(), notes: Some(format!("自动更新失败，请手动下载（{e}）")) });
+            return Err(e);
+        }
+    };
+    if state.try_enter_updating(now_ms()) {
+        let r = apply(&staged);
+        if r.is_ok() {
+            let _ = slint::invoke_from_event_loop(|| { let _ = slint::quit_event_loop(); });
+            std::thread::sleep(Duration::from_millis(300));
+            std::process::exit(0);
+        }
+        state.exit_updating();
+        r
+    } else {
+        tracing::info!("有会话进行中，推迟替换到下个周期");
+        Ok(()) // staged 临时文件随 drop 删除，下周期重下
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_auto(_s: &Arc<ClientActivityState>, _t: &UnboundedSender<ToUi>, _v: &str, _u: &str, _h: &str, _z: u64) -> anyhow::Result<()> {
+    Ok(()) // 非 Windows 不会进 AutoUpdate（asset.auto=false），兜底空实现
 }
 
 /// 启动时 best-effort 清理本模块遗留的更新临时文件（仅按自有前缀，安全）。

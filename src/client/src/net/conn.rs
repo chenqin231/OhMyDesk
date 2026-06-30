@@ -83,6 +83,7 @@ pub(super) async fn connect_once(
         password: reg_pw.clone(),
     });
     tracing::info!("已注册 id={id} password={reg_pw}");
+        crate::update::nudge();
 
     // ── 心跳任务：只持 out_tx（克隆），绝不持 write ──
     let hb_tx = out_tx.clone();
