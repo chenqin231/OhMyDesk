@@ -35,12 +35,177 @@ pub struct Manifest {
     pub notes: Option<String>,
 }
 
+/// 更新清单签名公钥（minisign/rsign2，base64）。发版前由维护者替换为真实离线公钥；
+/// 占位时 from_base64 失败 → verify 恒 false → 自动更新 fail-closed 安全失效。
+pub const UPDATE_PUBKEY: &str = "REPLACE_BEFORE_RELEASE";
+
 /// 解析清单，先卡 64KB 上限。
 pub fn parse_manifest(bytes: &[u8]) -> anyhow::Result<Manifest> {
     if bytes.len() > MAX_MANIFEST_BYTES {
         anyhow::bail!("manifest 超过 {} 字节上限", MAX_MANIFEST_BYTES);
     }
     Ok(serde_json::from_slice(bytes)?)
+}
+
+/// 仅当 latest 语义版本严格高于 current 才为真；任一非法版本保守返回 false。
+pub fn is_newer(latest: &str, current: &str) -> bool {
+    match (semver::Version::parse(latest), semver::Version::parse(current)) {
+        (Ok(l), Ok(c)) => l > c,
+        _ => false,
+    }
+}
+
+/// 按 endpoint_id 的 SHA-256 前 8 字节大端 % 100 确定性分桶（0..=99）。
+pub fn bucket(endpoint_id: &str) -> u8 {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(endpoint_id.as_bytes());
+    let mut n: u64 = 0;
+    for b in &d[..8] {
+        n = (n << 8) | *b as u64;
+    }
+    (n % 100) as u8
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UpdateAction {
+    Skip,
+    Notice { version: String, url: String, notes: Option<String> },
+    AutoUpdate { version: String, url: String, sha256: String, size: u64 },
+}
+
+/// 当前编译平台对应的 manifest asset 键。
+pub fn platform_key() -> &'static str {
+    if cfg!(windows) { "windows_x86_64" }
+    else if cfg!(all(target_os = "linux", target_arch = "x86_64")) { "linux_x86_64_deb" }
+    else if cfg!(all(target_os = "linux", target_arch = "aarch64")) { "linux_arm64_deb" }
+    else if cfg!(all(target_os = "macos", target_arch = "aarch64")) { "macos_arm64" }
+    else { "unsupported" }
+}
+
+pub fn current_asset<'a>(m: &'a Manifest, key: &str) -> Option<&'a Asset> {
+    m.assets.get(key)
+}
+
+/// 入口：选本平台 asset 后决策。
+pub fn decide(m: &Manifest, current: &str, endpoint_id: &str) -> UpdateAction {
+    match current_asset(m, platform_key()) {
+        Some(a) => decide_with_asset(m, current, endpoint_id, a),
+        None => UpdateAction::Skip,
+    }
+}
+
+/// 决策核心（注入 asset，便于跨平台单测）：
+/// - !enabled → Skip
+/// - 非 auto（Linux/macOS）：is_newer → Notice（不受灰度）
+/// - auto（Windows）：allow_downgrade(version!=current) 或 (is_newer 且 (强制 min_version 或 中桶))
+///   且 asset 必须带 sha256+size，否则 Skip
+pub fn decide_with_asset(m: &Manifest, current: &str, endpoint_id: &str, asset: &Asset) -> UpdateAction {
+    if !m.enabled {
+        return UpdateAction::Skip;
+    }
+    if !asset.auto {
+        return if is_newer(&m.version, current) {
+            UpdateAction::Notice { version: m.version.clone(), url: asset.url.clone(), notes: m.notes.clone() }
+        } else {
+            UpdateAction::Skip
+        };
+    }
+    let want = if m.allow_downgrade {
+        m.version != current
+    } else if is_newer(&m.version, current) {
+        let forced = m.min_version.as_deref().map_or(false, |mv| is_newer(mv, current));
+        forced || (bucket(endpoint_id) < m.rollout_percent)
+    } else {
+        false
+    };
+    if !want {
+        return UpdateAction::Skip;
+    }
+    match (asset.sha256.clone(), asset.size) {
+        (Some(sha256), Some(size)) => UpdateAction::AutoUpdate {
+            version: m.version.clone(), url: asset.url.clone(), sha256, size,
+        },
+        _ => UpdateAction::Skip, // Windows asset 缺完整性字段 → 不自动更新
+    }
+}
+
+/// 解析更新基址（必须 https）：显式 OHMYDESK_UPDATE_BASE_URL 优先（须 https），
+/// 否则从 wss:// 服务器派生 https://host[:port]/downloads/；ws:// 不降级 → None。
+pub fn resolve_base(server_url: &str, env_override: Option<&str>) -> Option<url::Url> {
+    if let Some(o) = env_override {
+        let u = url::Url::parse(o).ok()?;
+        return if u.scheme() == "https" { Some(u) } else { None };
+    }
+    let s = url::Url::parse(server_url).ok()?;
+    if s.scheme() != "wss" {
+        return None;
+    }
+    let host = s.host_str()?;
+    let authority = match s.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    };
+    url::Url::parse(&format!("https://{authority}/downloads/")).ok()
+}
+
+/// 下载 URL 必须 https 且与基址同源（scheme+host+port）。
+pub fn same_origin(base: &url::Url, target: &str) -> bool {
+    match url::Url::parse(target) {
+        Ok(t) => {
+            t.scheme() == "https"
+                && t.host_str() == base.host_str()
+                && t.port_or_known_default() == base.port_or_known_default()
+        }
+        Err(_) => false,
+    }
+}
+
+/// 用内置公钥验证 latest.json 的分离签名（minisig 文件全文）。任何失败 → false。
+pub fn verify_manifest_sig(pubkey_b64: &str, manifest_bytes: &[u8], minisig: &str) -> bool {
+    use minisign_verify::{PublicKey, Signature};
+    match (PublicKey::from_base64(pubkey_b64), Signature::decode(minisig)) {
+        (Ok(pk), Ok(sig)) => pk.verify(manifest_bytes, &sig, false).is_ok(),
+        _ => false,
+    }
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
+/// 边读边算 SHA-256 + 强制上限的 Reader 包装。
+pub struct CapReader<R> {
+    inner: R,
+    cap: u64,
+    read: u64,
+    hasher: sha2::Sha256,
+}
+impl<R: std::io::Read> CapReader<R> {
+    pub fn new(inner: R, cap: u64) -> Self {
+        use sha2::Digest;
+        Self { inner, cap, read: 0, hasher: sha2::Sha256::new() }
+    }
+    pub fn total(&self) -> u64 { self.read }
+    pub fn finish_hex(self) -> String {
+        use sha2::Digest;
+        to_hex(&self.hasher.finalize())
+    }
+}
+impl<R: std::io::Read> std::io::Read for CapReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read += n as u64;
+        if self.read > self.cap {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "下载超过大小上限"));
+        }
+        use sha2::Digest;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
 }
 
 #[cfg(test)]
@@ -81,5 +246,171 @@ mod tests {
         let big = vec![b' '; MAX_MANIFEST_BYTES + 1];
         let err = parse_manifest(&big).unwrap_err();
         assert!(err.to_string().contains("超过"), "应命中上限分支: {err}");
+    }
+
+    // ── Task 2: is_newer + bucket ──
+
+    #[test]
+    fn 版本比对_仅更高才为真() {
+        assert!(is_newer("0.3.0", "0.2.1"));
+        assert!(!is_newer("0.2.1", "0.2.1")); // 相等
+        assert!(!is_newer("0.2.0", "0.2.1")); // 更低
+        assert!(!is_newer("乱码", "0.2.1"));   // 非法保守不更新
+    }
+
+    #[test]
+    fn 分桶_同id恒定且落0_99() {
+        let a = bucket("123456789");
+        let b = bucket("123456789");
+        assert_eq!(a, b);          // 确定性
+        assert!(a < 100);
+        assert_ne!(bucket("111"), bucket("999")); // 不同 id 大概率不同（此对已验证不同）
+    }
+
+    // ── Task 3: decide ──
+
+    fn mk_manifest(version: &str, auto: bool, rollout: u8) -> (Manifest, Asset) {
+        let asset = Asset { url: "https://h/d/c.exe".into(), sha256: Some("ab".into()), size: Some(10), auto };
+        let mut assets = HashMap::new();
+        assets.insert("windows_x86_64".to_string(), asset.clone());
+        let m = Manifest {
+            version: version.into(), assets, enabled: true, rollout_percent: rollout,
+            min_version: None, allow_downgrade: false, notes: Some("note".into()),
+        };
+        (m, asset)
+    }
+
+    #[test]
+    fn 决策_enabled为false一律skip() {
+        let (mut m, a) = mk_manifest("0.3.0", true, 100);
+        m.enabled = false;
+        assert_eq!(decide_with_asset(&m, "0.2.1", "id", &a), UpdateAction::Skip);
+    }
+
+    #[test]
+    fn 决策_非auto新版给提示不受灰度() {
+        let (m, mut a) = mk_manifest("0.3.0", false, 0); // rollout=0
+        a.auto = false;
+        match decide_with_asset(&m, "0.2.1", "id", &a) {
+            UpdateAction::Notice { version, .. } => assert_eq!(version, "0.3.0"),
+            other => panic!("应为 Notice，实为 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 决策_windows灰度0不更新_100更新() {
+        let (m0, a) = mk_manifest("0.3.0", true, 0);
+        assert_eq!(decide_with_asset(&m0, "0.2.1", "id", &a), UpdateAction::Skip);
+        let (m100, a2) = mk_manifest("0.3.0", true, 100);
+        assert!(matches!(decide_with_asset(&m100, "0.2.1", "id", &a2), UpdateAction::AutoUpdate { .. }));
+    }
+
+    #[test]
+    fn 决策_min_version强制无视灰度() {
+        let (mut m, a) = mk_manifest("0.3.0", true, 0); // 灰度 0
+        m.min_version = Some("0.3.0".into());           // 强制线高于 current
+        assert!(matches!(decide_with_asset(&m, "0.2.1", "id", &a), UpdateAction::AutoUpdate { .. }));
+    }
+
+    #[test]
+    fn 决策_allow_downgrade降级() {
+        let (mut m, a) = mk_manifest("0.2.0", true, 0);  // 比 current 更低 + 灰度0
+        m.allow_downgrade = true;
+        assert!(matches!(decide_with_asset(&m, "0.2.1", "id", &a), UpdateAction::AutoUpdate { .. }));
+    }
+
+    #[test]
+    fn 决策_auto缺sha256则skip() {
+        let (m, mut a) = mk_manifest("0.3.0", true, 100);
+        a.sha256 = None;
+        assert_eq!(decide_with_asset(&m, "0.2.1", "id", &a), UpdateAction::Skip);
+    }
+
+    #[test]
+    fn 选asset_命中与缺平台() {
+        let (m, _) = mk_manifest("0.3.0", true, 100);
+        assert!(current_asset(&m, "windows_x86_64").is_some());
+        assert!(current_asset(&m, "macos_arm64").is_none());
+    }
+
+    // ── Task 4: resolve_base + same_origin ──
+
+    #[test]
+    fn 基址_wss派生https_downloads() {
+        let b = resolve_base("wss://rc.guoziweb.com/ws", None).unwrap();
+        assert_eq!(b.as_str(), "https://rc.guoziweb.com/downloads/");
+    }
+
+    #[test]
+    fn 基址_ws明文拒绝不降级() {
+        assert!(resolve_base("ws://192.168.1.10:8765/ws", None).is_none());
+    }
+
+    #[test]
+    fn 基址_显式覆盖必须https() {
+        assert!(resolve_base("ws://x/ws", Some("https://up.intra/d/")).is_some());
+        assert!(resolve_base("ws://x/ws", Some("http://up.intra/d/")).is_none());
+    }
+
+    #[test]
+    fn 同源_同主机https放行_异源拒绝() {
+        let b = resolve_base("wss://rc.guoziweb.com/ws", None).unwrap();
+        assert!(same_origin(&b, "https://rc.guoziweb.com/downloads/c-0.3.0.exe"));
+        assert!(!same_origin(&b, "https://evil.com/c.exe")); // 异主机
+        assert!(!same_origin(&b, "http://rc.guoziweb.com/c.exe")); // 非 https
+    }
+
+    // ── Task 5: verify_manifest_sig ──
+
+    const FIXTURE_JSON: &[u8] = include_bytes!("../tests/fixtures/sample-latest.json");
+    const FIXTURE_SIG: &str = include_str!("../tests/fixtures/sample-latest.json.minisig");
+    // 测试密钥（无口令，仅测试用，与生产 UPDATE_PUBKEY 分离）
+    // 对应私钥在 /tmp/test-sec.key（不进仓库），公钥见 tests/fixtures/test-pub.key（第二行）
+    const TEST_PUBKEY: &str = "RWRzaczSwstueX4YhGyIp2a0OF4i9wXQgfyLNPMimff8W5ZI/lGvTYP4";
+
+    #[test]
+    fn 验签_合法夹具通过() {
+        assert!(verify_manifest_sig(TEST_PUBKEY, FIXTURE_JSON, FIXTURE_SIG));
+    }
+
+    #[test]
+    fn 验签_篡改字节失败() {
+        let mut tampered = FIXTURE_JSON.to_vec();
+        tampered[0] ^= 0xFF;
+        assert!(!verify_manifest_sig(TEST_PUBKEY, &tampered, FIXTURE_SIG));
+    }
+
+    #[test]
+    fn 验签_错公钥失败() {
+        let bad = "RWTGiBCq9999999999999999999999999999999999999999999999=";
+        assert!(!verify_manifest_sig(bad, FIXTURE_JSON, FIXTURE_SIG));
+    }
+
+    #[test]
+    fn 占位公钥_fail_closed() {
+        assert!(!verify_manifest_sig(UPDATE_PUBKEY, FIXTURE_JSON, FIXTURE_SIG));
+    }
+
+    // ── Task 7 Step1: CapReader ──
+
+    #[test]
+    fn 限流读_统计字节并算哈希() {
+        use std::io::Read;
+        let data = b"hello world";
+        let mut r = CapReader::new(std::io::Cursor::new(&data[..]), 1024);
+        let mut out = Vec::new();
+        r.read_to_end(&mut out).unwrap();
+        assert_eq!(r.total(), data.len() as u64);
+        // sha256("hello world") = b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
+        assert_eq!(r.finish_hex(), "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+    }
+
+    #[test]
+    fn 限流读_超上限报错() {
+        use std::io::Read;
+        let data = vec![0u8; 100];
+        let mut r = CapReader::new(std::io::Cursor::new(data), 10); // 上限 10
+        let mut out = Vec::new();
+        assert!(r.read_to_end(&mut out).is_err());
     }
 }
