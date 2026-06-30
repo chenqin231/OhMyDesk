@@ -140,7 +140,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: 编译
         run: cargo build -p client --release --target ${{ matrix.target }}
-      - name: 打包 tar.gz
+      - name: 打包 tar.gz（裸二进制，供 CLI/进阶用户）
         run: |
           mkdir -p dist-macos
           cp "target/${{ matrix.target }}/release/client" dist-macos/ohmydesk-client
@@ -149,6 +149,17 @@ jobs:
         with:
           name: ohmydesk-client-macos-${{ matrix.arch }}
           path: ohmydesk-client-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+      # .app + .dmg：规范 bundle，双击即开（ad-hoc 签名，未公证，首次需右键打开放行）
+      - name: 打包 .app + .dmg
+        env:
+          BIN: target/${{ matrix.target }}/release/client
+          ARCH: ${{ matrix.arch }}
+        run: bash packaging/macos/build-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ohmydesk-client-macos-${{ matrix.arch }}-dmg
+          path: ohmydesk-client-macos-${{ matrix.arch }}.dmg
           if-no-files-found: error
 
   # ── 仅打 tag 时：汇总所有产物，建 GitHub Release ────────────────────────────
