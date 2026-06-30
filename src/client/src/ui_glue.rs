@@ -116,6 +116,7 @@ pub fn wire_ui_callbacks(
     ctrl_session: &SharedSession,
     ended_session: &SharedSession,
     activity: &std::sync::Arc<crate::activity::ClientActivityState>,
+    telemetry_tx: &tokio::sync::mpsc::UnboundedSender<crate::telemetry::TelemetryMsg>,
 ) {
     // 授权：同意 / 拒绝（用被控会话 id 回传）
     for accept in [true, false] {
@@ -518,6 +519,29 @@ pub fn wire_ui_callbacks(
                     let log = ui.get_controlled_chat_log().to_string();
                     ui.set_controlled_chat_log(append_line(&log, "我", &text).into());
                 }
+            }
+        });
+    }
+    // ── 诊断菜单：模式热切（render_mode 原子，运行期即时生效，无需重启） ──
+    ui.on_set_render_mode(move |m| {
+        if let Some(mode) = crate::render_mode::parse_mode(&m.to_string()) {
+            crate::render_mode::apply(mode);
+            tracing::warn!("UI 热切渲染模式 → {:?}", crate::render_mode::current_mode());
+        }
+    });
+    // ── 诊断菜单：导出诊断包（发 ExportNow 给 collector 落盘） ──
+    {
+        let tele = telemetry_tx.clone();
+        ui.on_export_diag(move || {
+            let _ = tele.send(crate::telemetry::TelemetryMsg::ExportNow);
+        });
+    }
+    // ── 诊断菜单：复制诊断目录路径（复用已有 copy_text callback） ──
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_copy_diag_path(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let _ = ui.invoke_copy_text(ui.get_diag_dir());
             }
         });
     }

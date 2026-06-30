@@ -259,6 +259,7 @@ pub enum TelemetryMsg {
     Frame(FrameSample),
     Egress(EgressSample),
     Event(String),
+    ExportNow, // UI 手动导出：立即 dump 环形缓冲（忽略去抖）
 }
 
 /// 把窗口聚合格式化成一行可 grep 的日志（spec §4.2）。
@@ -476,6 +477,15 @@ pub async fn run_collector(
                 Some(TelemetryMsg::Frame(f)) => { win_frames.push(f.clone()); collector.on_frame(f); }
                 Some(TelemetryMsg::Egress(e)) => { win_egress.push(e.clone()); collector.on_egress(e); }
                 Some(TelemetryMsg::Event(ev)) => tracing::info!("遥测事件 {ev}"),
+                Some(TelemetryMsg::ExportNow) => {
+                    let now = win_frames.last().map(|f| f.ts_ms)
+                        .or_else(|| collector.ring_iter().last().map(|m| m.frame.ts_ms))
+                        .unwrap_or(0);
+                    match dump_ring(&collector, &diag_dir, now) {
+                        Ok(p) => tracing::warn!("手动导出诊断包 {}", p.display()),
+                        Err(e) => tracing::warn!("手动导出失败 {e}"),
+                    }
+                }
                 None => break,
             },
             _ = ticker.tick() => {

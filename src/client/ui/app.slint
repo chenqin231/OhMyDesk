@@ -566,6 +566,14 @@ export component AppWindow inherits Window {
     in property <string> update_notes;
     callback copy_url(string);                    // 复制下载链接（不过滤空白）
 
+    // ── 隐藏诊断菜单 ──
+    in property <string> diag_dir;                   // 诊断包目录（Rust 启动时 set）
+    in-out property <bool> diag_visible: false;      // 诊断面板可见
+    in-out property <int> diag_taps: 0;              // Header logo 连点计数（≥5 开面板）
+    callback set_render_mode(string);                // 切运行模式（legacy-full-frame/frameskip…）
+    callback export_diag();                          // 导出诊断包（发 ExportNow）
+    callback copy_diag_path();                       // 复制诊断目录路径到剪贴板
+
     // 最近连接
     in property <[HistoryItem]> history: [];
 
@@ -760,6 +768,16 @@ export component AppWindow inherits Window {
                                     font-weight: 800;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
+                                }
+                                // 连点 5 次开隐藏诊断面板
+                                TouchArea {
+                                    clicked => {
+                                        root.diag_taps += 1;
+                                        if (root.diag_taps >= 5) {
+                                            root.diag_visible = true;
+                                            root.diag_taps = 0;
+                                        }
+                                    }
                                 }
                             }
                             VerticalLayout {
@@ -1537,6 +1555,40 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // ⑤ 隐藏诊断菜单模态（连点 Header logo 5 次触发）
+    if root.diag_visible: Rectangle {
+        background: #000000bb;
+        TouchArea { }  // 吃背景点击
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+                Card {
+                    width: 420px;
+                    background: #18181c;
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 12px;
+                        SectionHeader { label: "诊断 / 渲染模式（仅排障用）"; }
+                        Text { text: "当前画面异常时，可切回旧整帧画面或导出诊断包。"; color: Theme.fg-muted; wrap: word-wrap; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            GhostButton { label: "切回旧画面"; clicked => { root.set_render_mode("legacy-full-frame"); } }
+                            GhostButton { label: "默认(跳帧)"; clicked => { root.set_render_mode("frameskip"); } }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            PrimaryButton { label: "导出诊断包"; enabled: true; clicked => { root.export_diag(); } }
+                            GhostButton { label: "复制路径"; clicked => { root.copy_diag_path(); } }
+                        }
+                        ValueRow { caption: "诊断目录"; value: root.diag_dir; }
+                        DangerButton { label: "关闭"; clicked => { root.diag_visible = false; } }
                     }
                 }
             }
