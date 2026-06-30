@@ -4,6 +4,7 @@ import type { Transport, AuditQuery } from "./types";
 import type { Envelope } from "@/lib/types/Envelope";
 import type { AuditLog } from "@/lib/types/AuditLog";
 import type { Session } from "@/lib/types/Session";
+import type { LoginLogEntry } from "@/lib/types/LoginLogEntry";
 import { getToken, useAuthStore } from "@/store/auth";
 
 let ws: WebSocket | null = null;
@@ -107,6 +108,22 @@ export const realTransport: Transport = {
     }
     if (!res.ok) return [];
     return res.json() as Promise<Session[]>;
+  },
+
+  async fetchLoginLogs(limit = 100, offset = 0): Promise<LoginLogEntry[]> {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    params.set("offset", String(offset));
+    const token = getToken();
+    const res = await fetch(apiUrl(`/api/login-logs?${params.toString()}`), {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (res.status === 401) {
+      onUnauthorized();
+      return [];
+    }
+    if (!res.ok) return [];
+    return res.json() as Promise<LoginLogEntry[]>;
   },
 
   async deleteEndpoints(ids: string[]): Promise<void> {
