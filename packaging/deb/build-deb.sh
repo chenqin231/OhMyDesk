@@ -57,10 +57,14 @@ Type=Application
 Name=OhMyDesk 终端
 Comment=信创内网终端远程安全管控 Agent
 Exec=/usr/bin/ohmydesk-client-launch
-Icon=utilities-terminal
+Icon=ohmydesk-client
 Terminal=false
 Categories=Network;RemoteAccess;System;
 EOF
+
+# 应用图标（桌面环境从 hicolor 主题按 .desktop 的 Icon=ohmydesk-client 查找）
+install -Dm644 "$REPO_ROOT/src/client/icons/app-icon.png" \
+  "$STAGE/usr/share/icons/hicolor/256x256/apps/ohmydesk-client.png"
 
 # 文档
 cp -f README.md "$STAGE/usr/share/doc/$PKG/README.md" 2>/dev/null || true
