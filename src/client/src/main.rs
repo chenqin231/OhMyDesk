@@ -43,19 +43,30 @@ fn main() -> anyhow::Result<()> {
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "client=info".into());
-    // Windows 被控端是无控制台子系统、看不到 stderr 日志；设 OHMYDESK_LOG_FILE=<路径>
-    // 即把日志落到文件，便于现场排障（注入是否就绪、是否收到输入、apply 是否报错）。
-    match std::env::var("OHMYDESK_LOG_FILE") {
-        Ok(p) if !p.is_empty() => match std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-            Ok(file) => tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_ansi(false)
-                .with_writer(std::sync::Mutex::new(file))
-                .init(),
-            Err(_) => tracing_subscriber::fmt().with_env_filter(filter).init(),
-        },
-        _ => tracing_subscriber::fmt().with_env_filter(filter).init(),
-    }
+    // 默认滚动日志（spec §4.2 硬性前置）：无需任何环境变量即落盘，按天滚动。
+    // 目录：%APPDATA%/OhMyDesk/logs（Win）、~/.local/state/ohmydesk/logs（Linux）。
+    // OHMYDESK_LOG_FILE 仍兼容（显式指定单文件时优先）。
+    let _log_guard = match std::env::var("OHMYDESK_LOG_FILE") {
+        Ok(p) if !p.is_empty() => {
+            match std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+                Ok(file) => {
+                    tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false)
+                        .with_writer(std::sync::Mutex::new(file)).init();
+                    None
+                }
+                Err(_) => { tracing_subscriber::fmt().with_env_filter(filter).init(); None }
+            }
+        }
+        _ => {
+            let log_dir = ohmydesk_state_dir().join("logs");
+            let _ = std::fs::create_dir_all(&log_dir);
+            let appender = tracing_appender::rolling::daily(&log_dir, "client.log");
+            let (nb, guard) = tracing_appender::non_blocking(appender);
+            tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false)
+                .with_writer(nb).init();
+            Some(guard)
+        }
+    };
     // Windows：若未提权则触发 UAC 自重启（成功则本体退出），保证能向受保护/提权窗口注入。
     // 须在反连/起线程之前，避免提权副本与本体同时上线。非 Windows 为 no-op。
     elevate::ensure_elevated();
@@ -96,6 +107,26 @@ fn main() -> anyhow::Result<()> {
     net::CAPTURE_CTRL.init(cap_tx);
     let (clip_tx, clip_rx) = tokio::sync::mpsc::unbounded_channel::<net::ClipboardMsg>();
     net::CLIPBOARD_TX.init(clip_tx);
+    // 遥测通道（worker 投 FrameSample、conn 投 EgressSample）
+    let (tele_tx, tele_rx) = tokio::sync::mpsc::unbounded_channel::<telemetry::TelemetryMsg>();
+    // 运行模式初始化（env > 启动参数 > config.toml > 默认 Frameskip）
+    let arg_mode = std::env::args()
+        .find_map(|a| a.strip_prefix("--render-mode=").map(|s| s.to_string()));
+    let cfg_mode = std::fs::read_to_string(ohmydesk_state_dir().join("config.toml"))
+        .ok()
+        .and_then(|s| s.parse::<toml::Table>().ok())
+        .and_then(|t| t.get("render").and_then(|r| r.get("mode")).and_then(|m| m.as_str().map(|s| s.to_string())));
+    let env_mode = std::env::var("OHMYDESK_RENDER_MODE").ok();
+    let mode = render_mode::resolve(env_mode.as_deref(), arg_mode.as_deref(), cfg_mode.as_deref());
+    render_mode::apply(mode);
+    // 单开关环境变量覆盖（最高优先级）
+    if std::env::var("OHMYDESK_FRAMESKIP").as_deref() == Ok("0") {
+        render_mode::set_frameskip(false);
+    }
+    if std::env::var("OHMYDESK_DIRTY_TELEMETRY").as_deref() == Ok("0") {
+        render_mode::set_telemetry(false);
+    }
+    tracing::info!("渲染模式 mode={:?} frameskip={} telemetry={}", render_mode::current_mode(), render_mode::frameskip_on(), render_mode::telemetry_on());
 
     // 共享：当前主控会话 id（键鼠回传需要）+ 当前被控会话 id（授权回传需要）
     let cur_session: SharedSession = Arc::new(std::sync::Mutex::new(None));
@@ -118,7 +149,7 @@ fn main() -> anyhow::Result<()> {
         .build()?;
     // 更新守护（独立 std 线程，在 to_ui_tx move 进 net::run 之前 clone）
     update::spawn_update_daemon(server_url.clone(), self_id.clone(), activity.clone(), to_ui_tx.clone(), nudge_rx);
-    rt.spawn(net::run(server_url, info, to_ui_tx, from_ui_rx));
+    rt.spawn(net::run(server_url, info, to_ui_tx, from_ui_rx, tele_tx.clone()));
     rt.spawn(ui_glue::consume_to_ui(
         to_ui_rx,
         ui.as_weak(),
@@ -129,8 +160,9 @@ fn main() -> anyhow::Result<()> {
     ));
     rt.spawn(workers::consume_inject(inject_rx));
     rt.spawn(workers::consume_screenshot(shot_rx, from_ui_tx.clone()));
-    rt.spawn(workers::consume_capture(cap_rx, from_ui_tx.clone()));
+    rt.spawn(workers::consume_capture(cap_rx, from_ui_tx.clone(), tele_tx.clone()));
     rt.spawn(workers::consume_clipboard(clip_rx, from_ui_tx));
+    rt.spawn(telemetry::run_collector(tele_rx, ohmydesk_state_dir().join("diag")));
 
     // 主线程进入 Slint 事件循环（阻塞）
     ui.run()?;
@@ -187,6 +219,17 @@ fn lock_x11_session() {
     if std::env::var("SLINT_BACKEND").is_err() {
         std::env::set_var("SLINT_BACKEND", "winit-software");
     }
+}
+
+/// 跨平台状态目录：Win=%APPDATA%/OhMyDesk，Linux=~/.local/state/ohmydesk。
+fn ohmydesk_state_dir() -> std::path::PathBuf {
+    if let Some(pd) = directories::ProjectDirs::from("", "", "OhMyDesk") {
+        #[cfg(windows)]
+        { return pd.data_dir().to_path_buf(); }
+        #[cfg(not(windows))]
+        { return pd.state_dir().map(|p| p.to_path_buf()).unwrap_or_else(|| pd.data_local_dir().to_path_buf()); }
+    }
+    std::env::temp_dir().join("ohmydesk")
 }
 
 #[cfg(test)]

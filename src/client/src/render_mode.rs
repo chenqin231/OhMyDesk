@@ -95,6 +95,12 @@ pub fn frameskip_on() -> bool {
 pub fn telemetry_on() -> bool {
     TELEMETRY_ON.load(Ordering::Relaxed)
 }
+pub fn set_frameskip(on: bool) {
+    FRAMESKIP_ON.store(on, Ordering::Relaxed);
+}
+pub fn set_telemetry(on: bool) {
+    TELEMETRY_ON.store(on, Ordering::Relaxed);
+}
 
 /// 优先级解析：env mode > 启动参数 > 配置文件 > 默认 Frameskip。
 /// 再用 OHMYDESK_FRAMESKIP/OHMYDESK_DIRTY_TELEMETRY 单独覆盖两开关（最高）。
