@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 从 Linux/WSL 交叉编译 OhMyDesk 客户端为 Windows exe（x86_64-pc-windows-gnu）。
-# 产出 dist-windows/：ohmydesk-client.exe + 所需 mingw 运行时 DLL + 一键启动 .bat。
+# 产出 dist-windows/ohmydesk-client.exe —— 单文件独立 exe（静态链接，无 DLL、无启动脚本）。
+# 用户直接双击该 exe 即可：默认连 wss://rc.guoziweb.com/ws，显示名兜底取 USERNAME@主机名。
 #
 # 用法：
 #   bash packaging/windows/build-windows.sh                 # 默认连 wss://rc.guoziweb.com/ws
@@ -42,54 +43,32 @@ RUSTFLAGS="${RUSTFLAGS:-} -C link-args=-static" \
 EXE_SRC="$ROOT/target/${TARGET}/release/client.exe"
 [ -f "$EXE_SRC" ] || { echo "未找到产物 $EXE_SRC" >&2; exit 1; }
 
-echo "==> 3/5 收拢产物到 dist-windows/"
+echo "==> 3/4 收拢产物到 dist-windows/"
 rm -rf "$DIST"
 mkdir -p "$DIST"
 cp "$EXE_SRC" "$DIST/ohmydesk-client.exe"
 
-echo "==> 4/5 兜底打包 mingw 运行时 DLL（若静态链接已消除依赖则跳过）"
+echo "==> 4/4 校验单文件独立性（不得有 mingw 运行时 DLL 依赖）"
+# exe-only 交付：静态链接后必须无 libgcc/libstdc++/winpthread 依赖，否则单 exe 在目标机缺 DLL 闪退。
 needed_dlls="$("$OBJDUMP" -p "$DIST/ohmydesk-client.exe" 2>/dev/null \
   | awk '/DLL Name:/ {print $3}' | grep -iE '^lib(gcc|stdc|winpthread)' || true)"
-if [ -z "$needed_dlls" ]; then
-  echo "    无 mingw DLL 依赖（已独立 exe）"
-else
-  for dll in $needed_dlls; do
-    found="$(find /usr/lib/gcc/x86_64-w64-mingw32 /usr/x86_64-w64-mingw32 -name "$dll" 2>/dev/null | head -1 || true)"
-    if [ -n "$found" ]; then
-      cp "$found" "$DIST/"; echo "    + $dll"
-    else
-      echo "    ! 未找到 $dll，运行时可能报缺 DLL" >&2
-    fi
-  done
+if [ -n "$needed_dlls" ]; then
+  echo "✗ exe 仍依赖 mingw DLL，无法交付单文件 exe：" >&2
+  echo "$needed_dlls" | sed 's/^/    /' >&2
+  echo "  请确认静态链接生效（RUSTFLAGS 含 -C link-args=-static）。" >&2
+  exit 1
 fi
-
-echo "==> 5/5 生成一键启动脚本（连接服务器.bat）"
-# 写 CRLF 换行的 .bat（Windows 友好）。服务器地址内嵌，用户可记事本改。
-{
-  printf '@echo off\r\n'
-  printf 'chcp 65001 >nul\r\n'
-  printf 'rem === OhMyDesk Windows 被控端启动 ===\r\n'
-  printf 'rem 改服务器地址改下面这行（明文 ws，需服务端开放对应端口）\r\n'
-  printf 'set "OHMYDESK_SERVER=%s"\r\n' "$SERVER_URL"
-  printf 'rem 显示名（管理端「使用人」列）：默认 用户名@主机名，可自定义\r\n'
-  printf 'set "OHMYDESK_NAME=%%USERNAME%%@%%COMPUTERNAME%%"\r\n'
-  printf 'echo 连接 %%OHMYDESK_SERVER%% 身份 %%OHMYDESK_NAME%% ...\r\n'
-  printf '"%%~dp0ohmydesk-client.exe" "%%OHMYDESK_NAME%%"\r\n'
-  printf 'echo.\r\n'
-  printf 'echo 客户端已退出（窗口可关）。若闪退，上方为错误信息。\r\n'
-  printf 'pause\r\n'
-} > "$DIST/连接服务器.bat"
+echo "    ✓ 无 mingw DLL 依赖，单 exe 独立可运行"
 
 SIZE="$(du -h "$DIST/ohmydesk-client.exe" | cut -f1)"
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Windows 客户端构建完成"
+echo "  Windows 客户端构建完成（单文件 exe）"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  产物目录：dist-windows/"
-echo "    ohmydesk-client.exe   ($SIZE)"
-echo "    连接服务器.bat        （双击启动，已内嵌 $SERVER_URL）"
-ls "$DIST"/*.dll >/dev/null 2>&1 && echo "    *.dll                 （mingw 运行时，需与 exe 同目录）"
+echo "  产物：dist-windows/ohmydesk-client.exe   ($SIZE)"
 echo
-echo "  用法：把整个 dist-windows/ 拷到 Windows 机器 → 双击「连接服务器.bat」"
-echo "  即注册为被控端，可在管理后台远控该 Windows。"
+echo "  用法：拷到 Windows 机器 → 双击 ohmydesk-client.exe 运行。"
+echo "  默认连 $SERVER_URL，显示名兜底 USERNAME@主机名；"
+echo "  需改服务器地址：在 exe 同目录用 set OHMYDESK_SERVER=... 后从命令行启动，"
+echo "  或仍用环境变量覆盖（OHMYDESK_SERVER=...）。"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
