@@ -475,6 +475,7 @@ component FilePane inherits Rectangle {
 // ── 主窗口 ─────────────────────────────────────────────────
 export component AppWindow inherits Window {
     title: "OhMyDesk 客户端";
+    icon: @image-url("../icons/app-icon.png");
     // 默认紧凑小窗（贴合原型卡片）；进入主控画面态由 Rust 动态放大到 ~1280×820。
     preferred-width: 460px;
     preferred-height: 620px;
