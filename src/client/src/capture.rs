@@ -32,6 +32,11 @@ pub fn set_quality(mode: protocol::QualityMode) {
     QUALITY.store(v, Ordering::Relaxed);
 }
 
+/// 当前画质档位原子值（0=流畅,1=高清），供推帧线程做 quality_changed 判断。
+pub fn quality_u8() -> u8 {
+    QUALITY.load(Ordering::Relaxed)
+}
+
 /// 档位 → 采集参数（纯函数，便于单测）。
 /// 流畅优先：1280×720 / q80 / ~16fps；高清优先：1920×1080 / q88 / ~10fps。
 pub fn params_for(mode: protocol::QualityMode) -> QualityParams {
@@ -118,6 +123,11 @@ impl Capturer {
     pub fn frame_q(&self, p: &QualityParams) -> anyhow::Result<(String, u32, u32)> {
         let img = self.mon.capture_image()?;
         encode_frame_q(&img, p.max_w, p.max_h, p.jpeg_q)
+    }
+
+    /// 截一帧原始 RGBA（不缩放不编码），供变化检测先行（spec §3.1）。
+    pub fn capture_raw(&self) -> anyhow::Result<image::RgbaImage> {
+        Ok(self.mon.capture_image()?)
     }
 }
 

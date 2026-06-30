@@ -116,6 +116,7 @@ pub fn wire_ui_callbacks(
     ctrl_session: &SharedSession,
     ended_session: &SharedSession,
     activity: &std::sync::Arc<crate::activity::ClientActivityState>,
+    telemetry_tx: &tokio::sync::mpsc::UnboundedSender<crate::telemetry::TelemetryMsg>,
 ) {
     // 授权：同意 / 拒绝（用被控会话 id 回传）
     for accept in [true, false] {
@@ -521,6 +522,29 @@ pub fn wire_ui_callbacks(
             }
         });
     }
+    // ── 诊断菜单：模式热切（render_mode 原子，运行期即时生效，无需重启） ──
+    ui.on_set_render_mode(move |m| {
+        if let Some(mode) = crate::render_mode::parse_mode(&m.to_string()) {
+            crate::render_mode::apply(mode);
+            tracing::warn!("UI 热切渲染模式 → {:?}", crate::render_mode::current_mode());
+        }
+    });
+    // ── 诊断菜单：导出诊断包（发 ExportNow 给 collector 落盘） ──
+    {
+        let tele = telemetry_tx.clone();
+        ui.on_export_diag(move || {
+            let _ = tele.send(crate::telemetry::TelemetryMsg::ExportNow);
+        });
+    }
+    // ── 诊断菜单：复制诊断目录路径（复用已有 copy_text callback） ──
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_copy_diag_path(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let _ = ui.invoke_copy_text(ui.get_diag_dir());
+            }
+        });
+    }
 }
 
 /// 该帧是否属于「已断开」会话——是则丢弃，不渲染、不复活远程态（修复需点两次断开的 Bug）。
@@ -540,14 +564,19 @@ pub async fn consume_to_ui(
     // 诊断画面发虚：记录主控实际收到的帧分辨率，变化时打印（流畅=1280×720 / 高清=1920×1080 上限）。
     // 据此判断高清是否真生效、被控源分辨率多大。
     let mut last_frame_dims: Option<(u32, u32)> = None;
+    let mut recv_stats = crate::telemetry::MainRecvStats::default();
     while let Some(mut ev) = rx.recv().await {
         // 丢过期帧：收到 Frame 时若通道里还有积压，丢弃当前帧取下一条——只解码/渲染最新帧，
         // 消除「操作后看到一串旧画面」的滞后感（主控渲染慢于被控推帧时积压会堆积）。
+        let mut dropped = 0u32;
         while matches!(ev, net::ToUi::Frame { .. }) {
             match rx.try_recv() {
-                Ok(next) => ev = next,
+                Ok(next) => { ev = next; dropped += 1; }
                 Err(_) => break,
             }
+        }
+        if dropped > 0 {
+            recv_stats.on_drop_stale(dropped);
         }
         let ui_weak = ui_weak.clone();
         match ev {
@@ -637,6 +666,7 @@ pub async fn consume_to_ui(
                 data,
                 w,
                 h,
+                seq,
             } => {
                 // 丢弃已断开会话的迟到帧：否则在途帧会把已断开的远程态「复活」（需点两次断开）。
                 if frame_belongs_to_ended(&ended_session.lock().unwrap(), &session_id) {
@@ -659,7 +689,13 @@ pub async fn consume_to_ui(
                 }
                 // 在本（tokio）线程解码 JPEG→RGBA（产出 Vec<u8> 是 Send）；Image 非 Send，
                 // 故只把裸 RGBA + 尺寸传进闭包，在 UI 线程内构造 Image（slint.md §3 坑 2）。
-                if let Ok((rgba, iw, ih)) = decode_frame_rgba(&data) {
+                let t_dec = std::time::Instant::now();
+                let decoded = decode_frame_rgba(&data);
+                let decode_ms = t_dec.elapsed().as_millis() as u32;
+                if let Some(line) = recv_stats.on_frame(seq, decode_ms, crate::update::now_ms()) {
+                    tracing::info!("{line}");
+                }
+                if let Ok((rgba, iw, ih)) = decoded {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak.upgrade() {
                             let mut buffer =

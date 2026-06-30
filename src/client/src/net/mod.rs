@@ -55,6 +55,7 @@ pub enum ToUi {
         data: String,
         w: u32,
         h: u32,
+        seq: u64,
     },
     /// 会话结束（任一端断开）。
     SessionEnded,
@@ -203,15 +204,17 @@ pub async fn run(
     info: EndpointInfo,
     to_ui: mpsc::UnboundedSender<ToUi>,
     mut from_ui: mpsc::UnboundedReceiver<FromUi>,
+    telemetry_tx: mpsc::UnboundedSender<crate::telemetry::TelemetryMsg>,
 ) {
     // 密码用 Arc<Mutex> 共享：刷新时 connect_once 内就地更新，重连后续轮沿用最新值。
     let password = std::sync::Arc::new(std::sync::Mutex::new(format!("{:06}", rand_6())));
     loop {
-        match conn::connect_once(&server_url, &info, &password, &to_ui, &mut from_ui).await {
+        match conn::connect_once(&server_url, &info, &password, &to_ui, &mut from_ui, &telemetry_tx).await {
             Ok(()) => tracing::warn!("连接正常关闭，3s 后重连"),
             Err(e) => tracing::warn!("连接异常：{e}，3s 后重连"),
         }
         let _ = to_ui.send(ToUi::Disconnected);
+        let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Event("reconnect".into()));
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
