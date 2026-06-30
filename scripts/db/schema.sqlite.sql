@@ -34,3 +34,15 @@ CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs (ts);
 CREATE TABLE IF NOT EXISTS settings (
   k TEXT PRIMARY KEY, v TEXT
 );
+
+-- 管理员登录日志（功能②）：记录每次登录尝试的 IP/UA/时间/成败
+CREATE TABLE IF NOT EXISTS login_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts         INTEGER NOT NULL,          -- unix 秒
+  username   TEXT    NOT NULL,          -- 尝试登录的用户名
+  ip         TEXT,                       -- 客户端 IP（可空）
+  user_agent TEXT,                       -- User-Agent（可空）
+  success    INTEGER NOT NULL,          -- 1 成功 / 0 失败
+  reason     TEXT                        -- 失败原因（成功为 NULL）
+);
+CREATE INDEX IF NOT EXISTS idx_login_log_ts ON login_log(ts);

@@ -2,6 +2,7 @@
 import type { Transport, AuditQuery } from "./types";
 import type { Envelope } from "@/lib/types/Envelope";
 import type { AuditLog } from "@/lib/types/AuditLog";
+import type { LoginLogEntry } from "@/lib/types/LoginLogEntry";
 import {
   makeEndpoints,
   makeAuditLogs,
@@ -268,6 +269,17 @@ export const mockTransport: Transport = {
 
   async fetchSessions() {
     return makeSessions(Math.floor(Date.now() / 1000));
+  },
+
+  async fetchLoginLogs(limit = 100, _offset = 0): Promise<LoginLogEntry[]> {
+    const now = Math.floor(Date.now() / 1000);
+    // 注意：ts-rs 把 i64 映射为 bigint，故 id/ts 必须用 bigint 字面量(3n)/BigInt(...)
+    const sample: LoginLogEntry[] = [
+      { id: 3n, ts: BigInt(now - 60), username: "admin", ip: "10.0.0.21", user_agent: "Mozilla/5.0", success: true, reason: null },
+      { id: 2n, ts: BigInt(now - 3600), username: "admin", ip: "10.0.0.21", user_agent: "Mozilla/5.0", success: false, reason: "账号或密码错误" },
+      { id: 1n, ts: BigInt(now - 86400), username: "boss", ip: "192.168.1.8", user_agent: "Mozilla/5.0", success: true, reason: null },
+    ];
+    return sample.slice(0, limit);
   },
 
   async deleteEndpoints(_ids: string[]): Promise<void> {

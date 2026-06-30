@@ -1,4 +1,4 @@
-import { LayoutList, Monitor, MonitorPlay, ScrollText, Bot, Settings } from "lucide-react";
+import { LayoutList, Monitor, MonitorPlay, ScrollText, Bot, History } from "lucide-react";
 
 export const navItems = [
   { key: "assets", title: "终端资产", href: "/assets", icon: LayoutList },
@@ -10,5 +10,5 @@ export const navItems = [
 
 // 系统级入口，单独分组渲染在管控功能下方
 export const systemNavItems = [
-  { key: "settings", title: "系统设置", href: "/settings", icon: Settings },
+  { key: "login-logs", title: "登录日志", href: "/login-logs", icon: History },
 ] as const;

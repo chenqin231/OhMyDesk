@@ -7,6 +7,7 @@ mod db;
 mod handlers;
 mod hub;
 mod http;
+mod login_log;
 mod registry;
 mod session;
 mod settings;
@@ -31,6 +32,7 @@ use audit::AuditStore;
 use auth::Auth;
 use hub::{now_sec, Hub};
 use http::{router as http_router, HttpState};
+use login_log::LoginLogStore;
 use registry::Registry;
 use session::SessionStore;
 use settings::SettingsStore;
@@ -38,6 +40,12 @@ use settings::SettingsStore;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+    // CLI 子命令：set-password —— 复用 bcrypt + settings 落库，改完即退（不起服务）。
+    let cli_args: Vec<String> = std::env::args().collect();
+    if cli_args.get(1).map(String::as_str) == Some("set-password") {
+        return run_set_password(&cli_args).await;
+    }
 
     // ── DB 降级连接（M-SRV1）───────────────────────────────────────────────
     let db = db::connect().await; // Option<Db>，None 时审计 best-effort 跳过
@@ -48,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
     reg.load_from_db(hub::now_sec()).await;
     let sessions = Arc::new(SessionStore::new());
     let audit = Arc::new(AuditStore::new(db.clone()));
+    let login_log = Arc::new(LoginLogStore::new(db.clone()));
     let settings = Arc::new(SettingsStore::new(db));
 
     // ── 鉴权：JWT secret 取环境（缺省随机，重启失效 token）；凭据取持久化或写死默认 ──
@@ -78,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
         audit: Arc::clone(&audit),
         auth: Arc::clone(&auth),
         settings: Arc::clone(&settings),
+        login_log: Arc::clone(&login_log),
     };
 
     // ── 静态托管 admin-web/dist（P-SRV5：单一内网 URL 同时供 UI + API + WS）──────
@@ -135,7 +145,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         "OhMyDesk server on http://0.0.0.0:8765/  (UI + /api/* + /ws)  web_dir={web_dir}"
     );
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -243,4 +257,48 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
         tracing::info!("客户端断开: {id}");
     }
     pump.abort();
+}
+
+/// `ohmydesk-server set-password <新密码> [--user <用户名>]`
+/// 写入 SQLite settings 表（admin_user / admin_pass_hash）；重启 server 生效。
+async fn run_set_password(args: &[String]) -> anyhow::Result<()> {
+    let new_pass = args
+        .get(2)
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("用法: ohmydesk-server set-password <新密码> [--user <用户名>]")
+        })?;
+
+    // 解析可选 --user
+    let mut new_user: Option<String> = None;
+    let mut i = 3;
+    while i < args.len() {
+        if args[i] == "--user" {
+            new_user = args.get(i + 1).cloned();
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    let db = db::connect().await;
+    if db.is_none() {
+        anyhow::bail!("无法连接数据库，改密未生效；请检查 DATABASE_URL / 数据卷挂载");
+    }
+    let settings = SettingsStore::new(db);
+
+    // 用户名：--user 指定 > 现有持久化 > 默认 admin
+    let user = match new_user {
+        Some(u) if !u.trim().is_empty() => u.trim().to_string(),
+        _ => settings
+            .load_credential()
+            .await
+            .map(|(u, _)| u)
+            .unwrap_or_else(|| auth::DEFAULT_USER.to_string()),
+    };
+
+    let hash = auth::hash_password(new_pass);
+    settings.save_credential(&user, &hash).await;
+    println!("已更新管理员凭据：user={user}（重启 server 生效）");
+    Ok(())
 }

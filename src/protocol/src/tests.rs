@@ -146,4 +146,5 @@ fn export_all() {
     Envelope::export_all_to(dir).unwrap(); // 带出 Message/InputEvent/EndpointView/Mode
     AuditLog::export_all_to(dir).unwrap(); // 审计页/mock 需要（不在 Envelope 链上，须显式）
     Session::export_all_to(dir).unwrap(); // 同上（带出 SessionStatus）
+    LoginLogEntry::export_all_to(dir).unwrap(); // 功能②：登录日志类型
 }

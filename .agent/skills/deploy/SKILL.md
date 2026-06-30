@@ -67,3 +67,25 @@ docker inspect ohmydesk --format '{{.State.Health.Status}}'
 - `permission denied` 读取 env 文件：远端 env 文件必须对运行 `docker run` 的 SSH 用户可读，建议 `chown <ssh_user> && chmod 600`。
 - 服务器资源不足：不要在服务器 `docker build`，只 `docker load`。
 - 需要 HTTPS/wss：比赛版默认不配；如要域名 TLS，再额外使用 `bt-api-site-ssl` 或 Caddy。
+
+## 修改管理员密码（后台 CLI）
+
+系统设置网页改密入口已下线，改密只能在服务器端用 CLI 子命令（仅持服务器 shell 的管理员可操作）：
+
+Docker 部署：
+
+```bash
+docker exec ohmydesk ohmydesk-server set-password '新密码' [--user 新用户名]
+docker restart ohmydesk   # 重启生效
+```
+
+裸机部署：
+
+```bash
+DATABASE_URL=sqlite:/app/data/ohmydesk.db ./ohmydesk-server set-password '新密码'
+# 重启 server 进程生效
+```
+
+- 不传 `--user` 时仅改密码、保留现有用户名（无持久化则默认 `admin`）。
+- 写入 SQLite `settings` 表（bcrypt 哈希）；改密**需重启 server 进程**才会被运行中的实例加载。
+- 无可写 DB 时命令报错退出（改密不会静默失败）。
