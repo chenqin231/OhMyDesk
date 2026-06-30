@@ -553,9 +553,88 @@ export component AppWindow inherits Window {
                     vertical-alignment: center;
                 }
                 GhostButton {
+                    label: root.controlled_chat_unread ? "聊天 ●" : "聊天";
+                    clicked => {
+                        root.chat_panel_open = !root.chat_panel_open;
+                        if (root.chat_panel_open) {
+                            root.controlled_chat_unread = false;
+                        }
+                    }
+                }
+                GhostButton {
                     label: "我要断开";
                     clicked => {
                         root.stop_being_controlled();
+                    }
+                }
+            }
+        }
+
+        // 被控端聊天紧凑面板（被控期间真人回复）
+        if root.being_controlled && root.chat_panel_open: Rectangle {
+            height: 220px;
+            background: #131316;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            VerticalLayout {
+                padding: 10px;
+                spacing: 8px;
+                HorizontalLayout {
+                    Text {
+                        text: "与 " + root.peer_name + " 的会话";
+                        color: Theme.fg;
+                        font-size: 13px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    GhostButton {
+                        label: "收起";
+                        clicked => {
+                            root.chat_panel_open = false;
+                        }
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    border-radius: 8px;
+                    background: #0d0d10;
+                    Flickable {
+                        width: 100%;
+                        height: 100%;
+                        viewport-width: self.width;
+                        viewport-height: cc_text.preferred-height + 16px;
+                        cc_text := Text {
+                            x: 10px;
+                            y: 8px;
+                            width: parent.width - 20px;
+                            text: root.controlled_chat_log == "" ? "暂无消息" : root.controlled_chat_log;
+                            color: root.controlled_chat_log == "" ? Theme.fg-muted : Theme.fg;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    FieldInput {
+                        horizontal-stretch: 1;
+                        placeholder: "回复…";
+                        text <=> root.controlled_chat_input;
+                        accepted => {
+                            if (root.controlled_chat_input != "") {
+                                root.send_controlled_chat(root.controlled_chat_input);
+                                root.controlled_chat_input = "";
+                            }
+                        }
+                    }
+                    PrimaryButton {
+                        label: "发送";
+                        enabled: root.controlled_chat_input != "";
+                        clicked => {
+                            root.send_controlled_chat(root.controlled_chat_input);
+                            root.controlled_chat_input = "";
+                        }
                     }
                 }
             }
@@ -1124,11 +1203,55 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.active_tab == 3: Text {
-                    text: "即时消息（待填充）";
-                    color: Theme.fg-muted;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                // tab 3：即时消息（主控侧整页）
+                if root.active_tab == 3: VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+                    // 聊天记录（可滚，自动累积）
+                    Rectangle {
+                        vertical-stretch: 1;
+                        border-radius: 10px;
+                        background: #0d0d10;
+                        border-width: 1px;
+                        border-color: Theme.card-border;
+                        Flickable {
+                            width: 100%;
+                            height: 100%;
+                            viewport-width: self.width;
+                            viewport-height: chat_text.preferred-height + 20px;
+                            chat_text := Text {
+                                x: 12px;
+                                y: 10px;
+                                width: parent.width - 24px;
+                                text: root.chat_log == "" ? "暂无消息，发送一条试试" : root.chat_log;
+                                color: root.chat_log == "" ? Theme.fg-muted : Theme.fg;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        FieldInput {
+                            horizontal-stretch: 1;
+                            placeholder: "输入消息…";
+                            text <=> root.chat_input;
+                            accepted => {
+                                if (root.chat_input != "") {
+                                    root.send_chat(root.chat_input);
+                                    root.chat_input = "";
+                                }
+                            }
+                        }
+                        PrimaryButton {
+                            label: "发送";
+                            enabled: root.chat_input != "";
+                            clicked => {
+                                root.send_chat(root.chat_input);
+                                root.chat_input = "";
+                            }
+                        }
+                    }
                 }
             }
         }
