@@ -261,10 +261,20 @@ pub async fn consume_capture(
             let mut seq: u64 = 0;
             // 已就「截屏不可用」回执过的会话 id：每会话只回一次，避免刷屏。
             let mut notified_for: Option<String> = None;
+            // 事件驱动抓帧：小粒度轮询 + 满间隔 or 输入后即时触发；单轮最多一帧，coalesce input 洪泛。
+            let mut last_cap_ms: u64 = 0;
+            const TICK_MS: u64 = 16; // 轮询粒度（≤60fps 上限，coalesce input 洪泛）
             loop {
-                // 帧率随画质档位：流畅优先 ~16fps，高清优先 ~10fps（被控端 CPU 弱时由档位调控）。
+                std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
                 let qp = capture::current_params();
-                std::thread::sleep(std::time::Duration::from_millis(qp.interval_ms));
+                let now = now_ms();
+                // 满间隔 或 上次抓帧后有新输入 → 抓一帧；否则轻睡继续。
+                let due = now.saturating_sub(last_cap_ms) >= qp.interval_ms;
+                let input_driven = last_input_after(last_cap_ms);
+                if !due && !input_driven {
+                    continue;
+                }
+                last_cap_ms = now;
                 let sid = match active.lock().unwrap().clone() {
                     Some(s) => s,
                     None => continue, // 未在被控态，空转
