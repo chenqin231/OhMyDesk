@@ -202,6 +202,11 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
     // 在唯一登记点 move 进 hub.frame_clients（watch::Sender 不可 Clone，故用 Option+take）。
     let (frame_tx, mut frame_rx) = tokio::sync::watch::channel::<Option<String>>(None);
     let mut frame_tx = Some(frame_tx);
+    // 帧 lane 计数器：enqueued 在 send_frame_to 累加，sent 在 pump 实发时累加（spec §4.7）。
+    let frame_enqueued = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let frame_sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let frame_sent_pump = frame_sent.clone();
+    let frame_enqueued_pump = frame_enqueued.clone();
 
     // 出站泵：控制消息走可靠 FIFO（rx）；帧走 watch（frame_rx，单槽最新）。
     let pump = tokio::spawn(async move {
@@ -225,6 +230,12 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
                     let latest = frame_rx.borrow_and_update().clone();
                     if let Some(s) = latest {
                         if sink.send(WsMsg::Text(s)).await.is_err() { break; }
+                        // 实发成功：累加 sent，每 100 帧 debug 一次 frame_lane_drop。
+                        let n = frame_sent_pump.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        if n % 100 == 0 {
+                            let enq = frame_enqueued_pump.load(std::sync::atomic::Ordering::Relaxed);
+                            tracing::debug!("frame_lane_drop enqueued={enq} sent={n} drop={}", hub::frame_lane_drop(enq, n));
+                        }
                     }
                 }
             }
@@ -261,7 +272,7 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
             // 帧 lane 登记（唯一一次）：把 frame_tx move 进 hub。断开时 remove_client 移除它，
             // pump 的 frame_rx.changed() 返回 Err → 转纯控制收尾。
             if let Some(ftx) = frame_tx.take() {
-                hub.add_frame_client(id.clone(), ftx);
+                hub.add_frame_client(id.clone(), ftx, frame_enqueued.clone());
             }
             // admin 连上立即推一次终端列表
             if id.starts_with("admin-") {
