@@ -12,6 +12,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { useStore } from "@/store";
+import { navPrev, navNext, pushHistory } from "@/lib/cmd-history";
 
 // 远控会话的「命令行」「文件传输」面板。由 RemoteSession 作为与「远程控制」平级的标签页渲染
 // （三标签：远程控制 / 命令行 / 文件传输），整体仅在 remotePhase==="connected" 时挂载——
@@ -92,21 +93,53 @@ export function CommandPanel() {
   const execResults = useStore((s) => s.execResults);
   const execCommand = useStore((s) => s.execCommand);
   const [cmd, setCmd] = useState("");
+  const [history, setHistory] = useState<string[]>([]);
+  const [cursor, setCursor] = useState<number | null>(null);
+
+  function submit() {
+    const t = cmd.trim();
+    if (!t) return;
+    execCommand(t);
+    setHistory((h) => pushHistory(h, t));
+    setCursor(null);
+    setCmd("");
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowUp") {
+      const nav = navPrev(history, cursor);
+      if (nav.text !== null) {
+        e.preventDefault();
+        setCursor(nav.cursor);
+        setCmd(nav.text);
+      }
+    } else if (e.key === "ArrowDown") {
+      const nav = navNext(history, cursor);
+      if (nav.text !== null) {
+        e.preventDefault();
+        setCursor(nav.cursor);
+        setCmd(nav.text);
+      }
+    }
+  }
 
   return (
     <div className="flex h-full flex-col p-3">
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          execCommand(cmd);
-          setCmd("");
+          submit();
         }}
         className="flex shrink-0 gap-1.5"
       >
         <input
           value={cmd}
-          onChange={(e) => setCmd(e.target.value)}
-          placeholder="whoami / ipconfig / ls -al"
+          onChange={(e) => {
+            setCmd(e.target.value);
+            setCursor(null); // 手动编辑即脱离历史浏览
+          }}
+          onKeyDown={onKeyDown}
+          placeholder="whoami / ipconfig / ls -al（↑↓ 调历史）"
           className={inputCls}
           spellCheck={false}
           autoComplete="off"
