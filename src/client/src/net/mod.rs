@@ -101,6 +101,8 @@ pub enum ToUi {
         msg_id: String,
         text: String,
     },
+    /// 发现新版：UI 弹更新横幅（version/url/notes）。
+    UpdateAvailable { version: String, url: String, notes: Option<String> },
 }
 
 /// UI → net：上行动作（用户操作转成出站消息）。
