@@ -3,6 +3,7 @@ import {
   FileUp,
   KeyboardIcon,
   LogOut,
+  MessageSquare,
   PlugZap,
   ShieldX,
   Terminal,
@@ -37,6 +38,20 @@ const KIND_ICON: Record<AuditType, LucideIcon> = {
   disconnect: LogOut,
   command: Terminal,
   file_transfer: FileUp,
+  chat: MessageSquare,
+};
+
+// 事件类型中文名（timeline 节点标题用，替代直接渲染英文 kind）。
+const KIND_LABEL: Record<AuditType, string> = {
+  connect: "建立连接",
+  screenshot: "截图",
+  input: "输入操作",
+  auth_fail: "鉴权失败",
+  reject: "拒绝",
+  disconnect: "断开",
+  command: "执行命令",
+  file_transfer: "文件传输",
+  chat: "即时消息",
 };
 
 export function AuditTimelineSheet({ record, open, onOpenChange }: Props) {
@@ -113,7 +128,7 @@ export function AuditTimelineSheet({ record, open, onOpenChange }: Props) {
                               isError ? "text-warning" : "text-foreground",
                             )}
                           >
-                            {ev.kind}
+                            {KIND_LABEL[ev.kind]}
                           </span>
                           <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
                             {timeStr}
