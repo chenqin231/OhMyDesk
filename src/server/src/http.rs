@@ -124,6 +124,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/endpoints/delete", post(delete_endpoints))
         .route("/api/sessions", get(list_sessions))
         .route("/api/audit", get(query_audit))
+        .route("/api/login-logs", get(query_login_logs))
         .layer(CorsLayer::permissive()) // M-SRV2：允许 admin dev :5173 跨端口
         .with_state(state)
 }
@@ -239,6 +240,25 @@ async fn query_audit(
     let logs = s
         .audit
         .query_audit(q.endpoint.as_deref(), q.from, q.to)
+        .await;
+    (StatusCode::OK, Json(logs))
+}
+
+#[derive(Deserialize)]
+pub struct LoginLogQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+/// GET /api/login-logs?limit=&offset=（需登录）→ 倒序分页返回登录日志。
+async fn query_login_logs(
+    State(s): State<HttpState>,
+    _user: AuthUser,
+    Query(q): Query<LoginLogQuery>,
+) -> impl IntoResponse {
+    let logs = s
+        .login_log
+        .query(q.limit.unwrap_or(100), q.offset.unwrap_or(0))
         .await;
     (StatusCode::OK, Json(logs))
 }
