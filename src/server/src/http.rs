@@ -136,12 +136,29 @@ struct LoginReq {
     pass: String,
 }
 
-/// POST /api/login → 验证账号密码，签发 JWT。
-async fn login(State(s): State<HttpState>, Json(req): Json<LoginReq>) -> impl IntoResponse {
+/// POST /api/login → 验证账号密码，签发 JWT；记录登录日志（成功/失败均记）。
+async fn login(
+    State(s): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<LoginReq>,
+) -> impl IntoResponse {
+    let ip = client_ip(&headers, peer);
+    let ua = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     if s.auth.verify_login(&req.user, &req.pass) {
         let token = s.auth.issue_token(&req.user, now_sec());
+        s.login_log
+            .record(&req.user, Some(&ip), Some(&ua), true, None)
+            .await;
         (StatusCode::OK, Json(json!({ "token": token, "user": req.user }))).into_response()
     } else {
+        s.login_log
+            .record(&req.user, Some(&ip), Some(&ua), false, Some("账号或密码错误"))
+            .await;
         unauth("账号或密码错误").into_response()
     }
 }
