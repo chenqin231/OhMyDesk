@@ -140,8 +140,10 @@ fn main() -> anyhow::Result<()> {
     let (nudge_tx, nudge_rx) = std::sync::mpsc::sync_channel::<()>(4);
     update::set_nudge_sender(nudge_tx);
 
+    // 设诊断目录路径到 UI（启动时立即 set，无需会话）
+    ui.set_diag_dir(ohmydesk_state_dir().join("diag").to_string_lossy().to_string().into());
     // UI 回调注册（UI 线程）
-    ui_glue::wire_ui_callbacks(&ui, &from_ui_tx, &cur_session, &ctrl_session, &ended_session, &activity);
+    ui_glue::wire_ui_callbacks(&ui, &from_ui_tx, &cur_session, &ctrl_session, &ended_session, &activity, &tele_tx);
 
     // 后台 tokio runtime
     let rt = tokio::runtime::Builder::new_multi_thread()
