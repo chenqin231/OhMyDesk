@@ -123,12 +123,28 @@ impl Hub {
         }
     }
 
-    /// 按 session 对端路由：Frame/Input 上行 to:None，server 据 session_id 查对端转发
+    /// 按 session 对端路由：Frame/Input 上行 to:None，server 据 session_id 查对端转发。
+    ///
+    /// 路由失败（会话不存在 / from 不属于该会话 / 对端离线）一律 `warn!`，不再静默吞——
+    /// 静默丢弃曾让「被控发聊天、主控收不到」极难定位（被控会话 id 漂移，详见
+    /// docs/superpowers/specs/2026-07-01-controlled-chat-session-divergence-bug.md）。
     fn route_to_peer(&self, session_id: &str, env: &Envelope) {
-        if let Some(peer) = self.sessions.peer_of(session_id, &env.from) {
-            if let Ok(json) = serde_json::to_string(env) {
-                self.send_to(&peer, &json);
-            }
+        let Some(peer) = self.sessions.peer_of(session_id, &env.from) else {
+            tracing::warn!(
+                "route_to_peer 丢弃: 查无对端(会话不存在或 from 不属于该会话) session={session_id} from={}",
+                env.from
+            );
+            return;
+        };
+        if !self.clients.contains_key(&peer) {
+            tracing::warn!(
+                "route_to_peer 丢弃: 对端离线 session={session_id} from={} peer={peer}",
+                env.from
+            );
+            return;
+        }
+        if let Ok(json) = serde_json::to_string(env) {
+            self.send_to(&peer, &json);
         }
     }
 
