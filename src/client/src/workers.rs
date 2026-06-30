@@ -249,100 +249,177 @@ pub async fn consume_screenshot(
 pub async fn consume_capture(
     mut ctrl_rx: tokio::sync::mpsc::UnboundedReceiver<net::CaptureCtrl>,
     from_ui_tx: tokio::sync::mpsc::UnboundedSender<net::FromUi>,
+    telemetry_tx: tokio::sync::mpsc::UnboundedSender<crate::telemetry::TelemetryMsg>,
 ) {
     let active: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
 
     // 截屏推帧线程：独占 Capturer，按节奏截帧。
     {
         let active = active.clone();
+        let telemetry_tx = telemetry_tx.clone();
         std::thread::spawn(move || {
             let fake = capture::fake_capture_enabled();
             let mut capturer: Option<capture::Capturer> = None;
             let mut seq: u64 = 0;
-            // 已就「截屏不可用」回执过的会话 id：每会话只回一次，避免刷屏。
+            let mut last_sent_seq: u64 = 0;
+            let mut skip = crate::framediff::SkipState::default();
             let mut notified_for: Option<String> = None;
-            // 事件驱动抓帧：小粒度轮询 + 满间隔 or 输入后即时触发；单轮最多一帧，coalesce input 洪泛。
             let mut last_cap_ms: u64 = 0;
-            const TICK_MS: u64 = 16; // 轮询粒度（≤60fps 上限，coalesce input 洪泛）
+            const TICK_MS: u64 = 16;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
-                let qp = capture::current_params();
+                let mode = crate::render_mode::current_mode();
+                let qp = crate::render_mode::clamp_params(capture::current_params(), mode);
                 let now = now_ms();
-                // 满间隔 或 上次抓帧后有新输入 → 抓一帧；否则轻睡继续。
-                let due = now.saturating_sub(last_cap_ms) >= qp.interval_ms;
                 let input_driven = last_input_after(last_cap_ms);
+                // 空闲降采（spec §3.5）：连续静止且无近期输入时放宽截帧间隔。
+                let eff_interval =
+                    crate::framediff::relaxed_interval(skip.consecutive_skips, qp.interval_ms, input_driven);
+                let due = now.saturating_sub(last_cap_ms) >= eff_interval;
                 if !due && !input_driven {
                     continue;
                 }
                 last_cap_ms = now;
                 let sid = match active.lock().unwrap().clone() {
                     Some(s) => s,
-                    None => continue, // 未在被控态，空转
+                    None => continue,
                 };
-                // 取一帧：fake 模式走占位帧（WSLg 等无法真实截屏的环境验证链路）；否则真实截屏。
-                let frame = if fake {
+
+                // fake 模式：占位帧走旧路径（dev 验链路，不做 skip/telemetry）。
+                if fake {
                     seq += 1;
-                    capture::placeholder_frame(seq)
-                } else {
-                    // Wayland 会话抓不到桌面：明确回执主控端（替代「无限等待第一帧」）并停推帧。
-                    if capture::is_wayland_session() {
-                        if notified_for.as_deref() != Some(sid.as_str()) {
-                            tracing::warn!("Wayland 会话无法截屏，已通知主控端；请切换 X11（UKUI 兼容）会话");
-                            let _ = from_ui_tx.send(net::FromUi::Notice {
-                                session_id: sid.clone(),
-                                text: "被控端为 Wayland 会话，无法截屏。请在登录界面切换到 X11（UKUI 兼容）会话后重新连接。".into(),
-                            });
-                            notified_for = Some(sid.clone());
-                        }
-                        *active.lock().unwrap() = None;
-                        continue;
-                    }
-                    // 懒构造截屏器（依赖 X11；失败则回执主控端并停推帧，避免刷屏告警）
-                    if capturer.is_none() {
-                        match capture::Capturer::new() {
-                            Ok(c) => {
-                                // 诊断画面发虚：打印被控实际抓屏分辨率。DPI 感知前(虚拟化)会偏小
-                                // (如 1280x720)，感知后应为物理分辨率(如 1920x1080)。
-                                let (cw, ch) = c.real_size();
-                                tracing::info!("被控截屏器就绪 抓屏分辨率={cw}x{ch}");
-                                capturer = Some(c);
-                            }
-                            Err(e) => {
-                                if notified_for.as_deref() != Some(sid.as_str()) {
-                                    let _ = from_ui_tx.send(net::FromUi::Notice {
-                                        session_id: sid.clone(),
-                                        text: format!("被控端截屏不可用：{e}。请确认在 X11 桌面会话下运行。"),
-                                    });
-                                    notified_for = Some(sid.clone());
-                                }
-                                tracing::warn!("截屏器构造失败（无显示器/X11？）：{e}，推帧禁用；WSLg 可设 OHMYDESK_FAKE_CAPTURE=1 验链路");
-                                *active.lock().unwrap() = None;
-                                continue;
-                            }
-                        }
-                    }
-                    let f = capturer.as_ref().unwrap().frame_q(&qp);
-                    if f.is_ok() {
-                        seq += 1;
-                    }
-                    f
-                };
-                match frame {
-                    Ok((data, w, h)) => {
+                    if let Ok((data, w, h)) = capture::placeholder_frame(seq) {
                         if from_ui_tx
-                            .send(net::FromUi::Frame {
-                                session_id: sid,
-                                data,
-                                w,
-                                h,
-                                seq,
-                            })
+                            .send(net::FromUi::Frame { session_id: sid, data, w, h, seq })
                             .is_err()
                         {
-                            break; // net 已退出
+                            break;
                         }
                     }
-                    Err(e) => tracing::debug!("截帧失败：{e}"),
+                    continue;
+                }
+
+                // Wayland 无法截屏：回执并停推（原逻辑）。
+                if capture::is_wayland_session() {
+                    if notified_for.as_deref() != Some(sid.as_str()) {
+                        tracing::warn!("Wayland 会话无法截屏，已通知主控端；请切换 X11（UKUI 兼容）会话");
+                        let _ = from_ui_tx.send(net::FromUi::Notice {
+                            session_id: sid.clone(),
+                            text: "被控端为 Wayland 会话，无法截屏。请在登录界面切换到 X11（UKUI 兼容）会话后重新连接。".into(),
+                        });
+                        notified_for = Some(sid.clone());
+                    }
+                    *active.lock().unwrap() = None;
+                    continue;
+                }
+
+                // 懒构造截屏器（原逻辑）。
+                if capturer.is_none() {
+                    match capture::Capturer::new() {
+                        Ok(c) => {
+                            let (cw, ch) = c.real_size();
+                            tracing::info!("被控截屏器就绪 抓屏分辨率={cw}x{ch}");
+                            capturer = Some(c);
+                        }
+                        Err(e) => {
+                            if notified_for.as_deref() != Some(sid.as_str()) {
+                                let _ = from_ui_tx.send(net::FromUi::Notice {
+                                    session_id: sid.clone(),
+                                    text: format!("被控端截屏不可用：{e}。请确认在 X11 桌面会话下运行。"),
+                                });
+                                notified_for = Some(sid.clone());
+                            }
+                            tracing::warn!("截屏器构造失败（无显示器/X11？）：{e}，推帧禁用；WSLg 可设 OHMYDESK_FAKE_CAPTURE=1 验链路");
+                            *active.lock().unwrap() = None;
+                            continue;
+                        }
+                    }
+                }
+                let cap = capturer.as_ref().unwrap();
+
+                // ── legacy-full-frame：精确旧路径，直接 frame_q，不经 capture_raw/哈希/遥测 ──
+                if mode == crate::render_mode::RenderMode::LegacyFullFrame {
+                    match cap.frame_q(&qp) {
+                        Ok((data, w, h)) => {
+                            seq += 1;
+                            if from_ui_tx
+                                .send(net::FromUi::Frame { session_id: sid, data, w, h, seq })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(e) => tracing::debug!("截帧失败：{e}"),
+                    }
+                    continue;
+                }
+
+                // ── 新路径：capture_raw → 瓦片哈希 → 决策 → (跳过 | 编码发送) + 遥测 ──
+                let t_cap = now_ms();
+                let raw = match cap.capture_raw() {
+                    Ok(img) => img,
+                    Err(e) => {
+                        tracing::debug!("capture_raw 失败：{e}");
+                        let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Event(format!("capture_fail {e}")));
+                        continue;
+                    }
+                };
+                let capture_ms = now_ms().saturating_sub(t_cap) as u32;
+                let (rw, rh) = (raw.width(), raw.height());
+                let (_c, _r, cur_tiles) = crate::framediff::tile_hashes(&raw, 64);
+                let quality = capture::quality_u8();
+                let frameskip = crate::render_mode::frameskip_on();
+                let tele_on = crate::render_mode::telemetry_on();
+                let d = skip.decide(now_ms(), cur_tiles, quality, &sid, frameskip);
+
+                if !d.send {
+                    if tele_on {
+                        let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Frame(crate::telemetry::FrameSample {
+                            ts_ms: now_ms(),
+                            seq: last_sent_seq,
+                            capture_ms,
+                            skipped: true,
+                            dirty_ratio: d.dirty_ratio,
+                            keyframe_forced: false,
+                            encode_ms: 0,
+                            encoded_bytes: 0,
+                            w: rw,
+                            h: rh,
+                        }));
+                    }
+                    continue;
+                }
+
+                // 发送：整帧编码（与旧路径同款 encode_frame_q）。
+                let t_enc = now_ms();
+                match capture::encode_frame_q(&raw, qp.max_w, qp.max_h, qp.jpeg_q) {
+                    Ok((data, w, h)) => {
+                        let encode_ms = now_ms().saturating_sub(t_enc) as u32;
+                        let encoded_bytes = data.len(); // base64 长度=上网字节(JSON 内即此串)
+                        seq += 1;
+                        last_sent_seq = seq;
+                        if tele_on {
+                            let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Frame(crate::telemetry::FrameSample {
+                                ts_ms: now_ms(),
+                                seq,
+                                capture_ms,
+                                skipped: false,
+                                dirty_ratio: d.dirty_ratio,
+                                keyframe_forced: d.keyframe_forced,
+                                encode_ms,
+                                encoded_bytes,
+                                w,
+                                h,
+                            }));
+                        }
+                        if from_ui_tx
+                            .send(net::FromUi::Frame { session_id: sid, data, w, h, seq })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(e) => tracing::debug!("编码失败：{e}"),
                 }
             }
         });
