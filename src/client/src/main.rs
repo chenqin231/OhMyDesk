@@ -12,6 +12,7 @@
 // 仅 release 生效，debug 保留控制台以便看 tracing 日志；非 Windows 平台此属性为 no-op。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activity;
 mod asset;
 mod capture;
 mod elevate;
