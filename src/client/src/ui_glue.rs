@@ -195,7 +195,9 @@ pub fn wire_ui_callbacks(
         let sess = cur_session.clone();
         let ended = ended_session.clone();
         let ui_weak = ui.as_weak();
+        let activity = activity.clone();
         ui.on_disconnect_remote(move || {
+            activity.end_pending_connect();
             if let Some(sid) = sess.lock().unwrap().take() {
                 // 标记该会话已断开：迟到的在途帧据此被丢弃，不再「复活」远程态（一次点击即真断开）。
                 *ended.lock().unwrap() = Some(sid.clone());
@@ -330,7 +332,9 @@ pub fn wire_ui_callbacks(
     {
         let tx = from_ui_tx.clone();
         let ui_weak = ui.as_weak();
+        let activity = activity.clone();
         ui.on_cancel_remote(move || {
+            activity.end_pending_connect();
             let target = ui_weak
                 .upgrade()
                 .map(|ui| history::normalize_id(&ui.get_target_id()))
@@ -681,6 +685,7 @@ pub async fn consume_to_ui(
             }
             net::ToUi::SessionEnded => {
                 // 记下结束的会话 id，丢弃其迟到帧（与本地断开同样防「复活」）。
+                activity.end_pending_connect();
                 let prev = cur_session.lock().unwrap().take();
                 if prev.is_some() {
                     *ended_session.lock().unwrap() = prev;
