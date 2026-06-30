@@ -537,6 +537,12 @@ mod tests {
         assert!(!same_origin(&b, "http://rc.guoziweb.com/c.exe")); // 非 https
     }
 
+    #[test]
+    fn 同源_异端口拒绝() {
+        let b = resolve_base("wss://rc.guoziweb.com/ws", None).unwrap();
+        assert!(!same_origin(&b, "https://rc.guoziweb.com:8443/c.exe"));
+    }
+
     // ── Task 5: verify_manifest_sig ──
 
     const FIXTURE_JSON: &[u8] = include_bytes!("../tests/fixtures/sample-latest.json");
