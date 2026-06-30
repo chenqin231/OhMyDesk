@@ -115,13 +115,16 @@ pub fn wire_ui_callbacks(
     cur_session: &SharedSession,
     ctrl_session: &SharedSession,
     ended_session: &SharedSession,
+    activity: &std::sync::Arc<crate::activity::ClientActivityState>,
 ) {
     // 授权：同意 / 拒绝（用被控会话 id 回传）
     for accept in [true, false] {
         let tx = from_ui_tx.clone();
         let sess = ctrl_session.clone();
         let ui_weak = ui.as_weak();
+        let activity = activity.clone();
         let cb = move || {
+            if accept && activity.is_updating() { return; } // 替换窗口内拒绝被控接入
             let sid = sess.lock().unwrap().clone().unwrap_or_default();
             let _ = tx.send(net::FromUi::AuthDecision {
                 session_id: sid,
@@ -148,7 +151,13 @@ pub fn wire_ui_callbacks(
         let tx = from_ui_tx.clone();
         let ended = ended_session.clone();
         let ui_weak = ui.as_weak();
+        let activity = activity.clone();
         ui.on_connect_b(move || {
+            // 更新中门控
+            if activity.is_updating() {
+                if let Some(ui) = ui_weak.upgrade() { ui.set_remote_status("正在更新，请稍后".into()); }
+                return;
+            }
             // 新连接意图：清掉「已断开会话」标记，否则若复用同一 id 会话，帧会被误丢。
             *ended.lock().unwrap() = None;
             if let Some(ui) = ui_weak.upgrade() {
@@ -170,6 +179,7 @@ pub fn wire_ui_callbacks(
                     ui.set_consent_countdown(60);
                     ui.set_awaiting_consent(true);
                 }
+                activity.begin_pending_connect(crate::update::now_ms());
                 let _ = tx.send(net::FromUi::StartRemote {
                     target_id: history::normalize_id(&target),
                     password,
@@ -185,7 +195,9 @@ pub fn wire_ui_callbacks(
         let sess = cur_session.clone();
         let ended = ended_session.clone();
         let ui_weak = ui.as_weak();
+        let activity = activity.clone();
         ui.on_disconnect_remote(move || {
+            activity.end_pending_connect();
             if let Some(sid) = sess.lock().unwrap().take() {
                 // 标记该会话已断开：迟到的在途帧据此被丢弃，不再「复活」远程态（一次点击即真断开）。
                 *ended.lock().unwrap() = Some(sid.clone());
@@ -284,6 +296,14 @@ pub fn wire_ui_callbacks(
             }
         });
     }
+    // 复制更新下载链接（URL 原样复制，不过滤空白，避免吃掉 URL 字符）
+    {
+        ui.on_copy_url(move |s| {
+            if let Ok(mut cb) = arboard::Clipboard::new() {
+                let _ = cb.set_text(s.to_string()); // URL 原样复制，不做白空格过滤
+            }
+        });
+    }
     // 刷新临时密码（重发 Register，server upsert 覆盖；新密码经 Registered 回推展示）
     {
         let tx = from_ui_tx.clone();
@@ -312,7 +332,9 @@ pub fn wire_ui_callbacks(
     {
         let tx = from_ui_tx.clone();
         let ui_weak = ui.as_weak();
+        let activity = activity.clone();
         ui.on_cancel_remote(move || {
+            activity.end_pending_connect();
             let target = ui_weak
                 .upgrade()
                 .map(|ui| history::normalize_id(&ui.get_target_id()))
@@ -513,6 +535,7 @@ pub async fn consume_to_ui(
     cur_session: SharedSession,
     ctrl_session: SharedSession,
     ended_session: SharedSession,
+    activity: std::sync::Arc<crate::activity::ClientActivityState>,
 ) {
     // 诊断画面发虚：记录主控实际收到的帧分辨率，变化时打印（流畅=1280×720 / 高清=1920×1080 上限）。
     // 据此判断高清是否真生效、被控源分辨率多大。
@@ -572,6 +595,7 @@ pub async fn consume_to_ui(
             net::ToUi::RemoteAck { session_id } => {
                 *ended_session.lock().unwrap() = None; // 新会话建立：解除丢帧标记
                 *cur_session.lock().unwrap() = Some(session_id);
+                activity.end_pending_connect();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_awaiting_consent(false);
@@ -598,6 +622,7 @@ pub async fn consume_to_ui(
             }
             net::ToUi::RemoteRejected { reason } => {
                 *cur_session.lock().unwrap() = None;
+                activity.end_pending_connect();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_awaiting_consent(false);
@@ -660,6 +685,7 @@ pub async fn consume_to_ui(
             }
             net::ToUi::SessionEnded => {
                 // 记下结束的会话 id，丢弃其迟到帧（与本地断开同样防「复活」）。
+                activity.end_pending_connect();
                 let prev = cur_session.lock().unwrap().take();
                 if prev.is_some() {
                     *ended_session.lock().unwrap() = prev;
@@ -821,6 +847,17 @@ pub async fn consume_to_ui(
                                 ui.window().set_minimized(false);
                             }
                         }
+                    }
+                });
+            }
+            net::ToUi::UpdateAvailable { version, url, notes } => {
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_update_available(true);
+                        ui.set_update_version(version.into());
+                        ui.set_update_url(url.into());
+                        ui.set_update_notes(notes.unwrap_or_default().into());
+                        let _ = ui.show(); // best-effort 置前，避免最小化看不见
                     }
                 });
             }

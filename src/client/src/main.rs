@@ -12,6 +12,7 @@
 // 仅 release 生效，debug 保留控制台以便看 tracing 日志；非 Windows 平台此属性为 no-op。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activity;
 mod asset;
 mod capture;
 mod elevate;
@@ -22,6 +23,7 @@ mod inject;
 mod net;
 mod transfer;
 mod ui_glue;
+mod update;
 mod workers;
 
 use slint::ComponentHandle;
@@ -99,13 +101,20 @@ fn main() -> anyhow::Result<()> {
     // 远程态「复活」（Bug：点断开后窗口先缩小、迟到帧又重开远程视图，需点两次才真断开）。
     let ended_session: SharedSession = Arc::new(std::sync::Mutex::new(None));
 
+    // 活动门控 + nudge 通道
+    let activity = std::sync::Arc::new(activity::ClientActivityState::new(cur_session.clone(), ctrl_session.clone()));
+    let (nudge_tx, nudge_rx) = std::sync::mpsc::sync_channel::<()>(4);
+    update::set_nudge_sender(nudge_tx);
+
     // UI 回调注册（UI 线程）
-    ui_glue::wire_ui_callbacks(&ui, &from_ui_tx, &cur_session, &ctrl_session, &ended_session);
+    ui_glue::wire_ui_callbacks(&ui, &from_ui_tx, &cur_session, &ctrl_session, &ended_session, &activity);
 
     // 后台 tokio runtime
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    // 更新守护（独立 std 线程，在 to_ui_tx move 进 net::run 之前 clone）
+    update::spawn_update_daemon(server_url.clone(), self_id.clone(), activity.clone(), to_ui_tx.clone(), nudge_rx);
     rt.spawn(net::run(server_url, info, to_ui_tx, from_ui_rx));
     rt.spawn(ui_glue::consume_to_ui(
         to_ui_rx,
@@ -113,6 +122,7 @@ fn main() -> anyhow::Result<()> {
         cur_session,
         ctrl_session,
         ended_session,
+        activity.clone(),
     ));
     rt.spawn(workers::consume_inject(inject_rx));
     rt.spawn(workers::consume_screenshot(shot_rx, from_ui_tx.clone()));
