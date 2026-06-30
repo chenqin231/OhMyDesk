@@ -119,6 +119,24 @@ fn chat_message_tagged() {
 }
 
 #[test]
+fn set_capture_tagged() {
+    let env = Envelope {
+        from: "ep-1".into(),
+        to: None,
+        ts: 0,
+        payload: Message::SetCapture {
+            session_id: "s-1".into(),
+            active: false,
+        },
+    };
+    let json = serde_json::to_string(&env).unwrap();
+    assert!(json.contains("\"type\":\"set_capture\""));
+    assert!(json.contains("\"active\":false"));
+    let back: Envelope = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back.payload, Message::SetCapture { active: false, .. }));
+}
+
+#[test]
 fn export_all() {
     let dir = "../admin-web/src/lib/types";
     EndpointInfo::export_all_to(dir).unwrap(); // 带出 OsInfo/CpuInfo/RamInfo/GpuInfo/枚举
