@@ -72,17 +72,17 @@ docker inspect ohmydesk --format '{{.State.Health.Status}}'
 
 系统设置网页改密入口已下线，改密只能在服务器端用 CLI 子命令（仅持服务器 shell 的管理员可操作）：
 
-Docker 部署：
+Docker 部署（镜像内服务端二进制为 `/app/server`）：
 
 ```bash
-docker exec ohmydesk ohmydesk-server set-password '新密码' [--user 新用户名]
+docker exec ohmydesk /app/server set-password '新密码' [--user 新用户名]
 docker restart ohmydesk   # 重启生效
 ```
 
-裸机部署：
+裸机部署（二进制名为 `server`，即 `target/release/server`）：
 
 ```bash
-DATABASE_URL=sqlite:/app/data/ohmydesk.db ./ohmydesk-server set-password '新密码'
+DATABASE_URL=sqlite:/app/data/ohmydesk.db ./server set-password '新密码'
 # 重启 server 进程生效
 ```
 
