@@ -4,6 +4,7 @@
 //! M-SRV4：转发 Input 时对对应会话的 InputAggregator.bump()。
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
 use protocol::{AuditType, Envelope, Message};
@@ -14,14 +15,25 @@ use crate::handlers;
 use crate::registry::Registry;
 use crate::session::SessionStore;
 
+/// 帧 lane 客户端：watch 发送端 + 入队计数（enqueued）。sent 由对应连接出站泵持有。
+pub struct FrameClient {
+    pub tx: tokio::sync::watch::Sender<Option<String>>,
+    pub enqueued: std::sync::Arc<AtomicU64>,
+}
+
+/// frame_lane_drop = 入队 − 实发（clamp≥0），不数 send_replace 覆盖（防过报，spec §4.1 HIGH②）。
+pub fn frame_lane_drop(enqueued: u64, sent: u64) -> u64 {
+    enqueued.saturating_sub(sent)
+}
+
 pub struct Hub {
     pub reg: Arc<Registry>,
     pub sessions: Arc<SessionStore>,
     pub audit: Arc<AuditStore>,
     /// endpoint_id / admin_id → 出站消息通道
     clients: DashMap<String, mpsc::UnboundedSender<String>>,
-    /// 帧专用 lane（drop-stale）：endpoint_id/admin_id → 单槽最新帧 watch。与 clients 并存（附加式）。
-    frame_clients: DashMap<String, tokio::sync::watch::Sender<Option<String>>>,
+    /// 帧专用 lane（drop-stale）：endpoint_id/admin_id → 帧 watch + enqueued 计数（与 clients 并存）。
+    frame_clients: DashMap<String, FrameClient>,
 }
 
 impl Hub {
@@ -43,14 +55,16 @@ impl Hub {
         &self,
         id: String,
         frame_tx: tokio::sync::watch::Sender<Option<String>>,
+        enqueued: std::sync::Arc<AtomicU64>,
     ) {
-        self.frame_clients.insert(id, frame_tx);
+        self.frame_clients.insert(id, FrameClient { tx: frame_tx, enqueued });
     }
 
-    /// 帧定向推送（drop-stale）：覆盖目标的单槽最新帧，陈旧未发帧被丢弃。
+    /// 帧定向推送（drop-stale）：覆盖目标的单槽最新帧；累加 enqueued（入队计数）。
     pub fn send_frame_to(&self, id: &str, json: &str) {
-        if let Some(tx) = self.frame_clients.get(id) {
-            let _ = tx.send_replace(Some(json.to_string()));
+        if let Some(fc) = self.frame_clients.get(id) {
+            fc.enqueued.fetch_add(1, Ordering::Relaxed);
+            let _ = fc.tx.send_replace(Some(json.to_string()));
         }
     }
 
@@ -597,6 +611,13 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn frame_lane_drop_计算() {
+        assert_eq!(super::frame_lane_drop(5, 3), 2, "入5发3→丢2");
+        assert_eq!(super::frame_lane_drop(3, 3), 0, "1:1→不丢(不过报)");
+        assert_eq!(super::frame_lane_drop(2, 5), 0, "sent>enqueued(并发瞬态)→clamp 0");
+    }
+
     /// 帧 lane(drop-stale):Frame 走独立 frame_clients,连发两帧只保留最新(coalesce)。
     #[tokio::test]
     async fn frame_routed_to_frame_lane_latest_wins() {
@@ -606,7 +627,8 @@ mod tests {
         hub.add_client("ep-a".into(), a_tx);
         hub.add_client("ep-b".into(), b_tx);
         let (bf_tx, bf_rx) = tokio::sync::watch::channel::<Option<String>>(None);
-        hub.add_frame_client("ep-b".into(), bf_tx);
+        let enqueued = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        hub.add_frame_client("ep-b".into(), bf_tx, enqueued);
 
         let sid = "sess-f".to_string();
         hub.sessions.insert(Session {
