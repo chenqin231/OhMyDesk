@@ -540,14 +540,19 @@ pub async fn consume_to_ui(
     // 诊断画面发虚：记录主控实际收到的帧分辨率，变化时打印（流畅=1280×720 / 高清=1920×1080 上限）。
     // 据此判断高清是否真生效、被控源分辨率多大。
     let mut last_frame_dims: Option<(u32, u32)> = None;
+    let mut recv_stats = crate::telemetry::MainRecvStats::default();
     while let Some(mut ev) = rx.recv().await {
         // 丢过期帧：收到 Frame 时若通道里还有积压，丢弃当前帧取下一条——只解码/渲染最新帧，
         // 消除「操作后看到一串旧画面」的滞后感（主控渲染慢于被控推帧时积压会堆积）。
+        let mut dropped = 0u32;
         while matches!(ev, net::ToUi::Frame { .. }) {
             match rx.try_recv() {
-                Ok(next) => ev = next,
+                Ok(next) => { ev = next; dropped += 1; }
                 Err(_) => break,
             }
+        }
+        if dropped > 0 {
+            recv_stats.on_drop_stale(dropped);
         }
         let ui_weak = ui_weak.clone();
         match ev {
@@ -660,7 +665,13 @@ pub async fn consume_to_ui(
                 }
                 // 在本（tokio）线程解码 JPEG→RGBA（产出 Vec<u8> 是 Send）；Image 非 Send，
                 // 故只把裸 RGBA + 尺寸传进闭包，在 UI 线程内构造 Image（slint.md §3 坑 2）。
-                if let Ok((rgba, iw, ih)) = decode_frame_rgba(&data) {
+                let t_dec = std::time::Instant::now();
+                let decoded = decode_frame_rgba(&data);
+                let decode_ms = t_dec.elapsed().as_millis() as u32;
+                if let Some(line) = recv_stats.on_frame(seq, decode_ms, now_ms_ui()) {
+                    tracing::info!("{line}");
+                }
+                if let Ok((rgba, iw, ih)) = decoded {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak.upgrade() {
                             let mut buffer =
@@ -887,6 +898,13 @@ fn decode_frame_rgba(data: &str) -> anyhow::Result<(Vec<u8>, u32, u32)> {
     let rgba = dyn_img.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     Ok((rgba.into_raw(), w, h))
+}
+
+fn now_ms_ui() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

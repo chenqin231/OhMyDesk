@@ -413,6 +413,27 @@ mod tests {
         assert!(line.contains("egress_drop=0"));
         assert!(line.contains("stall_p95_ms=180"));
     }
+
+    #[test]
+    fn main_recv_seq_gap累计() {
+        let mut s = MainRecvStats::default();
+        assert_eq!(s.on_frame(1, 20, 1000), None);
+        assert_eq!(s.on_frame(2, 20, 1100), None); // 连续，无 gap
+        assert_eq!(s.on_frame(5, 20, 1200), None); // 跳 3,4 → gap+2
+        // 窗满触发日志
+        let line = s.on_frame(6, 20, 12_000).expect("窗满应出日志");
+        assert!(line.contains("seq_gap=2"), "缺 3、4 两帧 → seq_gap=2: {line}");
+        assert!(line.contains("recv_fps=0.4"), "4 帧/10s");
+    }
+
+    #[test]
+    fn main_recv_drop_stale累计() {
+        let mut s = MainRecvStats::default();
+        s.on_drop_stale(3);
+        s.on_frame(1, 10, 1000);
+        let line = s.on_frame(2, 10, 12_000).unwrap();
+        assert!(line.contains("drop_stale=3"));
+    }
 }
 
 /// 把环形缓冲 dump 成 JSONL 诊断包（脱敏：只含指标，绝不含像素/剪贴板/文件内容）。
@@ -476,5 +497,54 @@ pub async fn run_collector(
                 win_egress.clear();
             }
         }
+    }
+}
+
+/// 主控端收帧统计（纯日志，10s 窗）。seq_gap=相邻渲染帧 seq 差>1 的累计缺失数。
+pub struct MainRecvStats {
+    window_start_ms: u64,
+    frames: u32,
+    decode_ms_sum: u64,
+    drop_stale: u32,
+    last_seq: Option<u64>,
+    seq_gap: u64,
+}
+
+impl Default for MainRecvStats {
+    fn default() -> Self {
+        MainRecvStats { window_start_ms: 0, frames: 0, decode_ms_sum: 0, drop_stale: 0, last_seq: None, seq_gap: 0 }
+    }
+}
+
+impl MainRecvStats {
+    pub fn on_drop_stale(&mut self, n: u32) {
+        self.drop_stale += n;
+    }
+
+    /// 喂一帧；窗满(≥10s)返回一行日志并复位窗口(保留 last_seq 跨窗连续)。
+    pub fn on_frame(&mut self, seq: u64, decode_ms: u32, now_ms: u64) -> Option<String> {
+        if self.window_start_ms == 0 {
+            self.window_start_ms = now_ms;
+        }
+        if let Some(last) = self.last_seq {
+            if seq > last + 1 {
+                self.seq_gap += seq - last - 1;
+            }
+        }
+        self.last_seq = Some(seq);
+        self.frames += 1;
+        self.decode_ms_sum += decode_ms as u64;
+        if now_ms.saturating_sub(self.window_start_ms) >= 10_000 {
+            let decode_avg = if self.frames > 0 { self.decode_ms_sum / self.frames as u64 } else { 0 };
+            let line = format!(
+                "主控遥测 recv_fps={:.1} decode_avg_ms={} drop_stale={} seq_gap={}",
+                self.frames as f32 / 10.0, decode_avg, self.drop_stale, self.seq_gap
+            );
+            let keep_seq = self.last_seq;
+            *self = MainRecvStats::default();
+            self.last_seq = keep_seq;
+            return Some(line);
+        }
+        None
     }
 }
