@@ -1,5 +1,6 @@
 // Zustand store：终端列表 / 会话 / 审计状态
 import { create } from "zustand";
+import { pushDiagRing, seqGap, type DiagSample } from "@/lib/diag-ring";
 import type { EndpointView } from "@/lib/types/EndpointView";
 import type { AuditLog } from "@/lib/types/AuditLog";
 import type { Session } from "@/lib/types/Session";
@@ -82,6 +83,8 @@ type State = {
   chatMessages: ChatEntry[];
   // 文件传输进度：transfer_id → 进度条目（push + pull 共用）
   fileProgress: ProgressMap;
+  // 远控诊断 ring（最近 5min 收帧标量指标，刷新即丢，脱敏不含像素）
+  diagRing: DiagSample[];
 
   // actions
   initTransport: () => void;
@@ -126,6 +129,7 @@ export const useStore = create<State>((set, get) => ({
   remoteQuality: "smooth",
   chatMessages: [],
   fileProgress: {},
+  diagRing: [],
 
   initTransport() {
     transport.connect(selfId, (env) => {
@@ -145,7 +149,15 @@ export const useStore = create<State>((set, get) => ({
       }
 
       if (p.type === "frame") {
-        set({ remoteFrame: { data: p.data, w: p.w, h: p.h, seq: p.seq } });
+        set((s) => {
+          const seqNum = Number(p.seq);
+          const lastSeq = s.remoteFrame ? Number(s.remoteFrame.seq) : null;
+          const sample: DiagSample = { ts: Date.now(), seq: seqNum, seq_gap: seqGap(lastSeq, seqNum), w: p.w, h: p.h };
+          return {
+            remoteFrame: { data: p.data, w: p.w, h: p.h, seq: p.seq },
+            diagRing: pushDiagRing(s.diagRing, sample, 300_000),
+          };
+        });
         return;
       }
 
