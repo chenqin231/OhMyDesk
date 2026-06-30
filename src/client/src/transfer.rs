@@ -45,9 +45,16 @@ pub fn set_pull_target(transfer_id: &str, dir: PathBuf) {
         .insert(transfer_id.to_string(), dir);
 }
 
-/// 取出并移除取回目标目录（回流首包到达时调用）。未登记返回 None。
-pub fn take_pull_target(transfer_id: &str) -> Option<PathBuf> {
-    PULL_TARGETS.lock().unwrap().remove(transfer_id)
+/// 取回目标目录的副本（peek，不移除）。文件夹取回会按同一 transfer_id 顺序回流多个文件，
+/// 每个文件的回流首包都要查到同一本地基目录，故不能取一次就删；条目在会话结束时统一清理。
+pub fn peek_pull_target(transfer_id: &str) -> Option<PathBuf> {
+    PULL_TARGETS.lock().unwrap().get(transfer_id).cloned()
+}
+
+/// 清空全部取回目标登记（会话结束调用）。客户端同一时刻只有一个主控会话，整表清理安全，
+/// 规避「按 transfer_id 逐条清理时无从判断文件夹是否传完」的难题。
+pub fn clear_pull_targets() {
+    PULL_TARGETS.lock().unwrap().clear();
 }
 
 /// 固定接收目录：`<配置目录>/recv`（信创 Linux 上 directories 会小写化 app 名）。
@@ -64,6 +71,51 @@ pub fn safe_name(name: &str) -> String {
         "received.bin".to_string()
     } else {
         base.to_string()
+    }
+}
+
+/// 把传入的名字规整为「安全的相对路径」：按 `/` 和 `\` 切分，丢弃空段、`.`、`..` 及带盘符冒号
+/// 的段（防目录穿越 / 绝对路径 / 盘符逃逸），其余段用 [`PathBuf::push`] 逐段重组为相对路径。
+/// 单纯 basename（无分隔符）原样返回，与 [`safe_name`] 行为一致 → 向后兼容单文件传输；
+/// 文件夹传输时承载子目录结构（如 `"docs/a/b.txt"`），收方据此在落点下重建层级。
+/// 规整后为空 → `"received.bin"`。
+pub fn safe_rel_path(name: &str) -> PathBuf {
+    let mut out = PathBuf::new();
+    for seg in name.split(['/', '\\']) {
+        let seg = seg.trim();
+        // 跳过：空段、当前/上级目录、含冒号段（Windows 盘符如 "C:"，防盘符逃逸）。
+        if seg.is_empty() || seg == "." || seg == ".." || seg.contains(':') {
+            continue;
+        }
+        out.push(seg);
+    }
+    if out.as_os_str().is_empty() {
+        out.push("received.bin");
+    }
+    out
+}
+
+/// 递归遍历 `root` 目录，收集其下所有常规文件，产出 `(相对展示路径, 绝对路径)`。
+/// 相对路径以 `prefix` 起头（首次传被选文件夹名，使收方重建该文件夹本身）；用 `/` 作分隔，
+/// 收方 [`safe_rel_path`] 再按本机分隔符重组。`DirEntry::metadata` 不跟随软链 → 软链目录/文件
+/// 不计入，天然防环。空子目录不产出条目（不重建空目录，可接受）。
+fn walk_files(root: &Path, prefix: &str, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return;
+    };
+    for item in rd.flatten() {
+        let Ok(meta) = item.metadata() else { continue };
+        let name = item.file_name().to_string_lossy().to_string();
+        let rel = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if meta.is_dir() {
+            walk_files(&item.path(), &rel, out);
+        } else if meta.is_file() {
+            out.push((rel, item.path()));
+        }
     }
 }
 
@@ -89,7 +141,12 @@ pub fn open_recv(
         _ => recv_dir(),
     };
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建接收目录失败: {e}"))?;
-    let path = dir.join(safe_name(name));
+    // 用 safe_rel_path 而非 safe_name：单文件时等价 basename（向后兼容），文件夹传输时保留
+    // `name` 承载的子目录结构（如 "docs/a/b.txt"）在落点下重建层级；先建好父目录再创建文件。
+    let path = dir.join(safe_rel_path(name));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建子目录失败: {e}"))?;
+    }
     let file = File::create(&path).map_err(|e| format!("创建文件失败: {e}"))?;
     RECEIVERS.lock().unwrap().insert(
         transfer_id.to_string(),
@@ -247,8 +304,135 @@ fn send(out_tx: &UnboundedSender<String>, self_id: &str, payload: Message) {
     }
 }
 
-/// pull 取回：读取 `path` 文件并以 `FileOpen{dir:pull}` + `FileChunk` 流回控制方；
-/// 失败回 `FileError`。在独立任务中调用（读 ≤50MB 文件进内存再分块）。
+/// 发送单个文件：发 `FileOpen`(带 name/size/dir/dest) + 分块 `FileChunk`。
+/// `name` 已是收方可直接用的展示名（单文件=basename，文件夹成员=相对路径）。
+/// 读失败/超限返回 `Err(reason)`，由调用方决定回 `FileError`（单文件）还是跳过（文件夹成员）。
+#[allow(clippy::too_many_arguments)]
+async fn send_one_file(
+    out_tx: &UnboundedSender<String>,
+    self_id: &str,
+    session_id: &str,
+    transfer_id: &str,
+    name: String,
+    abs_path: &Path,
+    dir: FileDir,
+    dest: Option<String>,
+) -> Result<(), String> {
+    let meta = tokio::fs::metadata(abs_path)
+        .await
+        .map_err(|e| format!("无法读取文件: {e}"))?;
+    if !meta.is_file() {
+        return Err("目标不是常规文件".into());
+    }
+    if meta.len() > MAX_FILE {
+        return Err(format!("文件超过上限 {}MB", MAX_FILE / 1024 / 1024));
+    }
+    let bytes = tokio::fs::read(abs_path)
+        .await
+        .map_err(|e| format!("读取失败: {e}"))?;
+
+    send(
+        out_tx,
+        self_id,
+        Message::FileOpen {
+            session_id: session_id.to_string(),
+            transfer_id: transfer_id.to_string(),
+            name,
+            size: bytes.len() as u64,
+            dir,
+            dest,
+        },
+    );
+
+    if bytes.is_empty() {
+        send(
+            out_tx,
+            self_id,
+            Message::FileChunk {
+                session_id: session_id.to_string(),
+                transfer_id: transfer_id.to_string(),
+                seq: 0,
+                data: String::new(),
+                last: true,
+            },
+        );
+        return Ok(());
+    }
+    let total = bytes.len();
+    for (i, chunk) in bytes.chunks(CHUNK).enumerate() {
+        let last = (i + 1) * CHUNK >= total;
+        send(
+            out_tx,
+            self_id,
+            Message::FileChunk {
+                session_id: session_id.to_string(),
+                transfer_id: transfer_id.to_string(),
+                seq: i as u64,
+                data: STANDARD.encode(chunk),
+                last,
+            },
+        );
+    }
+    Ok(())
+}
+
+/// 发送整个目录（取回/下发通用）：递归遍历 → 按**同一 transfer_id 顺序**逐文件发送，
+/// `name` 承载相对路径（含被选文件夹名作首段，使收方重建该文件夹本身）。单文件超限/读失败
+/// 则跳过并继续，不因一个文件中断整目录；空目录回一条 `FileError` 文案让控制方有反馈。
+async fn send_dir(
+    out_tx: &UnboundedSender<String>,
+    self_id: &str,
+    session_id: &str,
+    transfer_id: &str,
+    dir_path: &Path,
+    dir: FileDir,
+    dest: Option<String>,
+) {
+    let root = dir_path.to_path_buf();
+    let folder = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "folder".to_string());
+    // 遍历是阻塞 IO，放 spawn_blocking，避免占用 async 工作线程。
+    let files = tokio::task::spawn_blocking(move || {
+        let mut out = Vec::new();
+        walk_files(&root, &folder, &mut out);
+        out
+    })
+    .await
+    .unwrap_or_default();
+
+    if files.is_empty() {
+        send(
+            out_tx,
+            self_id,
+            Message::FileError {
+                session_id: session_id.to_string(),
+                transfer_id: transfer_id.to_string(),
+                reason: "文件夹为空或无可传输文件".into(),
+            },
+        );
+        return;
+    }
+    for (rel, abs) in files {
+        // 单文件失败/超限跳过，继续其余（文件夹整体尽力而为）。
+        let _ = send_one_file(
+            out_tx,
+            self_id,
+            session_id,
+            transfer_id,
+            rel,
+            &abs,
+            dir,
+            dest.clone(),
+        )
+        .await;
+    }
+}
+
+/// pull 取回：读取 `path`（文件或目录）以 `FileOpen{dir:pull}` + `FileChunk` 流回控制方；
+/// 文件夹则递归逐文件回流（见 [`send_dir`]）。失败回 `FileError`。在独立任务中调用。
 pub async fn send_file(
     out_tx: UnboundedSender<String>,
     self_id: String,
@@ -256,80 +440,63 @@ pub async fn send_file(
     transfer_id: String,
     path: String,
 ) {
-    let err = |reason: String| {
-        send(
-            &out_tx,
-            &self_id,
-            Message::FileError {
-                session_id: session_id.clone(),
-                transfer_id: transfer_id.clone(),
-                reason,
-            },
-        );
-    };
-
     let p = Path::new(&path);
-    match tokio::fs::metadata(p).await {
-        Ok(m) if !m.is_file() => return err("目标不是常规文件".into()),
-        Ok(m) if m.len() > MAX_FILE => {
-            return err(format!("文件超过上限 {}MB", MAX_FILE / 1024 / 1024))
+    let meta = match tokio::fs::metadata(p).await {
+        Ok(m) => m,
+        Err(e) => {
+            send(
+                &out_tx,
+                &self_id,
+                Message::FileError {
+                    session_id,
+                    transfer_id,
+                    reason: format!("无法读取: {e}"),
+                },
+            );
+            return;
         }
-        Err(e) => return err(format!("无法读取文件: {e}")),
-        _ => {}
-    }
-    let bytes = match tokio::fs::read(p).await {
-        Ok(b) => b,
-        Err(e) => return err(format!("读取失败: {e}")),
     };
-    let name = safe_name(p.file_name().and_then(|s| s.to_str()).unwrap_or("file.bin"));
-
-    send(
-        &out_tx,
-        &self_id,
-        Message::FileOpen {
-            session_id: session_id.clone(),
-            transfer_id: transfer_id.clone(),
+    if meta.is_dir() {
+        send_dir(
+            &out_tx,
+            &self_id,
+            &session_id,
+            &transfer_id,
+            p,
+            FileDir::Pull,
+            None,
+        )
+        .await;
+    } else {
+        let name = safe_name(p.file_name().and_then(|s| s.to_str()).unwrap_or("file.bin"));
+        if let Err(reason) = send_one_file(
+            &out_tx,
+            &self_id,
+            &session_id,
+            &transfer_id,
             name,
-            size: bytes.len() as u64,
-            dir: FileDir::Pull,
-            dest: None,
-        },
-    );
-
-    if bytes.is_empty() {
-        send(
-            &out_tx,
-            &self_id,
-            Message::FileChunk {
-                session_id,
-                transfer_id,
-                seq: 0,
-                data: String::new(),
-                last: true,
-            },
-        );
-        return;
-    }
-    let total = bytes.len();
-    for (i, chunk) in bytes.chunks(CHUNK).enumerate() {
-        let last = (i + 1) * CHUNK >= total;
-        send(
-            &out_tx,
-            &self_id,
-            Message::FileChunk {
-                session_id: session_id.clone(),
-                transfer_id: transfer_id.clone(),
-                seq: i as u64,
-                data: STANDARD.encode(chunk),
-                last,
-            },
-        );
+            p,
+            FileDir::Pull,
+            None,
+        )
+        .await
+        {
+            send(
+                &out_tx,
+                &self_id,
+                Message::FileError {
+                    session_id,
+                    transfer_id,
+                    reason,
+                },
+            );
+        }
     }
 }
 
-/// push 下发：读取主控本机 `local_path` 文件，以 `FileOpen{dir:push, dest}` + `FileChunk` 流给被控端。
-/// 镜像 [`send_file`]，区别：方向为 Push、带目标目录 dest、文件读自主控本机。失败回 `FileError`。
-/// 在独立任务中调用（读 ≤50MB 文件进内存再分块）。
+/// push 下发：读取主控本机 `local_path`（文件或目录），以 `FileOpen{dir:push, dest}` + `FileChunk`
+/// 流给被控端；文件夹则递归逐文件下发（见 [`send_dir`]）。镜像 [`send_file`]，方向为 Push 且带
+/// 目标目录 dest。失败回 `FileError`。在独立任务中调用。
 pub async fn send_file_push(
     out_tx: UnboundedSender<String>,
     self_id: String,
@@ -338,74 +505,57 @@ pub async fn send_file_push(
     local_path: String,
     dest_dir: String,
 ) {
-    let err = |reason: String| {
-        send(
-            &out_tx,
-            &self_id,
-            Message::FileError {
-                session_id: session_id.clone(),
-                transfer_id: transfer_id.clone(),
-                reason,
-            },
-        );
-    };
-
     let p = Path::new(&local_path);
-    match tokio::fs::metadata(p).await {
-        Ok(m) if !m.is_file() => return err("目标不是常规文件".into()),
-        Ok(m) if m.len() > MAX_FILE => {
-            return err(format!("文件超过上限 {}MB", MAX_FILE / 1024 / 1024))
+    let meta = match tokio::fs::metadata(p).await {
+        Ok(m) => m,
+        Err(e) => {
+            send(
+                &out_tx,
+                &self_id,
+                Message::FileError {
+                    session_id,
+                    transfer_id,
+                    reason: format!("无法读取: {e}"),
+                },
+            );
+            return;
         }
-        Err(e) => return err(format!("无法读取文件: {e}")),
-        _ => {}
-    }
-    let bytes = match tokio::fs::read(p).await {
-        Ok(b) => b,
-        Err(e) => return err(format!("读取失败: {e}")),
     };
-    let name = safe_name(p.file_name().and_then(|s| s.to_str()).unwrap_or("file.bin"));
-
-    send(
-        &out_tx,
-        &self_id,
-        Message::FileOpen {
-            session_id: session_id.clone(),
-            transfer_id: transfer_id.clone(),
+    if meta.is_dir() {
+        send_dir(
+            &out_tx,
+            &self_id,
+            &session_id,
+            &transfer_id,
+            p,
+            FileDir::Push,
+            Some(dest_dir),
+        )
+        .await;
+    } else {
+        let name = safe_name(p.file_name().and_then(|s| s.to_str()).unwrap_or("file.bin"));
+        if let Err(reason) = send_one_file(
+            &out_tx,
+            &self_id,
+            &session_id,
+            &transfer_id,
             name,
-            size: bytes.len() as u64,
-            dir: FileDir::Push,
-            dest: Some(dest_dir),
-        },
-    );
-
-    if bytes.is_empty() {
-        send(
-            &out_tx,
-            &self_id,
-            Message::FileChunk {
-                session_id,
-                transfer_id,
-                seq: 0,
-                data: String::new(),
-                last: true,
-            },
-        );
-        return;
-    }
-    let total = bytes.len();
-    for (i, chunk) in bytes.chunks(CHUNK).enumerate() {
-        let last = (i + 1) * CHUNK >= total;
-        send(
-            &out_tx,
-            &self_id,
-            Message::FileChunk {
-                session_id: session_id.clone(),
-                transfer_id: transfer_id.clone(),
-                seq: i as u64,
-                data: STANDARD.encode(chunk),
-                last,
-            },
-        );
+            p,
+            FileDir::Push,
+            Some(dest_dir),
+        )
+        .await
+        {
+            send(
+                &out_tx,
+                &self_id,
+                Message::FileError {
+                    session_id,
+                    transfer_id,
+                    reason,
+                },
+            );
+        }
     }
 }
 
@@ -476,13 +626,92 @@ mod tests {
     }
 
     #[test]
-    fn pull_target_存取与取出清除() {
-        let tid = "t-pull-1";
+    fn pull_target_peek不消费() {
+        // 用唯一 tid，避免与并发用例 / 全表 clear 串扰（故本用例不调用 clear_pull_targets）。
+        let tid = "t-pull-peek-uniq";
         let dir = std::env::temp_dir().join("ohmydesk-pull-target");
         set_pull_target(tid, dir.clone());
-        // 取出一次即移除（落盘完成后不应残留）
-        assert_eq!(take_pull_target(tid), Some(dir));
-        assert_eq!(take_pull_target(tid), None, "二次取出应为 None");
+        // peek 不移除：文件夹多文件回流要按同一 transfer_id 多次查同一目标目录。
+        assert_eq!(peek_pull_target(tid), Some(dir.clone()));
+        assert_eq!(peek_pull_target(tid), Some(dir), "peek 不应移除条目");
+    }
+
+    #[test]
+    fn 安全相对路径_保留子目录并拦穿越() {
+        let p = |segs: &[&str]| segs.iter().collect::<PathBuf>();
+        // basename 原样（向后兼容单文件）
+        assert_eq!(safe_rel_path("a.txt"), PathBuf::from("a.txt"));
+        // 保留子目录层级；反斜杠归一
+        assert_eq!(safe_rel_path("docs/a/b.txt"), p(&["docs", "a", "b.txt"]));
+        assert_eq!(safe_rel_path("docs\\a.txt"), p(&["docs", "a.txt"]));
+        // 拦 ..（丢弃后仍是相对、落在 dest 下，安全）
+        assert_eq!(safe_rel_path("../../etc/passwd"), p(&["etc", "passwd"]));
+        // 拦绝对路径前导分隔
+        assert_eq!(safe_rel_path("/abs/x"), p(&["abs", "x"]));
+        // 拦 Windows 盘符段
+        assert_eq!(safe_rel_path("C:\\Windows\\evil"), p(&["Windows", "evil"]));
+        // 规整后为空 → 兜底名
+        assert_eq!(safe_rel_path(".."), PathBuf::from("received.bin"));
+        assert_eq!(safe_rel_path(""), PathBuf::from("received.bin"));
+    }
+
+    #[tokio::test]
+    async fn 取回文件夹_逐文件回流且name带相对路径() {
+        // 造：base/myfolder/{a.txt, sub/b.txt}
+        let base = std::env::temp_dir().join("ohmydesk-pull-folder-src");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("myfolder/sub")).unwrap();
+        std::fs::write(base.join("myfolder/a.txt"), b"AA").unwrap();
+        std::fs::write(base.join("myfolder/sub/b.txt"), b"BBB").unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        send_file(
+            tx,
+            "ep".into(),
+            "s".into(),
+            "tx".into(),
+            base.join("myfolder").to_string_lossy().to_string(),
+        )
+        .await;
+
+        // 收集所有 FileOpen 的 name：应含文件夹名作首段，保留子目录层级。
+        let mut names = Vec::new();
+        while let Ok(s) = rx.try_recv() {
+            let env: Envelope = serde_json::from_str(&s).unwrap();
+            if let Message::FileOpen { name, dir, .. } = env.payload {
+                assert_eq!(dir, FileDir::Pull, "取回方向应为 Pull");
+                names.push(name);
+            }
+        }
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "myfolder/a.txt".to_string(),
+                "myfolder/sub/b.txt".to_string()
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn 取回空文件夹_回file_error提示() {
+        let base = std::env::temp_dir().join("ohmydesk-pull-empty");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("empty")).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        send_file(
+            tx,
+            "ep".into(),
+            "s".into(),
+            "tx".into(),
+            base.join("empty").to_string_lossy().to_string(),
+        )
+        .await;
+        let s = rx.recv().await.expect("空文件夹应回一条提示");
+        let env: Envelope = serde_json::from_str(&s).unwrap();
+        assert!(matches!(env.payload, Message::FileError { .. }));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test]

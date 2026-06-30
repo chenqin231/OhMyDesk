@@ -781,6 +781,19 @@ pub async fn consume_to_ui(
                     }
                 });
             }
+            // ── 传输完成 → 重列对应栏，使取回/下发的文件立即可见 ──
+            net::ToUi::PaneRefresh { local } => {
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        // 直填当前路径（resolve_path_arg 对非 <up>/<cd> 串原样列出），重列当前目录。
+                        if local {
+                            ui.invoke_list_local(ui.get_local_path());
+                        } else {
+                            ui.invoke_list_remote(ui.get_remote_path());
+                        }
+                    }
+                });
+            }
             // ── 即时消息：据当前会话角色渲染到主控聊天页或被控聊天面板 ──
             net::ToUi::ChatIncoming {
                 session_id, text, ..
