@@ -100,6 +100,25 @@ fn incoming_control_tagged() {
 }
 
 #[test]
+fn chat_message_tagged() {
+    let env = Envelope {
+        from: "ep-1".into(),
+        to: None,
+        ts: 0,
+        payload: Message::ChatMessage {
+            session_id: "s-1".into(),
+            msg_id: "m-1".into(),
+            text: "你好".into(),
+        },
+    };
+    let json = serde_json::to_string(&env).unwrap();
+    assert!(json.contains("\"type\":\"chat_message\""));
+    assert!(json.contains("\"text\":\"你好\""));
+    let back: Envelope = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back.payload, Message::ChatMessage { .. }));
+}
+
+#[test]
 fn export_all() {
     let dir = "../admin-web/src/lib/types";
     EndpointInfo::export_all_to(dir).unwrap(); // 带出 OsInfo/CpuInfo/RamInfo/GpuInfo/枚举

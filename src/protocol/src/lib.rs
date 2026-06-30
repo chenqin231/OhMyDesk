@@ -238,6 +238,13 @@ pub enum Message {
         session_id: String,
         text: String,
     },
+    /// 会话内即时消息(双向,主控↔被控)。按 session 对端路由(同 ClipboardSync);
+    /// server 转发同时落 AuditType::Chat 审计(全文)。
+    ChatMessage {
+        session_id: String,
+        msg_id: String,
+        text: String,
+    },
     ScreenshotReq {
         req_id: String,
     },
