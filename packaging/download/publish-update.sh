@@ -47,20 +47,20 @@ jq -n --arg ver "$VER" --arg wurl "https://rc.guoziweb.com/downloads/$WIN_NAME" 
 }' > "$WORK/latest.json"
 
 echo "==> 3/8 离线签名"
-rsign sign -s "$SECKEY" -m "$WORK/latest.json" -x "$WORK/latest.json.minisig"
+rsign sign -W -s "$SECKEY" -x "$WORK/latest.json.minisig" "$WORK/latest.json"
 
 echo "==> 4/8 上传版本化产物(先产物后清单)"
 scp "$WORK/$WIN_NAME" "$WORK/$WIN_NAME.gz" "$HOST:/tmp/"
 ssh "$HOST" "sudo mv /tmp/$WIN_NAME /tmp/$WIN_NAME.gz $DLDIR/ && sudo chown root:root $DLDIR/$WIN_NAME $DLDIR/$WIN_NAME.gz && sudo chmod 644 $DLDIR/$WIN_NAME $DLDIR/$WIN_NAME.gz"
 
 echo "==> 5/8 远端验收(切清单前)：拉远端 exe(gzip)解压比对 sha/size + 验签"
-RMT_CONTENT="$(curl -fsS -H 'Accept-Encoding: gzip' --compressed "https://rc.guoziweb.com/downloads/$WIN_NAME")"
-RMT_SHA="$(printf '%s' "$RMT_CONTENT" | sha256sum | cut -d' ' -f1)"
-RMT_SIZE="$(printf '%s' "$RMT_CONTENT" | wc -c)"
+# 落临时文件再算——二进制含 \0，bash 变量会截断，不能用变量捕获。
+curl -fsS -H 'Accept-Encoding: gzip' --compressed "https://rc.guoziweb.com/downloads/$WIN_NAME" -o "$WORK/remote-check.exe"
+RMT_SHA="$(sha256sum "$WORK/remote-check.exe" | cut -d' ' -f1)"
+RMT_SIZE="$(stat -c%s "$WORK/remote-check.exe")"
 [ "$RMT_SHA" = "$SHA" ] || { echo "远端 exe sha256 不符，中止" >&2; exit 1; }
 [ "$RMT_SIZE" = "$SIZE" ] || { echo "远端 exe size 不符，中止" >&2; exit 1; }
-rsign verify -P "$(tail -1 "$PUBKEY")" -m "$WORK/latest.json" -x "$WORK/latest.json.minisig" \
-  || minisign -Vm "$WORK/latest.json" -x "$WORK/latest.json.minisig" -p "$PUBKEY"
+rsign verify -P "$(tail -1 "$PUBKEY")" -x "$WORK/latest.json.minisig" "$WORK/latest.json"
 
 echo "==> 6/8 上传清单 + 原子切换"
 scp "$WORK/latest.json" "$HOST:/tmp/latest.json.tmp"
