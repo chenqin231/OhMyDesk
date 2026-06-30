@@ -35,6 +35,125 @@ pub fn should_push_clipboard(current: &str, last_synced: &str) -> bool {
     !current.is_empty() && current != last_synced
 }
 
+/// drag-aware 合并：把一批输入事件压平为实际注入序列。
+/// 规则：buttons_down>0(拖拽中) 的 MouseMove 全保留；buttons_down==0(悬停) 的连续 MouseMove
+/// 只保留每段最后一个；任何非 move 事件前先 flush 暂存的悬停 move（保证点击前光标到位）。
+/// `buttons_down` 以引用传入并就地更新（跨批次保持按键状态）。
+fn coalesce_inputs(
+    batch: Vec<protocol::InputEvent>,
+    buttons_down: &mut i32,
+) -> Vec<protocol::InputEvent> {
+    use protocol::InputEvent::*;
+    let mut out = Vec::with_capacity(batch.len());
+    let mut pending_move: Option<protocol::InputEvent> = None;
+    for ev in batch {
+        match &ev {
+            MouseMove { .. } => {
+                if *buttons_down > 0 {
+                    out.push(ev); // 拖拽：全保真
+                } else {
+                    pending_move = Some(ev); // 悬停：覆盖暂存
+                }
+            }
+            other => {
+                if let Some(m) = pending_move.take() {
+                    out.push(m); // 非 move 前 flush 悬停 move
+                }
+                if let MouseButton { down, .. } = other {
+                    if *down {
+                        *buttons_down += 1;
+                    } else {
+                        *buttons_down = (*buttons_down - 1).max(0);
+                    }
+                }
+                out.push(ev);
+            }
+        }
+    }
+    if let Some(m) = pending_move.take() {
+        out.push(m);
+    }
+    out
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::coalesce_inputs;
+    use protocol::InputEvent::{Key, MouseButton, MouseMove};
+
+    #[test]
+    fn 悬停连续move只留最后一个() {
+        let mut b = 0;
+        let out = coalesce_inputs(
+            vec![
+                MouseMove { x: 1, y: 1 },
+                MouseMove { x: 2, y: 2 },
+                MouseMove { x: 3, y: 3 },
+            ],
+            &mut b,
+        );
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], MouseMove { x: 3, y: 3 }));
+    }
+
+    #[test]
+    fn 拖拽中move全保留() {
+        let mut b = 0;
+        // down 后两 move 再 up：down/up 之间的 move 必须全保留（拖拽保真）
+        let out = coalesce_inputs(
+            vec![
+                MouseButton { button: 0, down: true },
+                MouseMove { x: 1, y: 1 },
+                MouseMove { x: 2, y: 2 },
+                MouseButton { button: 0, down: false },
+            ],
+            &mut b,
+        );
+        // down + move1 + move2 + up = 4 条，无一丢失
+        assert_eq!(out.len(), 4);
+        assert_eq!(b, 0, "按键状态应回到 0");
+    }
+
+    #[test]
+    fn 点击前flush悬停move() {
+        let mut b = 0;
+        let out = coalesce_inputs(
+            vec![
+                MouseMove { x: 5, y: 5 },
+                MouseMove { x: 9, y: 9 }, // 悬停合并到 9,9
+                MouseButton { button: 0, down: true },
+            ],
+            &mut b,
+        );
+        // 应为 move(9,9) + button down，点击前光标到位
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0], MouseMove { x: 9, y: 9 }));
+        assert!(matches!(out[1], MouseButton { down: true, .. }));
+    }
+
+    #[test]
+    fn 跨批次保持按键状态() {
+        let mut b = 0;
+        // 批1：按下
+        let _ = coalesce_inputs(vec![MouseButton { button: 0, down: true }], &mut b);
+        assert_eq!(b, 1);
+        // 批2：仅 move——此时仍在拖拽，应保留
+        let out = coalesce_inputs(vec![MouseMove { x: 1, y: 1 }, MouseMove { x: 2, y: 2 }], &mut b);
+        assert_eq!(out.len(), 2, "跨批次拖拽中 move 应全保留");
+    }
+
+    #[test]
+    fn key事件前也flush悬停move() {
+        let mut b = 0;
+        let out = coalesce_inputs(
+            vec![MouseMove { x: 7, y: 7 }, Key { code: "a".into(), down: true }],
+            &mut b,
+        );
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0], MouseMove { x: 7, y: 7 }));
+    }
+}
+
 /// 注入消费：被控态收到的 Input 事件 → enigo 注入。
 ///
 /// 注入器留在专用线程独占持有。按本机截屏 `real_size` + 等比缩放帧尺寸构造，坐标按 real/frame 还原。
@@ -62,10 +181,23 @@ pub async fn consume_inject(
                 return;
             }
         };
-        while let Ok(ev) = blk_rx.recv() {
-            match injector.apply(&ev) {
-                Ok(()) => {}
-                Err(e) => tracing::warn!("注入失败 ev={ev:?}：{e}"),
+        // drag-aware 合并：每轮 recv 一个后抽干当前积压，压平悬停 move（拖拽保真），逐条注入。
+        let mut buttons_down: i32 = 0;
+        while let Ok(first) = blk_rx.recv() {
+            let mut batch = vec![first];
+            while let Ok(ev) = blk_rx.try_recv() {
+                batch.push(ev);
+            }
+            for ev in coalesce_inputs(batch, &mut buttons_down) {
+                // D：注入 button/key 后标记输入时刻，驱动事件驱动抓帧（见 Task 3）。
+                let is_actionable = !matches!(ev, protocol::InputEvent::MouseMove { .. });
+                match injector.apply(&ev) {
+                    Ok(()) => {}
+                    Err(e) => tracing::warn!("注入失败 ev={ev:?}：{e}"),
+                }
+                if is_actionable {
+                    mark_input_now();
+                }
             }
         }
     });
