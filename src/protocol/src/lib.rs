@@ -435,6 +435,19 @@ pub enum AuditType {
     Chat,         // 会话内即时消息
 }
 
+/// 管理员登录日志条目（功能②；server → admin-web，ts-rs 导出）。
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LoginLogEntry {
+    pub id: i64,
+    pub ts: i64,
+    pub username: String,
+    pub ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub success: bool,
+    pub reason: Option<String>,
+}
+
 // ── 测试拆分到 src/protocol/src/tests.rs（modularity 规范：测试与实现分离）──
 #[cfg(test)]
 mod tests;

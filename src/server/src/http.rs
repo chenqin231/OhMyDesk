@@ -7,12 +7,13 @@ use std::sync::Arc;
 
 use axum::{
     async_trait,
-    extract::{FromRequestParts, Query, State},
-    http::{request::Parts, StatusCode},
+    extract::{ConnectInfo, FromRequestParts, Query, State},
+    http::{request::Parts, HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use std::net::SocketAddr;
 use serde::Deserialize;
 use serde_json::json;
 use tower_http::cors::CorsLayer;
@@ -20,6 +21,7 @@ use tower_http::cors::CorsLayer;
 use crate::auth::Auth;
 use crate::audit::AuditStore;
 use crate::hub::{now_sec, Hub};
+use crate::login_log::LoginLogStore;
 use crate::settings::SettingsStore;
 
 /// HTTP layer 的共享状态（M-SRV3 + 鉴权）
@@ -29,6 +31,7 @@ pub struct HttpState {
     pub audit: Arc<AuditStore>,
     pub auth: Arc<Auth>,
     pub settings: Arc<SettingsStore>,
+    pub login_log: Arc<LoginLogStore>,
 }
 
 /// 已认证管理员（提取器）：校验 Authorization: Bearer <jwt>，失败 401。
@@ -59,6 +62,58 @@ fn unauth(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::UNAUTHORIZED, Json(json!({ "error": msg })))
 }
 
+/// 提取客户端真实 IP：优先 X-Forwarded-For（取首个）→ X-Real-IP → 直连对端。
+fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> String {
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = xff.split(',').next() {
+            let ip = first.trim();
+            if !ip.is_empty() {
+                return ip.to_string();
+            }
+        }
+    }
+    if let Some(xri) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        let ip = xri.trim();
+        if !ip.is_empty() {
+            return ip.to_string();
+        }
+    }
+    peer.ip().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderName;
+
+    fn hm(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn xff_takes_first() {
+        let h = hm(&[("x-forwarded-for", "203.0.113.9, 10.0.0.1")]);
+        let peer: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        assert_eq!(client_ip(&h, peer), "203.0.113.9");
+    }
+
+    #[test]
+    fn falls_back_to_real_ip_then_peer() {
+        let h = hm(&[("x-real-ip", "198.51.100.7")]);
+        let peer: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        assert_eq!(client_ip(&h, peer), "198.51.100.7");
+        let empty = HeaderMap::new();
+        assert_eq!(client_ip(&empty, peer), "127.0.0.1");
+    }
+}
+
 /// 构建 HTTP 路由，State = HttpState（与 WS router 分别挂 State，最终在 main.rs merge）
 pub fn router(state: HttpState) -> Router {
     Router::new()
@@ -69,6 +124,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/endpoints/delete", post(delete_endpoints))
         .route("/api/sessions", get(list_sessions))
         .route("/api/audit", get(query_audit))
+        .route("/api/login-logs", get(query_login_logs))
         .layer(CorsLayer::permissive()) // M-SRV2：允许 admin dev :5173 跨端口
         .with_state(state)
 }
@@ -81,12 +137,29 @@ struct LoginReq {
     pass: String,
 }
 
-/// POST /api/login → 验证账号密码，签发 JWT。
-async fn login(State(s): State<HttpState>, Json(req): Json<LoginReq>) -> impl IntoResponse {
+/// POST /api/login → 验证账号密码，签发 JWT；记录登录日志（成功/失败均记）。
+async fn login(
+    State(s): State<HttpState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<LoginReq>,
+) -> impl IntoResponse {
+    let ip = client_ip(&headers, peer);
+    let ua = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     if s.auth.verify_login(&req.user, &req.pass) {
         let token = s.auth.issue_token(&req.user, now_sec());
+        s.login_log
+            .record(&req.user, Some(&ip), Some(&ua), true, None)
+            .await;
         (StatusCode::OK, Json(json!({ "token": token, "user": req.user }))).into_response()
     } else {
+        s.login_log
+            .record(&req.user, Some(&ip), Some(&ua), false, Some("账号或密码错误"))
+            .await;
         unauth("账号或密码错误").into_response()
     }
 }
@@ -167,6 +240,25 @@ async fn query_audit(
     let logs = s
         .audit
         .query_audit(q.endpoint.as_deref(), q.from, q.to)
+        .await;
+    (StatusCode::OK, Json(logs))
+}
+
+#[derive(Deserialize)]
+pub struct LoginLogQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+/// GET /api/login-logs?limit=&offset=（需登录）→ 倒序分页返回登录日志。
+async fn query_login_logs(
+    State(s): State<HttpState>,
+    _user: AuthUser,
+    Query(q): Query<LoginLogQuery>,
+) -> impl IntoResponse {
+    let logs = s
+        .login_log
+        .query(q.limit.unwrap_or(100), q.offset.unwrap_or(0))
         .await;
     (StatusCode::OK, Json(logs))
 }
