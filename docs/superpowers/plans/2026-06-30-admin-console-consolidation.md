@@ -754,14 +754,17 @@ import type { LoginLogEntry } from "@/lib/types/LoginLogEntry";
 ```ts
   async fetchLoginLogs(limit = 100, _offset = 0): Promise<LoginLogEntry[]> {
     const now = Math.floor(Date.now() / 1000);
+    // 注意：ts-rs 把 i64 映射为 bigint，故 id/ts 必须用 bigint 字面量(3n)/BigInt(...)
     const sample: LoginLogEntry[] = [
-      { id: 3, ts: now - 60, username: "admin", ip: "10.0.0.21", user_agent: "Mozilla/5.0", success: true, reason: null },
-      { id: 2, ts: now - 3600, username: "admin", ip: "10.0.0.21", user_agent: "Mozilla/5.0", success: false, reason: "账号或密码错误" },
-      { id: 1, ts: now - 86400, username: "boss", ip: "192.168.1.8", user_agent: "Mozilla/5.0", success: true, reason: null },
+      { id: 3n, ts: BigInt(now - 60), username: "admin", ip: "10.0.0.21", user_agent: "Mozilla/5.0", success: true, reason: null },
+      { id: 2n, ts: BigInt(now - 3600), username: "admin", ip: "10.0.0.21", user_agent: "Mozilla/5.0", success: false, reason: "账号或密码错误" },
+      { id: 1n, ts: BigInt(now - 86400), username: "boss", ip: "192.168.1.8", user_agent: "Mozilla/5.0", success: true, reason: null },
     ];
     return sample.slice(0, limit);
   },
 ```
+
+> **重要（ts-rs 实测）**：`LoginLogEntry` 的 `id`、`ts` 是 **bigint**（ts-rs 把 i64 映射为 bigint），`success` 是 boolean，`ip`/`user_agent`/`reason` 是 `string | null`。前端处理时间用 `Number(r.ts)` 转换、key 用 `String(r.id)`。
 
 - [ ] **Step 4：类型检查**
 
