@@ -14,6 +14,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --allow-downgrade) DOWNGRADE=true; shift;;
   *) echo "未知参数 $1" >&2; exit 1;;
 esac; done
+[[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "版本号格式非法: $VER" >&2; exit 1; }
 
 HOST="chin@rc.guoziweb.com"
 DLDIR="/www/wwwroot/rc.guoziweb.com/downloads"
@@ -53,8 +54,11 @@ scp "$WORK/$WIN_NAME" "$WORK/$WIN_NAME.gz" "$HOST:/tmp/"
 ssh "$HOST" "sudo mv /tmp/$WIN_NAME /tmp/$WIN_NAME.gz $DLDIR/ && sudo chown root:root $DLDIR/$WIN_NAME $DLDIR/$WIN_NAME.gz && sudo chmod 644 $DLDIR/$WIN_NAME $DLDIR/$WIN_NAME.gz"
 
 echo "==> 5/8 远端验收(切清单前)：拉远端 exe(gzip)解压比对 sha/size + 验签"
-RMT_SHA="$(curl -fsSk -H 'Accept-Encoding: gzip' --compressed "https://rc.guoziweb.com/downloads/$WIN_NAME" | sha256sum | cut -d' ' -f1)"
+RMT_CONTENT="$(curl -fsS -H 'Accept-Encoding: gzip' --compressed "https://rc.guoziweb.com/downloads/$WIN_NAME")"
+RMT_SHA="$(printf '%s' "$RMT_CONTENT" | sha256sum | cut -d' ' -f1)"
+RMT_SIZE="$(printf '%s' "$RMT_CONTENT" | wc -c)"
 [ "$RMT_SHA" = "$SHA" ] || { echo "远端 exe sha256 不符，中止" >&2; exit 1; }
+[ "$RMT_SIZE" = "$SIZE" ] || { echo "远端 exe size 不符，中止" >&2; exit 1; }
 rsign verify -P "$(tail -1 "$PUBKEY")" -m "$WORK/latest.json" -x "$WORK/latest.json.minisig" \
   || minisign -Vm "$WORK/latest.json" -x "$WORK/latest.json.minisig" -p "$PUBKEY"
 
@@ -68,5 +72,5 @@ ssh "$HOST" "sudo cp $DLDIR/$WIN_NAME $DLDIR/ohmydesk-client-windows-x86_64.exe 
 # download.html 版本/size 用 sudo sed -i 改特定行(禁整文件覆盖，详见 release-publish-process 记忆)
 
 echo "==> 8/8 校验"
-curl -fsSk "https://rc.guoziweb.com/downloads/latest.json" | jq -r .version
+curl -fsS "https://rc.guoziweb.com/downloads/latest.json" | jq -r .version
 echo "发布完成：$VER（保留上一版 exe 以备回退）"

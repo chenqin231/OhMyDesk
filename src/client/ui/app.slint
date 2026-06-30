@@ -589,14 +589,22 @@ export component AppWindow inherits Window {
     if !root.remote_active: VerticalLayout {
         // 更新横幅（常驻顶部，仅发现新版时显示）
         if root.update_available: Rectangle {
-            height: 46px;
+            height: root.update_notes != "" ? 62px : 46px;
             background: Theme.primary;
             HorizontalLayout {
                 padding-left: 14px; padding-right: 14px; spacing: 10px;
-                Text {
-                    vertical-alignment: center; horizontal-alignment: left;
-                    color: white; font-size: 13px;
-                    text: "发现新版 v" + root.update_version + "，建议更新";
+                VerticalLayout {
+                    alignment: center; spacing: 2px;
+                    Text {
+                        vertical-alignment: center; horizontal-alignment: left;
+                        color: white; font-size: 13px;
+                        text: "发现新版 v" + root.update_version + "，建议更新";
+                    }
+                    if root.update_notes != "": Text {
+                        vertical-alignment: center; horizontal-alignment: left;
+                        color: #ffffffb3; font-size: 11px;
+                        text: root.update_notes;
+                    }
                 }
                 Rectangle { horizontal-stretch: 1; }
                 GhostButton {
