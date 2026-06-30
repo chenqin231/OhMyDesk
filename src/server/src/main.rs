@@ -139,7 +139,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         "OhMyDesk server on http://0.0.0.0:8765/  (UI + /api/* + /ws)  web_dir={web_dir}"
     );
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
