@@ -15,6 +15,7 @@ import {
   CHUNK_SIZE,
   EXEC_TIMEOUT_MS,
 } from "@/lib/file-transfer";
+import { appendChat, type ChatEntry } from "@/lib/chat";
 
 // 截图缓存：req_id → { endpoint_id: base64 }
 export type ScreenshotCache = Record<string, Record<string, string>>;
@@ -70,6 +71,9 @@ type State = {
   // 画质档位（高清/流畅）——主控选择，发 set_quality 给被控端
   remoteQuality: QualityMode;
 
+  // 会话内即时消息（时间正序，最新在末尾）
+  chatMessages: ChatEntry[];
+
   // actions
   initTransport: () => void;
   disconnectTransport: () => void;
@@ -86,6 +90,8 @@ type State = {
   pullFile: (path: string) => void;
   listRemote: (path: string) => void;
   setRemoteQuality: (mode: QualityMode) => void;
+  // 远控会话内：发送一条即时消息
+  sendChat: (text: string) => void;
 };
 
 const selfId = "admin-" + Math.random().toString(36).slice(2, 8);
@@ -109,6 +115,7 @@ export const useStore = create<State>((set, get) => ({
   remoteListLoading: false,
   remoteListError: null,
   remoteQuality: "smooth",
+  chatMessages: [],
 
   initTransport() {
     transport.connect(selfId, (env) => {
@@ -163,6 +170,7 @@ export const useStore = create<State>((set, get) => ({
           remotePhase: "rejected",
           remoteRejectReason: "对方已结束远程会话",
           remoteFrame: null,
+          chatMessages: [],
         });
         return;
       }
@@ -235,6 +243,19 @@ export const useStore = create<State>((set, get) => ({
         }
         return;
       }
+
+      // 会话内即时消息下行：对端（被控方）发来的消息 → 追加（mine=false）
+      if (p.type === "chat_message") {
+        set((s) => ({
+          chatMessages: appendChat(s.chatMessages, {
+            msg_id: p.msg_id,
+            text: p.text,
+            mine: false,
+            ts: Date.now(),
+          }),
+        }));
+        return;
+      }
     });
 
     // 预加载审计数据
@@ -296,7 +317,7 @@ export const useStore = create<State>((set, get) => ({
     if (sessionId) {
       get().sendEnvelope({ type: "session_end", session_id: sessionId });
     }
-    set({ remotePhase: "launch", remoteSessionId: null, remoteFrame: null });
+    set({ remotePhase: "launch", remoteSessionId: null, remoteFrame: null, chatMessages: [] });
   },
 
   resetRemote() {
@@ -313,6 +334,7 @@ export const useStore = create<State>((set, get) => ({
       remoteQuality: "smooth",
       remoteListLoading: false,
       remoteListError: null,
+      chatMessages: [],
     });
   },
 
@@ -423,5 +445,28 @@ export const useStore = create<State>((set, get) => ({
     set({ remoteQuality: mode });
     if (!sessionId) return;
     get().sendEnvelope({ type: "set_quality", session_id: sessionId, mode });
+  },
+
+  // 在已授权远控会话内发送一条即时消息：乐观本地追加（mine=true）+ 发 chat_message。
+  // server 不回显自己的消息（route_to_peer 只发对端），故本端消息靠乐观追加显示。
+  sendChat(text) {
+    const sessionId = get().remoteSessionId;
+    const trimmed = text.trim();
+    if (!sessionId || !trimmed) return;
+    const msg_id = genId("c");
+    set((s) => ({
+      chatMessages: appendChat(s.chatMessages, {
+        msg_id,
+        text: trimmed,
+        mine: true,
+        ts: Date.now(),
+      }),
+    }));
+    get().sendEnvelope({
+      type: "chat_message",
+      session_id: sessionId,
+      msg_id,
+      text: trimmed,
+    });
   },
 }));
