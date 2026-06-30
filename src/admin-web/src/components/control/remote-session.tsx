@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { Camera, Maximize, PhoneOff, TriangleAlert, Monitor, Terminal, FolderTree } from "lucide-react";
+import { Camera, Maximize, PhoneOff, TriangleAlert, Monitor, Terminal, FolderTree, MessageSquare } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -13,9 +13,9 @@ import {
   remoteMouseButtonEvents,
   shouldBlockRemoteContextMenu,
 } from "@/components/control/remote-geometry";
-import { CommandPanel, FilePanel, TabButton } from "@/components/control/remote-tools";
+import { CommandPanel, FilePanel, ChatPanel, TabButton } from "@/components/control/remote-tools";
 
-type ToolTab = "remote" | "cmd" | "file";
+type ToolTab = "remote" | "cmd" | "file" | "chat";
 
 type RemoteSessionProps = {
   targetName: string;
@@ -43,8 +43,12 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   const remoteQuality = useStore((s) => s.remoteQuality);
   const setRemoteQuality = useStore((s) => s.setRemoteQuality);
   const containerRef = useRef<HTMLDivElement>(null);
-  // 三标签：远程控制（画面）/ 命令行 / 文件传输。仅「远程控制」标签转发键鼠到被控端。
+  // 四标签：远程控制（画面）/ 命令行 / 文件传输 / 会话消息。仅「远程控制」标签转发键鼠到被控端。
   const [tab, setTab] = useState<ToolTab>("remote");
+  const chatCount = useStore((s) => s.chatMessages.length);
+  // 上次停留在「会话消息」标签时已读到的消息数；切到 chat 标签即清零未读。
+  const [readChatCount, setReadChatCount] = useState(0);
+  const unreadChat = tab === "chat" ? 0 : Math.max(0, chatCount - readChatCount);
 
   // 全屏：对远程画面容器请求浏览器全屏（再次点击退出）。
   const toggleFullscreen = useCallback(() => {
@@ -239,7 +243,7 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
         </div>
       </header>
 
-      {/* 三标签栏：远程控制 / 命令行 / 文件传输（连接态才渲染整个 RemoteSession，天然门控） */}
+      {/* 四标签栏：远程控制 / 命令行 / 文件传输 / 会话消息（连接态才渲染整个 RemoteSession，天然门控） */}
       <nav className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-2">
         <TabButton active={tab === "remote"} onClick={() => setTab("remote")} icon={<Monitor className="size-3.5" />}>
           远程控制
@@ -249,6 +253,20 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
         </TabButton>
         <TabButton active={tab === "file"} onClick={() => setTab("file")} icon={<FolderTree className="size-3.5" />}>
           文件传输
+        </TabButton>
+        <TabButton
+          active={tab === "chat"}
+          onClick={() => { setTab("chat"); setReadChatCount(chatCount); }}
+          icon={<MessageSquare className="size-3.5" />}
+        >
+          <span className="flex items-center gap-1.5">
+            会话消息
+            {unreadChat > 0 && (
+              <span className="flex min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium leading-4 text-destructive-foreground">
+                {unreadChat}
+              </span>
+            )}
+          </span>
         </TabButton>
       </nav>
 
@@ -298,6 +316,11 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
         {tab === "file" && (
           <div className="min-h-0 flex-1">
             <FilePanel />
+          </div>
+        )}
+        {tab === "chat" && (
+          <div className="min-h-0 flex-1">
+            <ChatPanel />
           </div>
         )}
       </div>

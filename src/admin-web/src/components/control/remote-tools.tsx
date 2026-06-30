@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Upload,
   Download,
@@ -353,6 +353,69 @@ function RemotePane() {
           ))
         )}
       </div>
+    </div>
+  );
+}
+
+// ── 会话消息标签页：会话内双向即时消息（左对端 / 右本端） ───────────────────────
+export function ChatPanel() {
+  const chatMessages = useStore((s) => s.chatMessages);
+  const sendChat = useStore((s) => s.sendChat);
+  const [text, setText] = useState("");
+  const endRef = useRef<HTMLDivElement>(null);
+
+  // 新消息自动滚到底（spec §9.4）。
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [chatMessages.length]);
+
+  return (
+    <div className="flex h-full flex-col p-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+        {chatMessages.length === 0 ? (
+          <p className="text-xs text-muted-foreground">会话内即时消息。发送的消息将实时送达被控方，并全文写入审计。</p>
+        ) : (
+          chatMessages.map((m) => (
+            <div
+              key={m.msg_id}
+              className={"flex " + (m.mine ? "justify-end" : "justify-start")}
+            >
+              <div
+                className={
+                  "max-w-[75%] whitespace-pre-wrap break-words rounded-lg px-3 py-1.5 text-xs " +
+                  (m.mine
+                    ? "bg-primary text-primary-foreground"
+                    : "border border-border bg-background text-foreground")
+                }
+              >
+                {m.text}
+              </div>
+            </div>
+          ))
+        )}
+        <div ref={endRef} />
+      </div>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          sendChat(text);
+          setText("");
+        }}
+        className="mt-2 flex shrink-0 gap-1.5"
+      >
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="输入消息，回车发送…"
+          className={inputCls}
+          spellCheck={false}
+          autoComplete="off"
+        />
+        <Button type="submit" size="sm" disabled={!text.trim()}>
+          发送
+        </Button>
+      </form>
     </div>
   );
 }
