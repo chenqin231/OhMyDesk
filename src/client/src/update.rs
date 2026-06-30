@@ -183,6 +183,7 @@ pub fn verify_manifest_sig(pubkey_b64: &str, manifest_bytes: &[u8], minisig: &st
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))] // 仅 windows download_verified + 单测用
 fn to_hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -192,12 +193,14 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 /// 边读边算 SHA-256 + 强制上限的 Reader 包装。
+#[cfg_attr(not(windows), allow(dead_code))] // 仅 windows download_verified + 单测构造
 pub struct CapReader<R> {
     inner: R,
     cap: u64,
     read: u64,
     hasher: sha2::Sha256,
 }
+#[cfg_attr(not(windows), allow(dead_code))]
 impl<R: std::io::Read> CapReader<R> {
     pub fn new(inner: R, cap: u64) -> Self {
         use sha2::Digest;
