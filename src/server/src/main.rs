@@ -7,6 +7,7 @@ mod db;
 mod handlers;
 mod hub;
 mod http;
+mod login_log;
 mod registry;
 mod session;
 mod settings;
