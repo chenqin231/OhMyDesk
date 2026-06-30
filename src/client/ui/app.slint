@@ -37,6 +37,30 @@ struct HistoryItem {
     sub: string,      // 相对时间 "2 分钟前"
 }
 
+// 一个目录条目（与 protocol::FileEntry 同形：Rust 侧 build 后 set_*_entries）。
+struct FileEntry {
+    name: string,
+    is_dir: bool,
+    size: int,    // 字节（u64 在 Slint 用 int 承载，仅展示用，超 2^31 极少见）
+}
+
+// 路径父/子计算下沉到 Rust：Slint 字符串能力弱（无 split/rsplit），故只产出带标记的指令串
+// （"<up>:当前路径" / "<cd>:当前路径|子名"），由 ui_glue 用 PathBuf 精确算父/子再 list（见 Task 9）。
+// 放 global 让 FilePane（AppWindow 外的组件）也能调用。
+global PathUtil {
+    // 上级目录：产出 "<up>:当前路径" 指令串（空/根返回空串=回 home/盘符列表）。
+    pure public function parent_path(p: string) -> string {
+        if (p == "" || p == "/") {
+            return "";
+        }
+        return "<up>:" + p;
+    }
+    // 子目录：产出 "<cd>:当前路径|子名" 指令串。
+    pure public function child_path(p: string, name: string) -> string {
+        return "<cd>:" + p + "|" + name;
+    }
+}
+
 // ── 通用控件 ───────────────────────────────────────────────
 
 // 卡片容器
@@ -286,6 +310,117 @@ component HistoryRow inherits Rectangle {
     }
 }
 
+// 文件浏览单栏：标题 + 路径行（含上级/刷新）+ 条目列表 + 操作（下发/取回）。
+// 路径父/子计算下沉到 Rust：open_dir 回调收到 "<up>:"/"<cd>:" 指令串，ui_glue 解析后列目录。
+component FilePane inherits Rectangle {
+    in property <string> title;
+    in property <string> path;
+    in property <[FileEntry]> entries;
+    in property <string> action_label;          // "下发→" 或 "←取回"
+    callback open_dir(string /*path*/);          // 进入子目录/上级
+    callback refresh();
+    callback act(string /*entry_name*/);         // 对选中文件执行下发/取回
+    border-radius: 10px;
+    background: #0d0d10;
+    border-width: 1px;
+    border-color: Theme.card-border;
+    VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
+        Text {
+            text: root.title;
+            color: Theme.fg-muted;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 1px;
+        }
+        // 路径行
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: root.path == "" ? "/" : root.path;
+                color: Theme.fg;
+                font-size: 12px;
+                font-family: "monospace";
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            GhostButton {
+                label: "上级";
+                clicked => {
+                    root.open_dir(PathUtil.parent_path(root.path));
+                }
+            }
+            GhostButton {
+                label: "刷新";
+                clicked => {
+                    root.refresh();
+                }
+            }
+        }
+        // 条目列表
+        Rectangle {
+            vertical-stretch: 1;
+            Flickable {
+                width: 100%;
+                height: 100%;
+                viewport-width: self.width;
+                viewport-height: list_col.preferred-height;
+                list_col := VerticalLayout {
+                    spacing: 1px;
+                    if root.entries.length == 0: Text {
+                        text: "（空目录或加载中）";
+                        color: Theme.fg-muted;
+                        font-size: 12px;
+                    }
+                    for e in root.entries: Rectangle {
+                        height: 32px;
+                        border-radius: 6px;
+                        background: row_ta.has-hover ? #ffffff0a : transparent;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 8px;
+                            Text {
+                                text: e.is_dir ? "[目录]" : "[文件]";
+                                color: e.is_dir ? Theme.primary : Theme.fg-muted;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: e.name;
+                                color: Theme.fg;
+                                font-size: 13px;
+                                font-family: "monospace";
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                            // 文件才显示下发/取回按钮
+                            if !e.is_dir: GhostButton {
+                                label: root.action_label;
+                                clicked => {
+                                    root.act(e.name);
+                                }
+                            }
+                        }
+                        row_ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                // 点目录进入；点文件不动（用右侧按钮）
+                                if (e.is_dir) {
+                                    root.open_dir(PathUtil.child_path(root.path, e.name));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── 主窗口 ─────────────────────────────────────────────────
 export component AppWindow inherits Window {
     title: "OhMyDesk 客户端";
@@ -315,6 +450,13 @@ export component AppWindow inherits Window {
     callback auth_reject();
     callback stop_being_controlled();
 
+    // 被控端聊天面板（被控期间真人可回复）
+    in-out property <bool> chat_panel_open: false;    // 面板展开
+    in-out property <bool> controlled_chat_unread: false; // 被控聊天入口红点
+    in-out property <string> controlled_chat_log;     // 被控侧聊天记录累积
+    in-out property <string> controlled_chat_input;   // 被控侧输入
+    callback send_controlled_chat(string /*text*/);   // 被控发送（复用 SendChat，session=被控会话）
+
     // ── 主控端状态（模式 B：client→client 发起）──
     in property <bool> remote_active: false;      // 已进入主控画面态
     in-out property <bool> connecting: false;     // 发起后等待对端授权（遮罩）；Slint try-start 也写它
@@ -331,6 +473,32 @@ export component AppWindow inherits Window {
     callback disconnect_remote();
     in-out property <bool> high_quality: false;   // 画质档位：true=高清优先，false=流畅优先
     callback set_quality(bool /*high*/);          // 主控切换画质档位
+
+    // ── 主控工作台标签（0=远程桌面 1=远程命令 2=远程文件 3=即时消息）──
+    in-out property <int> active_tab: 0;
+    in-out property <bool> chat_unread: false;       // 即时消息标签未读红点
+    callback tab_changed(int /*tab*/);               // 切标签 → Rust 侧发 SetCapture（懒推流）
+
+    // ── 远程命令 ──
+    in-out property <string> cmd_input;              // 命令输入行
+    in property <string> cmd_output;                 // 输出区累积文本（Rust 侧 append）
+    callback run_command(string /*command*/);        // 执行命令
+
+    // ── 远程文件 ──
+    in property <[FileEntry]> local_entries: [];     // 左栏本机目录条目
+    in property <string> local_path;                 // 左栏当前本机绝对路径
+    in property <[FileEntry]> remote_entries: [];    // 右栏远端目录条目
+    in property <string> remote_path;                // 右栏当前远端绝对路径
+    in property <string> file_notice;                // 传输状态行
+    callback list_local(string /*path*/);            // 浏览本机目录
+    callback list_remote(string /*path*/);           // 浏览远端目录
+    callback push_file(string /*local_name*/);       // 下发左栏选中文件到右栏当前目录
+    callback pull_file(string /*remote_name*/);      // 取回右栏选中文件到左栏当前目录
+
+    // ── 即时消息 ──
+    in property <string> chat_log;                   // 聊天记录累积文本（Rust 侧 append）
+    in-out property <string> chat_input;             // 输入行
+    callback send_chat(string /*text*/);             // 发送消息
 
     // 设备卡动作
     callback copy_text(string);                   // 复制 ID/密码到剪贴板
@@ -614,211 +782,258 @@ export component AppWindow inherits Window {
         }
     }
 
-    // ⑤ 主控画面态：贴帧铺满 + 悬浮工具条 + 键鼠捕获
+    // ⑤ 主控工作台：顶部 4 标签 + 整页内容（同窗同页切换）
     if root.remote_active: Rectangle {
         background: #050506;
-        // 进入主控画面即把焦点交给键盘 FocusScope；否则它永不获焦、key-pressed 不触发、
-        // 主控端一个 Input::Key 都不发 → 表现为「画面正常但任何键都输不进去」。
-        init => { fs.focus(); }
-        property <float> frame_scale: root.frame_w <= 1 || root.frame_h <= 1 ? 1 : (
-            (self.width / (root.frame_w * 1px)) < (self.height / (root.frame_h * 1px))
-                ? ((self.width / (root.frame_w * 1px)) < 1 ? (self.width / (root.frame_w * 1px)) : 1)
-                : ((self.height / (root.frame_h * 1px)) < 1 ? (self.height / (root.frame_h * 1px)) : 1));
-        property <length> frame_display_w: root.frame_w <= 1 ? self.width : (root.frame_w * 1px * self.frame_scale);
-        property <length> frame_display_h: root.frame_h <= 1 ? self.height : (root.frame_h * 1px * self.frame_scale);
-        property <length> frame_display_x: (self.width - self.frame_display_w) / 2;
-        property <length> frame_display_y: (self.height - self.frame_display_h) / 2;
 
-        // 首帧到达前的占位（frame_w 默认 1）
-        if root.frame_w <= 1: VerticalLayout {
-            alignment: center;
-            HorizontalLayout {
-                alignment: center;
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 10px;
-                    HorizontalLayout {
+        VerticalLayout {
+            // ── 顶部标签条（含画质档位 + 断开常驻右侧）──
+            Rectangle {
+                height: 44px;
+                background: #0b0b0ddd;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 10px;
+                    spacing: 4px;
+                    // 4 个标签
+                    for tab[idx] in [
+                        { t: "远程桌面", i: 0 },
+                        { t: "远程命令", i: 1 },
+                        { t: "远程文件", i: 2 },
+                        { t: "即时消息", i: 3 },
+                    ]: Rectangle {
+                        width: 96px;
+                        VerticalLayout {
+                            alignment: center;
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                Text {
+                                    text: tab.t;
+                                    color: root.active_tab == tab.i ? Theme.fg : Theme.fg-muted;
+                                    font-size: 13px;
+                                    font-weight: root.active_tab == tab.i ? 700 : 500;
+                                    vertical-alignment: center;
+                                }
+                                // 即时消息未读红点
+                                if tab.i == 3 && root.chat_unread: Rectangle {
+                                    width: 7px;
+                                    height: 7px;
+                                    border-radius: 4px;
+                                    background: Theme.danger;
+                                }
+                            }
+                            // 选中下划线
+                            Rectangle {
+                                height: 2px;
+                                background: root.active_tab == tab.i ? Theme.primary : transparent;
+                            }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.active_tab = tab.i;
+                                if (tab.i == 3) { root.chat_unread = false; }
+                                root.tab_changed(tab.i);
+                            }
+                        }
+                    }
+                    Rectangle { } // 撑开
+                    // 画质档位切换（仅远程桌面标签有意义，常驻方便随时切）
+                    VerticalLayout {
                         alignment: center;
                         Rectangle {
-                            width: 52px;
-                            height: 52px;
-                            border-radius: 26px;
-                            background: Theme.muted;
-                            border-width: 1px;
-                            border-color: Theme.card-border;
-                            Text {
-                                text: "▣";
-                                color: Theme.fg-muted;
-                                font-size: 20px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            width: 132px;
+                            height: 28px;
+                            border-radius: 8px;
+                            background: #1a1a1edd;
+                            HorizontalLayout {
+                                padding: 2px;
+                                spacing: 2px;
+                                Rectangle {
+                                    border-radius: 6px;
+                                    background: !root.high_quality ? Theme.emerald : transparent;
+                                    Text {
+                                        text: "流畅";
+                                        color: white;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.high_quality = false;
+                                            root.set_quality(false);
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    border-radius: 6px;
+                                    background: root.high_quality ? Theme.emerald : transparent;
+                                    Text {
+                                        text: "高清";
+                                        color: white;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.high_quality = true;
+                                            root.set_quality(true);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-                    Text {
-                        text: "远程桌面已就绪";
-                        color: Theme.fg;
-                        font-size: 14px;
-                        font-weight: 500;
-                        horizontal-alignment: center;
-                    }
-                    Text {
-                        text: "正在接收对端画面…";
-                        color: Theme.fg-muted;
-                        font-size: 12px;
-                        horizontal-alignment: center;
+                    // 断开（常驻标签条右侧）
+                    VerticalLayout {
+                        alignment: center;
+                        DangerButton {
+                            label: "断开";
+                            clicked => {
+                                root.disconnect_remote();
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        // 贴帧
-        frame_img := Image {
-            source: root.frame;
-            image-fit: fill;
-            x: parent.frame_display_x;
-            y: parent.frame_display_y;
-            width: parent.frame_display_w;
-            height: parent.frame_display_h;
-        }
+            // ── 内容区 ──
+            Rectangle {
+                vertical-stretch: 1;
 
-        // 键鼠捕获（只覆盖实际画面矩形，避免 contain 黑边导致坐标偏移）
-        ta := TouchArea {
-            x: parent.frame_display_x;
-            y: parent.frame_display_y;
-            width: parent.frame_display_w;
-            height: parent.frame_display_h;
-            mouse-cursor: pointer;
-            moved => {
-                root.on_pointer_move(
-                    (self.mouse-x / self.width * root.frame_w * 1px) / 1px,
-                    (self.mouse-y / self.height * root.frame_h * 1px) / 1px);
-            }
-            pointer-event(ev) => {
-                if (ev.kind == PointerEventKind.down) {
-                    fs.focus();  // 点画面即重新抓键盘焦点（窗口切换后兜底）
-                }
-                if (ev.kind == PointerEventKind.down || ev.kind == PointerEventKind.up) {
-                    root.on_pointer_button(
-                        (self.mouse-x / self.width * root.frame_w * 1px) / 1px,
-                        (self.mouse-y / self.height * root.frame_h * 1px) / 1px,
-                        ev.button == PointerEventButton.left ? 0
-                            : ev.button == PointerEventButton.middle ? 1 : 2,
-                        ev.kind == PointerEventKind.down);
-                }
-            }
-        }
+                // tab 0：远程桌面（贴帧 + 键鼠捕获，键鼠只在此 if 内渲染，天然门控）
+                if root.active_tab == 0: Rectangle {
+                    background: #050506;
+                    // 进入主控画面即把焦点交给键盘 FocusScope；否则它永不获焦、key-pressed 不触发、
+                    // 主控端一个 Input::Key 都不发 → 表现为「画面正常但任何键都输不进去」。
+                    init => { fs.focus(); }
+                    property <float> frame_scale: root.frame_w <= 1 || root.frame_h <= 1 ? 1 : (
+                        (self.width / (root.frame_w * 1px)) < (self.height / (root.frame_h * 1px))
+                            ? ((self.width / (root.frame_w * 1px)) < 1 ? (self.width / (root.frame_w * 1px)) : 1)
+                            : ((self.height / (root.frame_h * 1px)) < 1 ? (self.height / (root.frame_h * 1px)) : 1));
+                    property <length> frame_display_w: root.frame_w <= 1 ? self.width : (root.frame_w * 1px * self.frame_scale);
+                    property <length> frame_display_h: root.frame_h <= 1 ? self.height : (root.frame_h * 1px * self.frame_scale);
+                    property <length> frame_display_x: (self.width - self.frame_display_w) / 2;
+                    property <length> frame_display_y: (self.height - self.frame_display_h) / 2;
 
-        // 悬浮工具条
-        Rectangle {
-            y: 0px;
-            height: 44px;
-            width: 100%;
-            background: #0b0b0ddd;
-            HorizontalLayout {
-                padding-left: 14px;
-                padding-right: 10px;
-                spacing: 10px;
-                // 左：状态
-                VerticalLayout {
-                    alignment: center;
-                    Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        background: Theme.emerald;
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 0px;
-                    Text {
-                        text: root.target_id;
-                        color: Theme.fg;
-                        font-size: 13px;
-                        font-weight: 500;
-                        font-family: "monospace";
-                    }
-                    Text {
-                        text: "已加密 · 主控中";
-                        color: Theme.emerald;
-                        font-size: 10px;
-                    }
-                }
-                Rectangle { } // 撑开
-                // 画质档位切换：流畅 / 高清
-                VerticalLayout {
-                    alignment: center;
-                    Rectangle {
-                        width: 132px;
-                        height: 28px;
-                        border-radius: 8px;
-                        background: #1a1a1edd;
+                    // 首帧到达前的占位（frame_w 默认 1）
+                    if root.frame_w <= 1: VerticalLayout {
+                        alignment: center;
                         HorizontalLayout {
-                            padding: 2px;
-                            spacing: 2px;
-                            Rectangle {
-                                border-radius: 6px;
-                                background: !root.high_quality ? Theme.emerald : transparent;
-                                Text {
-                                    text: "流畅";
-                                    color: white;
-                                    font-size: 11px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.high_quality = false;
-                                        root.set_quality(false);
+                            alignment: center;
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 10px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 52px;
+                                        height: 52px;
+                                        border-radius: 26px;
+                                        background: Theme.muted;
+                                        border-width: 1px;
+                                        border-color: Theme.card-border;
+                                        Text {
+                                            text: "▣";
+                                            color: Theme.fg-muted;
+                                            font-size: 20px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
                                     }
                                 }
-                            }
-                            Rectangle {
-                                border-radius: 6px;
-                                background: root.high_quality ? Theme.emerald : transparent;
                                 Text {
-                                    text: "高清";
-                                    color: white;
-                                    font-size: 11px;
+                                    text: "远程桌面已就绪";
+                                    color: Theme.fg;
+                                    font-size: 14px;
+                                    font-weight: 500;
                                     horizontal-alignment: center;
-                                    vertical-alignment: center;
                                 }
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.high_quality = true;
-                                        root.set_quality(true);
-                                    }
+                                Text {
+                                    text: "正在接收对端画面…";
+                                    color: Theme.fg-muted;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
                                 }
                             }
                         }
                     }
-                }
-                // 右：断开
-                VerticalLayout {
-                    alignment: center;
-                    DangerButton {
-                        label: "断开";
-                        clicked => {
-                            root.disconnect_remote();
-                        }
-                    }
-                }
-            }
-        }
 
-        // 键盘焦点捕获
-        fs := FocusScope {
-            width: 0px;
-            key-pressed(ev) => {
-                root.on_key(root.key_code(ev.text), true);
-                accept
-            }
-            key-released(ev) => {
-                root.on_key(root.key_code(ev.text), false);
-                accept
+                    // 贴帧
+                    frame_img := Image {
+                        source: root.frame;
+                        image-fit: fill;
+                        x: parent.frame_display_x;
+                        y: parent.frame_display_y;
+                        width: parent.frame_display_w;
+                        height: parent.frame_display_h;
+                    }
+
+                    // 键鼠捕获（只覆盖实际画面矩形，避免 contain 黑边导致坐标偏移）
+                    ta := TouchArea {
+                        x: parent.frame_display_x;
+                        y: parent.frame_display_y;
+                        width: parent.frame_display_w;
+                        height: parent.frame_display_h;
+                        mouse-cursor: pointer;
+                        moved => {
+                            root.on_pointer_move(
+                                (self.mouse-x / self.width * root.frame_w * 1px) / 1px,
+                                (self.mouse-y / self.height * root.frame_h * 1px) / 1px);
+                        }
+                        pointer-event(ev) => {
+                            if (ev.kind == PointerEventKind.down) {
+                                fs.focus();  // 点画面即重新抓键盘焦点（窗口切换后兜底）
+                            }
+                            if (ev.kind == PointerEventKind.down || ev.kind == PointerEventKind.up) {
+                                root.on_pointer_button(
+                                    (self.mouse-x / self.width * root.frame_w * 1px) / 1px,
+                                    (self.mouse-y / self.height * root.frame_h * 1px) / 1px,
+                                    ev.button == PointerEventButton.left ? 0
+                                        : ev.button == PointerEventButton.middle ? 1 : 2,
+                                    ev.kind == PointerEventKind.down);
+                            }
+                        }
+                    }
+
+                    // 键盘焦点捕获
+                    fs := FocusScope {
+                        width: 0px;
+                        key-pressed(ev) => {
+                            root.on_key(root.key_code(ev.text), true);
+                            accept
+                        }
+                        key-released(ev) => {
+                            root.on_key(root.key_code(ev.text), false);
+                            accept
+                        }
+                    }
+                }
+
+                // tab 1/2/3 占位（Task 7/8 填充）
+                if root.active_tab == 1: Text {
+                    text: "远程命令（待填充）";
+                    color: Theme.fg-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                if root.active_tab == 2: Text {
+                    text: "远程文件（待填充）";
+                    color: Theme.fg-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                if root.active_tab == 3: Text {
+                    text: "即时消息（待填充）";
+                    color: Theme.fg-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
             }
         }
     }
