@@ -19,3 +19,15 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE TABLE IF NOT EXISTS settings (
   k VARCHAR(64) PRIMARY KEY, v TEXT
 ) DEFAULT CHARSET=utf8mb4;
+
+-- 管理员登录日志（功能②）
+CREATE TABLE IF NOT EXISTS login_log (
+  id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+  ts         BIGINT NOT NULL,
+  username   VARCHAR(128) NOT NULL,
+  ip         VARCHAR(64),
+  user_agent VARCHAR(512),
+  success    TINYINT NOT NULL,
+  reason     VARCHAR(255),
+  INDEX idx_login_log_ts (ts)
+);
