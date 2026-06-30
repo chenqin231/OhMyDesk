@@ -196,10 +196,11 @@ impl Hub {
                 handlers::handle_session_end(self, session_id, now).await;
             }
 
-            // ── Frame / RemoteNotice / SetQuality：按 session 对端路由 ──────────
+            // ── Frame / RemoteNotice / SetQuality / SetCapture / Clipboard：按 session 对端路由 ──
             Message::Frame { session_id, .. }
             | Message::RemoteNotice { session_id, .. }
             | Message::SetQuality { session_id, .. }
+            | Message::SetCapture { session_id, .. }
             | Message::ClipboardSync { session_id, .. } => {
                 self.route_to_peer(session_id, &env);
             }
@@ -269,6 +270,16 @@ impl Hub {
                         AuditType::FileTransfer,
                         &format!("浏览目录: {path}"),
                     )
+                    .await;
+                self.route_to_peer(session_id, &env);
+            }
+
+            // ── 会话内即时消息:按 session 对端路由 + 落 Chat 审计(全文)──────────
+            Message::ChatMessage {
+                session_id, text, ..
+            } => {
+                self.audit
+                    .log(session_id, &env.from, AuditType::Chat, text)
                     .await;
                 self.route_to_peer(session_id, &env);
             }
@@ -480,5 +491,46 @@ mod tests {
             Message::FileListRequest { path, .. } => assert_eq!(path, "/tmp"),
             other => panic!("应为 FileListRequest，实际 {other:?}"),
         }
+    }
+
+    /// 即时消息:必须按 session 路由给对端,且落审计不 panic,不回发给发送方。
+    #[tokio::test]
+    async fn chat_message_forwarded_to_peer() {
+        let hub = test_hub();
+        let (a_tx, mut a_rx) = mpsc::unbounded_channel::<String>();
+        let (b_tx, mut b_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("ep-a".into(), a_tx);
+        hub.add_client("ep-b".into(), b_tx);
+
+        let sid = "sess-chat".to_string();
+        hub.sessions.insert(Session {
+            id: sid.clone(),
+            mode: Mode::B,
+            from_id: "ep-a".into(),
+            to_id: "ep-b".into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        let env = Envelope {
+            from: "ep-a".into(),
+            to: None,
+            ts: 200,
+            payload: Message::ChatMessage {
+                session_id: sid.clone(),
+                msg_id: "m-1".into(),
+                text: "你好".into(),
+            },
+        };
+        hub.handle(env, 200).await;
+
+        let got = b_rx.try_recv().expect("对端应收到 ChatMessage");
+        let env: Envelope = serde_json::from_str(&got).unwrap();
+        match env.payload {
+            Message::ChatMessage { text, .. } => assert_eq!(text, "你好"),
+            other => panic!("应为 ChatMessage,实际 {other:?}"),
+        }
+        assert!(a_rx.try_recv().is_err(), "不应回发给发送方");
     }
 }
