@@ -204,12 +204,11 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
     let mut frame_tx = Some(frame_tx);
     // 帧 lane 计数器：enqueued 在 send_frame_to 累加，sent 在 pump 实发时累加（spec §4.7）。
     let frame_enqueued = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let frame_sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let frame_sent_pump = frame_sent.clone();
     let frame_enqueued_pump = frame_enqueued.clone();
 
     // 出站泵：控制消息走可靠 FIFO（rx）；帧走 watch（frame_rx，单槽最新）。
     let pump = tokio::spawn(async move {
+        let mut frame_sent: u64 = 0; // 本连接实发帧数（pump 内局部，无需 Arc）
         loop {
             tokio::select! {
                 biased; // 控制消息优先（控制绝不被帧延迟）
@@ -231,7 +230,8 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
                     if let Some(s) = latest {
                         if sink.send(WsMsg::Text(s)).await.is_err() { break; }
                         // 实发成功：累加 sent，每 100 帧 debug 一次 frame_lane_drop。
-                        let n = frame_sent_pump.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        frame_sent += 1;
+                        let n = frame_sent;
                         if n % 100 == 0 {
                             let enq = frame_enqueued_pump.load(std::sync::atomic::Ordering::Relaxed);
                             tracing::debug!("frame_lane_drop enqueued={enq} sent={n} drop={}", hub::frame_lane_drop(enq, n));

@@ -55,26 +55,10 @@ pub enum Anomaly {
     FrameSkip失效,
 }
 
-/// 取已排序切片的 p 分位（p∈[0,1]），空切片返回 0。
-fn percentile_u32(sorted: &[u32], p: f32) -> u32 {
+/// 取已排序切片的 p 分位（p∈[0,1]），空切片返回默认值（0/0.0）。泛型统一 u32/f32/usize。
+fn percentile<T: Copy + Default>(sorted: &[T], p: f32) -> T {
     if sorted.is_empty() {
-        return 0;
-    }
-    let idx = ((sorted.len() as f32 - 1.0) * p).round() as usize;
-    sorted[idx.min(sorted.len() - 1)]
-}
-
-fn percentile_f32(sorted: &[f32], p: f32) -> f32 {
-    if sorted.is_empty() {
-        return 0.0;
-    }
-    let idx = ((sorted.len() as f32 - 1.0) * p).round() as usize;
-    sorted[idx.min(sorted.len() - 1)]
-}
-
-fn percentile_usize(sorted: &[usize], p: f32) -> usize {
-    if sorted.is_empty() {
-        return 0;
+        return T::default();
     }
     let idx = ((sorted.len() as f32 - 1.0) * p).round() as usize;
     sorted[idx.min(sorted.len() - 1)]
@@ -118,15 +102,15 @@ pub fn aggregate(
         egress_writes,
         effective_fps: sent as f32 / window_s,
         skip_pct: if total > 0 { skipped as f32 / total as f32 } else { 0.0 },
-        dirty_p50: percentile_f32(&dirty, 0.5),
-        dirty_p95: percentile_f32(&dirty, 0.95),
+        dirty_p50: percentile(&dirty, 0.5),
+        dirty_p95: percentile(&dirty, 0.95),
         enc_bps: (total_bytes as f32 / window_s) as u64,
         bytes_avg,
-        bytes_p95: percentile_usize(&bytes, 0.95),
-        cap_p95_ms: percentile_u32(&cap_ms, 0.95),
+        bytes_p95: percentile(&bytes, 0.95),
+        cap_p95_ms: percentile(&cap_ms, 0.95),
         enc_avg_ms,
-        enc_p95_ms: percentile_u32(&enc_ms, 0.95),
-        stall_p95_ms: percentile_u32(&stall, 0.95),
+        enc_p95_ms: percentile(&enc_ms, 0.95),
+        stall_p95_ms: percentile(&stall, 0.95),
         egress_drop,
     }
 }
