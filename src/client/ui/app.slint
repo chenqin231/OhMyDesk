@@ -559,6 +559,13 @@ export component AppWindow inherits Window {
     callback copy_text(string);                   // 复制 ID/密码到剪贴板
     callback refresh_password();                  // 刷新临时密码
 
+    // 自动更新横幅
+    in property <bool> update_available: false;
+    in property <string> update_version;
+    in property <string> update_url;
+    in property <string> update_notes;
+    callback copy_url(string);                    // 复制下载链接（不过滤空白）
+
     // 最近连接
     in property <[HistoryItem]> history: [];
 
@@ -580,6 +587,24 @@ export component AppWindow inherits Window {
 
     // ① 空闲态：被控提示条 + 居中卡片
     if !root.remote_active: VerticalLayout {
+        // 更新横幅（常驻顶部，仅发现新版时显示）
+        if root.update_available: Rectangle {
+            height: 46px;
+            background: Theme.primary;
+            HorizontalLayout {
+                padding-left: 14px; padding-right: 14px; spacing: 10px;
+                Text {
+                    vertical-alignment: center; horizontal-alignment: left;
+                    color: white; font-size: 13px;
+                    text: "发现新版 v" + root.update_version + "，建议更新";
+                }
+                Rectangle { horizontal-stretch: 1; }
+                GhostButton {
+                    label: "复制下载链接";
+                    clicked => { root.copy_url(root.update_url); }
+                }
+            }
+        }
         // 被控提示条（常驻顶部，仅 being_controlled 时显示）
         if root.being_controlled: Rectangle {
             height: 42px;
