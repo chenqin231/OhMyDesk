@@ -19,6 +19,7 @@ mod elevate;
 mod exec;
 mod framediff;
 mod telemetry;
+mod render_mode;
 mod geom;
 mod history;
 mod inject;
