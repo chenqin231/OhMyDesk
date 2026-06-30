@@ -52,11 +52,16 @@ component SectionHeader inherits HorizontalLayout {
     in property <string> label;
     in property <color> dot: Theme.emerald;
     spacing: 8px;
-    Rectangle {
-        width: 6px;
-        height: 6px;
-        border-radius: 3px;
-        background: root.dot;
+    // 圆点用 VerticalLayout 居中：HorizontalLayout 跨轴不会自动垂直居中固定高度子元素，
+    // 直接放会与文字基线错位（issue#2）。
+    VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: 6px;
+            height: 6px;
+            border-radius: 3px;
+            background: root.dot;
+        }
     }
     Text {
         text: root.label;
@@ -361,11 +366,14 @@ export component AppWindow inherits Window {
             HorizontalLayout {
                 alignment: center;
                 spacing: 8px;
-                Rectangle {
-                    width: 7px;
-                    height: 7px;
-                    border-radius: 4px;
-                    background: root.controlled_forced ? Theme.danger : Theme.amber;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 4px;
+                        background: root.controlled_forced ? Theme.danger : Theme.amber;
+                    }
                 }
                 Text {
                     text: root.controlled_forced
@@ -447,11 +455,14 @@ export component AppWindow inherits Window {
                                     padding-top: 5px;
                                     padding-bottom: 5px;
                                     spacing: 6px;
-                                    Rectangle {
-                                        width: 7px;
-                                        height: 7px;
-                                        border-radius: 4px;
-                                        background: root.connected ? Theme.emerald : Theme.fg-muted;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 7px;
+                                            height: 7px;
+                                            border-radius: 4px;
+                                            background: root.connected ? Theme.emerald : Theme.fg-muted;
+                                        }
                                     }
                                     Text {
                                         text: root.connected ? "在线" : "连接中";
@@ -480,7 +491,7 @@ export component AppWindow inherits Window {
                                     Rectangle {
                                         property <bool> copied: false;
                                         GhostButton {
-                                            label: parent.copied ? "✓" : "复制";
+                                            label: parent.copied ? "已复制" : "复制";
                                             clicked => {
                                                 root.copy_text(root.self_id);
                                                 parent.copied = true;
@@ -498,14 +509,16 @@ export component AppWindow inherits Window {
                                     value: root.self_password;
                                     value-color: Theme.emerald;
                                     masked: !root.password_visible;
+                                    // 用中文文字替代几何符号图标：◉○↻⧉✓ 不在打包字体内，
+                                    // Ubuntu/Windows 软渲染显示为豆腐块（issue#3）。
                                     GhostButton {
-                                        label: root.password_visible ? "○" : "◉";
+                                        label: root.password_visible ? "隐藏" : "显示";
                                         clicked => {
                                             root.password_visible = !root.password_visible;
                                         }
                                     }
                                     GhostButton {
-                                        label: "↻";
+                                        label: "刷新";
                                         clicked => {
                                             root.refresh_password();
                                         }
@@ -513,7 +526,7 @@ export component AppWindow inherits Window {
                                     Rectangle {
                                         property <bool> copied: false;
                                         GhostButton {
-                                            label: parent.copied ? "✓" : "⧉";
+                                            label: parent.copied ? "已复制" : "复制";
                                             clicked => {
                                                 root.copy_text(root.self_password);
                                                 parent.copied = true;
@@ -707,11 +720,14 @@ export component AppWindow inherits Window {
                 padding-right: 10px;
                 spacing: 10px;
                 // 左：状态
-                Rectangle {
-                    width: 8px;
-                    height: 8px;
-                    border-radius: 4px;
-                    background: Theme.emerald;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: Theme.emerald;
+                    }
                 }
                 VerticalLayout {
                     alignment: center;

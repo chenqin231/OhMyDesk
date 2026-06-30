@@ -71,8 +71,8 @@ echo "==> 5/5 生成一键启动脚本（连接服务器.bat）"
   printf 'rem === OhMyDesk Windows 被控端启动 ===\r\n'
   printf 'rem 改服务器地址改下面这行（明文 ws，需服务端开放对应端口）\r\n'
   printf 'set "OHMYDESK_SERVER=%s"\r\n' "$SERVER_URL"
-  printf 'rem 显示名（管理端「使用人」列）：默认 Windows 用户名-主机名，可自定义\r\n'
-  printf 'set "OHMYDESK_NAME=%%USERNAME%%-%%COMPUTERNAME%%"\r\n'
+  printf 'rem 显示名（管理端「使用人」列）：默认 用户名@主机名，可自定义\r\n'
+  printf 'set "OHMYDESK_NAME=%%USERNAME%%@%%COMPUTERNAME%%"\r\n'
   printf 'echo 连接 %%OHMYDESK_SERVER%% 身份 %%OHMYDESK_NAME%% ...\r\n'
   printf '"%%~dp0ohmydesk-client.exe" "%%OHMYDESK_NAME%%"\r\n'
   printf 'echo.\r\n'

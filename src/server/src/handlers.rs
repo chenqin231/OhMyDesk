@@ -159,6 +159,32 @@ fn send_incoming(hub: &Hub, target: &str, session_id: String, from_id: &str, mod
     }
 }
 
+/// 主控取消尚未建立的申请：定位其发起、指向 `target` 的挂起会话，向被控端转发 SessionEnd
+/// 让其撤销授权弹窗，并结束会话 + 落审计。无对应会话时静默忽略（取消已完成/超时竞态）。
+pub async fn handle_cancel_request(hub: &Hub, from_id: &str, target: &str, now: i64) {
+    let Some(session_id) = hub.sessions.outbound_session(from_id, target) else {
+        tracing::debug!("CancelRequest 无对应挂起会话: from={from_id} target={target}");
+        return;
+    };
+    // 通知被控端撤销弹窗：被控端 SessionEnd 处理会关弹窗 + 复位被控态。
+    let env = Envelope {
+        from: "server".into(),
+        to: Some(target.to_string()),
+        ts: now,
+        payload: Message::SessionEnd {
+            session_id: session_id.clone(),
+        },
+    };
+    if let Ok(json) = serde_json::to_string(&env) {
+        hub.send_to(target, &json);
+    }
+    hub.sessions
+        .end_session(&session_id, now, SessionStatus::Ended);
+    hub.audit
+        .log(&session_id, from_id, AuditType::Disconnect, "主控取消申请")
+        .await;
+}
+
 /// AuthResult 被控端授权结果：
 /// - ok → 发 ConnectAck 给主控，落 Connect 审计；会话保持 Active。
 /// - 否 → 发 Reject 给主控，结束会话（Rejected），落 Reject 审计。

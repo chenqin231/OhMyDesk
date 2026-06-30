@@ -226,21 +226,33 @@ pub fn wire_ui_callbacks(
             let _ = tx.send(net::FromUi::RefreshPassword);
         });
     }
-    // 被控端主动断开：发 SessionEnd 给控制方 + 本地重置被控态
+    // 被控端主动断开：发 SessionEnd 给控制方 + **本地即时撤下被控横幅**。
+    // 关键修复（issue#1a）：server 的 SessionEnd 只路由给对端（主控），不回发被控自身，
+    // 被控收不到自己发出的结束回执；故必须本地复位，否则点「我要断开」后横幅常驻。
     {
         let tx = from_ui_tx.clone();
         let sess = ctrl_session.clone();
+        let ui_weak = ui.as_weak();
         ui.on_stop_being_controlled(move || {
-            if let Some(sid) = sess.lock().unwrap().clone() {
+            if let Some(sid) = sess.lock().unwrap().take() {
                 let _ = tx.send(net::FromUi::StopControlled { session_id: sid });
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_being_controlled(false);
+                ui.set_controlled_forced(false);
             }
         });
     }
-    // 主控取消申请（无密码等待态下取消/超时）
+    // 主控取消申请（无密码等待态下取消/超时）：带 target 让 server 撤销被控端弹窗（issue#4）。
     {
         let tx = from_ui_tx.clone();
+        let ui_weak = ui.as_weak();
         ui.on_cancel_remote(move || {
-            let _ = tx.send(net::FromUi::CancelRemote);
+            let target = ui_weak
+                .upgrade()
+                .map(|ui| history::normalize_id(&ui.get_target_id()))
+                .unwrap_or_default();
+            let _ = tx.send(net::FromUi::CancelRemote { target });
         });
     }
 }
@@ -385,9 +397,13 @@ pub async fn consume_to_ui(
                 if prev.is_some() {
                     *ended_session.lock().unwrap() = prev;
                 }
+                // 被控会话结束：清被控会话 id（含主控取消挂起申请的场景）。
+                *ctrl_session.lock().unwrap() = None;
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         let was_controlling = ui.get_remote_active();
+                        // 撤销可能仍开着的授权弹窗（主控在被控同意前取消了申请，issue#4）。
+                        ui.set_auth_pending(false);
                         ui.set_being_controlled(false);
                         ui.set_connecting(false);
                         ui.set_remote_active(false);

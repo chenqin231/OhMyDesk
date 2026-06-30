@@ -156,6 +156,17 @@ export const useStore = create<State>((set, get) => ({
         return;
       }
 
+      // 被控端主动断开（点「我要断开」）→ server 转发 session_end 给本控制端：
+      // 退出远控查看态并明确告知，避免「画面卡住、以为出问题」（issue#1b）。
+      if (p.type === "session_end") {
+        set({
+          remotePhase: "rejected",
+          remoteRejectReason: "对方已结束远程会话",
+          remoteFrame: null,
+        });
+        return;
+      }
+
       // 命令执行回执：按 exec_id 回填对应记录
       if (p.type === "exec_result") {
         set((s) => ({

@@ -103,6 +103,15 @@ impl SessionStore {
         self.sessions.contains_key(session_id)
     }
 
+    /// 找由 `from_id` 发起、指向 `target` 的进行中会话 id（主控取消挂起申请时定位）。
+    /// 同一对理论上仅一条挂起会话；存在多条时返回任意一条（取消语义对哪条无差别）。
+    pub fn outbound_session(&self, from_id: &str, target: &str) -> Option<String> {
+        self.sessions
+            .iter()
+            .find(|e| e.meta.from_id == from_id && e.meta.to_id == target)
+            .map(|e| e.meta.id.clone())
+    }
+
     /// 返回会话中 sender 的对端 id（Frame/Input 按 session 路由）：
     /// sender=主控(from_id) → 被控(to_id)；sender=被控(to_id) → 主控(from_id)
     pub fn peer_of(&self, session_id: &str, sender: &str) -> Option<String> {
@@ -190,6 +199,26 @@ mod tests {
         store.insert(sess);
         assert_eq!(store.initiator_of("s-002"), Some("admin-1".into()));
         assert_eq!(store.initiator_of("nonexistent"), None);
+    }
+
+    #[test]
+    fn outbound_session_finds_pending_by_from_and_target() {
+        let store = SessionStore::new();
+        store.insert(Session {
+            id: "s-out".into(),
+            mode: Mode::B,
+            from_id: "ep-a".into(),
+            to_id: "ep-b".into(),
+            start_at: 0,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+        assert_eq!(store.outbound_session("ep-a", "ep-b"), Some("s-out".into()));
+        assert_eq!(store.outbound_session("ep-a", "ep-x"), None, "target 不符不应命中");
+        assert_eq!(store.outbound_session("ep-x", "ep-b"), None, "发起方不符不应命中");
+        // 结束后不再命中
+        store.end_session("s-out", 10, SessionStatus::Ended);
+        assert_eq!(store.outbound_session("ep-a", "ep-b"), None);
     }
 
     #[test]

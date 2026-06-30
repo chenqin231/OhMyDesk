@@ -102,8 +102,9 @@ pub enum FromUi {
     StopControlled { session_id: String },
     /// 刷新本机临时密码：重新生成并重发 Register（server DashMap 按 id upsert 覆盖旧密码）。
     RefreshPassword,
-    /// 主控取消尚未建立的申请(无 session_id):置取消标记,迟到 ConnectAck 时收尾。
-    CancelRemote,
+    /// 主控取消尚未建立的申请(无 session_id):置本地取消标记(迟到 ConnectAck 时收尾) +
+    /// 带 target 发 CancelRequest 给 server,令其撤销被控端授权弹窗。
+    CancelRemote { target: String },
 }
 
 // ── M-CLI3：工具函数 ──────────────────────────────────────────────

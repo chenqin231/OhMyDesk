@@ -16,7 +16,7 @@ export type Message = { "type": "register", info: EndpointInfo, password: string
 /**
  * WEB 强制远程：免被控端同意直连（仅 admin- 发起方有效，server 端硬校验）。
  */
-force: boolean, } | { "type": "incoming_control", session_id: string, from: string, mode: Mode, 
+force: boolean, } | { "type": "cancel_request", target: string, } | { "type": "incoming_control", session_id: string, from: string, mode: Mode, 
 /**
  * true=免同意直连（密码正确/强制），被控端跳过弹框直接进被控态；false=弹框等用户同意。
  */
