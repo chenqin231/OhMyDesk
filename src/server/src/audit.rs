@@ -89,14 +89,12 @@ impl AuditStore {
             tracing::warn!("审计降级（M-SRV1），跳过更新 session: {session_id}");
             return;
         };
-        if let Err(e) = sqlx::query(
-            "UPDATE sessions SET end_at = ?, status = ? WHERE id = ?",
-        )
-        .bind(end_at)
-        .bind(status_str(status))
-        .bind(session_id)
-        .execute(db)
-        .await
+        if let Err(e) = sqlx::query("UPDATE sessions SET end_at = ?, status = ? WHERE id = ?")
+            .bind(end_at)
+            .bind(status_str(status))
+            .bind(session_id)
+            .execute(db)
+            .await
         {
             tracing::warn!("sessions 更新失败（best-effort 跳过）: {e}");
         }

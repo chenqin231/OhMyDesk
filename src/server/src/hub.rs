@@ -23,11 +23,7 @@ pub struct Hub {
 }
 
 impl Hub {
-    pub fn new(
-        reg: Arc<Registry>,
-        sessions: Arc<SessionStore>,
-        audit: Arc<AuditStore>,
-    ) -> Self {
+    pub fn new(reg: Arc<Registry>, sessions: Arc<SessionStore>, audit: Arc<AuditStore>) -> Self {
         Hub {
             reg,
             sessions,
@@ -206,13 +202,17 @@ impl Hub {
             }
 
             // ── ConnectAck/Reject/ScreenshotResp：按 to 定向转发 ──────────────
-            Message::ConnectAck { .. } | Message::Reject { .. } | Message::ScreenshotResp { .. } => {
+            Message::ConnectAck { .. }
+            | Message::Reject { .. }
+            | Message::ScreenshotResp { .. } => {
                 self.forward_by_to(&env);
             }
 
             // ── 远程命令执行：按 session 对端路由；ExecRequest 落 Command 审计 ──
             Message::ExecRequest {
-                session_id, command, ..
+                session_id,
+                command,
+                ..
             } => {
                 let summary: String = command.chars().take(200).collect();
                 self.audit
@@ -406,10 +406,7 @@ mod tests {
         // 会话已移除
         assert!(!hub.sessions.contains(&sid), "取消后会话应被移除");
         // 主控不应收到回发
-        assert!(
-            ctrl_rx.try_recv().is_err(),
-            "取消通知不应回发给发起方主控"
-        );
+        assert!(ctrl_rx.try_recv().is_err(), "取消通知不应回发给发起方主控");
     }
 
     /// 高危路径回归：ExecRequest 必须按 session 路由给被控端，且落审计不 panic。
@@ -567,6 +564,9 @@ mod tests {
 
         let got = b_rx.try_recv().expect("对端应收到 SetCapture");
         let env: Envelope = serde_json::from_str(&got).unwrap();
-        assert!(matches!(env.payload, Message::SetCapture { active: false, .. }));
+        assert!(matches!(
+            env.payload,
+            Message::SetCapture { active: false, .. }
+        ));
     }
 }
