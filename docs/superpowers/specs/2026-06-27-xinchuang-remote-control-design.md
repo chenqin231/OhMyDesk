@@ -42,7 +42,7 @@ GitHub 上最接近答案的是 MeshCentral（6.8k★，Agent 反连 + 自托管
 - ❌ 录像回放、屏幕水印、敏感操作实时拦截
 - ❌ 违规外联发现、批量脚本下发、跨网段 WoL 唤醒
 - ❌ 真 P2P / NAT 穿透 / 画质帧率优化
-- ❌ 多显示器、文件传输、聊天、通讯录
+- ❌ 多显示器、通讯录（注：**文件传输 / 远程命令 / 即时消息已于 2026-06-30 追加实现**，见 [`2026-06-30-remote-command-file-chat-design.md`](./2026-06-30-remote-command-file-chat-design.md)，本条非目标已部分作废）
 - ❌ 真实国产 OS/CPU 适配打包（demo 用 Linux/Windows 模拟，界面标注信创即可）
 
 ## 4. 功能范围（5 大模块）
