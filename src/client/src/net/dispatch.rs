@@ -247,37 +247,46 @@ pub(super) async fn handle_downlink(
 
         // ── 主控端：收被控回执的命令执行结果 → 投 UI 渲染 ─────────────────────
         Message::ExecResult {
+            session_id,
             exec_id,
             exit_code,
             stdout,
             stderr,
             truncated,
             duration_ms,
-            ..
         } => {
-            let _ = to_ui.send(ToUi::ExecResult {
-                exec_id,
-                // command 由 UI 侧按 exec_id 关联展示；下行不带 command 原文，留空由 UI 回填。
-                command: String::new(),
-                exit_code,
-                stdout,
-                stderr,
-                truncated,
-                duration_ms,
-            });
+            // 门控：仅当本端确为该会话的主控方才投 UI（与文件分支防御风格一致）。
+            let controlling =
+                session.lock().await.controlling.as_deref() == Some(session_id.as_str());
+            if controlling {
+                let _ = to_ui.send(ToUi::ExecResult {
+                    exec_id,
+                    exit_code,
+                    stdout,
+                    stderr,
+                    truncated,
+                    duration_ms,
+                });
+            }
         }
         // ── 主控端：收被控回执的远端目录列表 → 投 UI（右栏渲染）──────────────────
         Message::FileListResp {
+            session_id,
             path,
             entries,
             error,
             ..
         } => {
-            let _ = to_ui.send(ToUi::RemoteEntries {
-                path,
-                entries,
-                error,
-            });
+            // 门控：仅主控方投 UI（与文件分支防御风格一致）。
+            let controlling =
+                session.lock().await.controlling.as_deref() == Some(session_id.as_str());
+            if controlling {
+                let _ = to_ui.send(ToUi::RemoteEntries {
+                    path,
+                    entries,
+                    error,
+                });
+            }
         }
         // ── 主控端：收对端即时消息 → 投 UI（即时消息标签 / 被控聊天面板）──────────
         Message::ChatMessage {
@@ -1098,6 +1107,8 @@ mod tests {
         let (out_tx, _out_rx) = mpsc::unbounded_channel::<String>();
         let (to_ui, mut to_ui_rx) = mpsc::unbounded_channel::<ToUi>();
         let session = Arc::new(tokio::sync::Mutex::new(SessionCtx::default()));
+        // 主控态门控：须为该会话主控方才投 UI。
+        session.lock().await.controlling = Some("s-1".into());
         let t = env_text(
             "ep-peer",
             Message::ExecResult {
@@ -1134,6 +1145,8 @@ mod tests {
         let (out_tx, _out_rx) = mpsc::unbounded_channel::<String>();
         let (to_ui, mut to_ui_rx) = mpsc::unbounded_channel::<ToUi>();
         let session = Arc::new(tokio::sync::Mutex::new(SessionCtx::default()));
+        // 主控态门控：须为该会话主控方才投 UI。
+        session.lock().await.controlling = Some("s-1".into());
         let t = env_text(
             "ep-peer",
             Message::FileListResp {

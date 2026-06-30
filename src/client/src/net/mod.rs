@@ -61,10 +61,11 @@ pub enum ToUi {
     /// 连接断开（UI 可提示"重连中…"）。
     Disconnected,
     /// 主控端收被控回执的命令执行结果（远程命令标签渲染）。
-    #[allow(dead_code)] // UI 层(Task 7~9)接入后移除
+    /// 下行不带 command 原文：主控发命令时已在 UI 本地回显命令，回执仅追加结果块。
     ExecResult {
+        /// 执行 id（契约字段，关联请求/回执；UI 当前按发送顺序串行追加，故暂不读取）。
+        #[allow(dead_code)]
         exec_id: String,
-        command: String,
         exit_code: Option<i32>,
         stdout: String,
         stderr: String,
@@ -72,7 +73,6 @@ pub enum ToUi {
         duration_ms: u32,
     },
     /// 主控端收远端目录列表（远程文件标签右栏渲染）。path 为实际列出的绝对目录。
-    #[allow(dead_code)] // UI 层(Task 7~9)接入后移除
     RemoteEntries {
         path: String,
         entries: Vec<protocol::FileEntry>,
@@ -80,20 +80,21 @@ pub enum ToUi {
         error: Option<String>,
     },
     /// 文件传输进度（下发/取回通用）：done/total 字节。total=0 表示未知。
-    #[allow(dead_code)] // UI 层(Task 7~9)接入后移除
     FileProgress {
+        /// 传输 id（契约字段，标识具体传输；UI 当前按 name 展示，故暂不读取）。
+        #[allow(dead_code)]
         transfer_id: String,
         name: String,
         done: u64,
         total: u64,
     },
     /// 文件传输一次性通知（完成/失败提示，远程文件标签底部状态行）。
-    #[allow(dead_code)] // UI 层(Task 7~9)接入后移除
     FileNotice { text: String },
     /// 收到会话内即时消息（即时消息标签 / 被控聊天面板渲染，对端发来）。
-    #[allow(dead_code)] // UI 层(Task 7~9)接入后移除
     ChatIncoming {
         session_id: String,
+        /// 消息 id（契约字段，未来去重/已读回执用；UI 当前仅追加文本，故暂不读取）。
+        #[allow(dead_code)]
         msg_id: String,
         text: String,
     },
@@ -147,30 +148,24 @@ pub enum FromUi {
     /// 带 target 发 CancelRequest 给 server,令其撤销被控端授权弹窗。
     CancelRemote { target: String },
     /// 主控端发起一次性远程命令 → 发 ExecRequest 给被控端。
-    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
     ExecCommand { session_id: String, command: String },
     /// 主控端浏览远端目录 → 发 FileListRequest 给被控端。
-    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
     ListRemote { session_id: String, path: String },
     /// 主控端下发本机文件到远端当前目录（push）。
-    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
     PushFile {
         session_id: String,
         local_path: String,
         dest_dir: String,
     },
     /// 主控端从远端取回文件到本机目录（pull）：记 transfer_id→local_dir 后发 FilePullRequest。
-    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
     PullFile {
         session_id: String,
         remote_path: String,
         local_dir: String,
     },
     /// 会话内发送即时消息（主控/被控通用）→ 发 ChatMessage 给对端。
-    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
     SendChat { session_id: String, text: String },
     /// 切换桌面帧推流（懒推流）：主控切到/离开「远程桌面」标签 → 发 SetCapture 给被控端。
-    #[allow(dead_code)] // UI 层(Task 6~10)接入后移除
     SetCapture { session_id: String, active: bool },
 }
 
