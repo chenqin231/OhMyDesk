@@ -637,6 +637,7 @@ pub async fn consume_to_ui(
                 data,
                 w,
                 h,
+                seq,
             } => {
                 // 丢弃已断开会话的迟到帧：否则在途帧会把已断开的远程态「复活」（需点两次断开）。
                 if frame_belongs_to_ended(&ended_session.lock().unwrap(), &session_id) {
