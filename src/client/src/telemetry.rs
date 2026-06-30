@@ -158,6 +158,100 @@ pub fn classify(s: &WindowStats) -> Vec<Anomaly> {
     out
 }
 
+use std::collections::VecDeque;
+
+/// 合并后的单帧记录（FrameSample + 贴回的出网字段）。
+#[derive(Debug, Clone)]
+pub struct MergedSample {
+    pub frame: FrameSample,
+    pub send_stall_ms: Option<u32>, // 跳过帧/未发出帧为 None
+}
+
+/// 触发式 dump 的去抖窗（同类异常 N 秒内只 dump 一次）。
+pub const DUMP_DEBOUNCE_MS: u64 = 30_000;
+/// 环形缓冲保留时长（5 分钟）。
+pub const RING_RETAIN_MS: u64 = 300_000;
+
+pub struct Collector {
+    ring: VecDeque<MergedSample>,
+    pending_egress: std::collections::HashMap<u64, u32>, // seq→stall，等待对应 frame
+    events: VecDeque<String>,
+    last_dump_ms: Option<u64>, // None = 从未 dump
+    pub sid: String,
+}
+
+impl Collector {
+    pub fn new(sid: String) -> Self {
+        Collector {
+            ring: VecDeque::new(),
+            pending_egress: std::collections::HashMap::new(),
+            events: VecDeque::new(),
+            last_dump_ms: None,
+            sid,
+        }
+    }
+
+    /// 收到一条帧样本：合并已到的 egress（乱序容忍），入环并按时长裁剪。
+    pub fn on_frame(&mut self, f: FrameSample) {
+        let now = f.ts_ms;
+        let stall = if f.skipped { None } else { self.pending_egress.remove(&f.seq) };
+        self.ring.push_back(MergedSample { frame: f, send_stall_ms: stall });
+        // 按时长裁剪环（保留最近 RING_RETAIN_MS）
+        while let Some(front) = self.ring.front() {
+            if now.saturating_sub(front.frame.ts_ms) > RING_RETAIN_MS {
+                self.ring.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// 收到一条出网样本：若对应帧已在环则贴回，否则暂存等待。
+    pub fn on_egress(&mut self, e: EgressSample) {
+        // 若对应帧已在环（多数情况 egress 紧随 frame），就地贴回；否则暂存等待。
+        if let Some(m) = self.ring.iter_mut().rev().find(|m| m.frame.seq == e.seq && !m.frame.skipped) {
+            m.send_stall_ms = Some(e.send_stall_ms);
+        } else {
+            self.pending_egress.insert(e.seq, e.send_stall_ms);
+        }
+    }
+
+    /// 是否应触发 dump：命中异常且过了去抖窗。调用即更新 last_dump_ms。
+    pub fn should_dump(&mut self, now_ms: u64, anomalies: &[Anomaly]) -> bool {
+        if anomalies.is_empty() {
+            return false;
+        }
+        // 从未 dump（None）直接允许；有记录则检查去抖窗。
+        if let Some(last) = self.last_dump_ms {
+            if now_ms.saturating_sub(last) < DUMP_DEBOUNCE_MS {
+                return false;
+            }
+        }
+        self.last_dump_ms = Some(now_ms);
+        true
+    }
+
+    /// 当前环内帧数（测试/诊断用）。
+    pub fn ring_len(&self) -> usize {
+        self.ring.len()
+    }
+
+    /// 取最近一条合并样本的 stall（测试用）。
+    pub fn last_stall(&self) -> Option<u32> {
+        self.ring.back().and_then(|m| m.send_stall_ms)
+    }
+
+    /// 遍历环内所有样本（用于 dump）。
+    pub fn ring_iter(&self) -> impl Iterator<Item = &MergedSample> {
+        self.ring.iter()
+    }
+
+    /// 获取 sid 字符串引用。
+    pub fn sid_str(&self) -> &str {
+        &self.sid
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +335,51 @@ mod tests {
     fn 分类_正常窗不误报() {
         let s = WindowStats { frames: 100, sent: 20, egress_writes: 20, effective_fps: 2.0, skip_pct: 0.8, dirty_p95: 0.2, enc_p95_ms: 60, stall_p95_ms: 150, ..Default::default() };
         assert!(classify(&s).is_empty(), "健康窗口不应报异常");
+    }
+
+    fn frame_at(seq: u64, ts: u64) -> FrameSample {
+        FrameSample { ts_ms: ts, seq, capture_ms: 10, skipped: false, dirty_ratio: 0.2, keyframe_forced: false, encode_ms: 30, encoded_bytes: 50_000, w: 1280, h: 720 }
+    }
+
+    #[test]
+    fn 合并_egress先到后到都正确() {
+        let mut c = Collector::new("s1".into());
+        // 帧先到，egress 后到
+        c.on_frame(frame_at(1, 1000));
+        c.on_egress(EgressSample { seq: 1, send_stall_ms: 120, sent_ok: true, ws_error: false });
+        assert_eq!(c.last_stall(), Some(120), "帧先到→egress 贴回");
+        // egress 先到，帧后到
+        c.on_egress(EgressSample { seq: 2, send_stall_ms: 200, sent_ok: true, ws_error: false });
+        c.on_frame(frame_at(2, 1050));
+        assert_eq!(c.last_stall(), Some(200), "egress 先到→暂存待帧到贴回");
+    }
+
+    #[test]
+    fn 跳过帧无egress不报错() {
+        let mut c = Collector::new("s1".into());
+        let mut skipped = frame_at(1, 1000);
+        skipped.skipped = true;
+        c.on_frame(skipped);
+        assert_eq!(c.last_stall(), None, "跳过帧无 egress 样本");
+        assert_eq!(c.ring_len(), 1);
+    }
+
+    #[test]
+    fn 环形缓冲_超时裁剪() {
+        let mut c = Collector::new("s1".into());
+        c.on_frame(frame_at(1, 1000));
+        // 5 分钟后的新帧 → 老帧应被裁掉
+        c.on_frame(frame_at(2, 1000 + RING_RETAIN_MS + 1));
+        assert_eq!(c.ring_len(), 1, "超 5min 的老帧裁剪");
+    }
+
+    #[test]
+    fn dump去抖() {
+        let mut c = Collector::new("s1".into());
+        let anomalies = vec![Anomaly::Egress阻塞];
+        assert!(c.should_dump(10_000, &anomalies), "首次命中→dump");
+        assert!(!c.should_dump(10_000 + 1000, &anomalies), "去抖窗内不重复");
+        assert!(c.should_dump(10_000 + DUMP_DEBOUNCE_MS + 1, &anomalies), "过去抖窗→再 dump");
+        assert!(!c.should_dump(99_999_999, &[]), "无异常→不 dump");
     }
 }
