@@ -533,4 +533,40 @@ mod tests {
         }
         assert!(a_rx.try_recv().is_err(), "不应回发给发送方");
     }
+
+    /// 懒推流信号:SetCapture 必须按 session 路由给对端(被控端据此启停采集)。
+    #[tokio::test]
+    async fn set_capture_forwarded_to_peer() {
+        let hub = test_hub();
+        let (a_tx, _a_rx) = mpsc::unbounded_channel::<String>();
+        let (b_tx, mut b_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("ep-a".into(), a_tx);
+        hub.add_client("ep-b".into(), b_tx);
+
+        let sid = "sess-cap".to_string();
+        hub.sessions.insert(Session {
+            id: sid.clone(),
+            mode: Mode::B,
+            from_id: "ep-a".into(),
+            to_id: "ep-b".into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        let env = Envelope {
+            from: "ep-a".into(),
+            to: None,
+            ts: 200,
+            payload: Message::SetCapture {
+                session_id: sid.clone(),
+                active: false,
+            },
+        };
+        hub.handle(env, 200).await;
+
+        let got = b_rx.try_recv().expect("对端应收到 SetCapture");
+        let env: Envelope = serde_json::from_str(&got).unwrap();
+        assert!(matches!(env.payload, Message::SetCapture { active: false, .. }));
+    }
 }
