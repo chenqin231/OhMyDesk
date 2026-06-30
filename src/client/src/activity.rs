@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::SharedSession;
 
+#[cfg_attr(not(windows), allow(dead_code))] // 字段仅被 windows 替换门控 + 单测读取
 pub struct ClientActivityState {
     cur_session: SharedSession,   // 主控活动会话（既有 Arc，复用不另造）
     ctrl_session: SharedSession,  // 被控活动会话
@@ -10,6 +11,7 @@ pub struct ClientActivityState {
     updating: AtomicBool,         // 替换窗口
 }
 
+#[cfg_attr(not(windows), allow(dead_code))] // is_idle/try_enter_updating/exit_updating 仅 windows apply_auto + 单测用
 impl ClientActivityState {
     pub fn new(cur_session: SharedSession, ctrl_session: SharedSession) -> Self {
         Self { cur_session, ctrl_session, pending_until_ms: AtomicU64::new(0), updating: AtomicBool::new(false) }
