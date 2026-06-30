@@ -20,6 +20,8 @@ pub struct Hub {
     pub audit: Arc<AuditStore>,
     /// endpoint_id / admin_id → 出站消息通道
     clients: DashMap<String, mpsc::UnboundedSender<String>>,
+    /// 帧专用 lane（drop-stale）：endpoint_id/admin_id → 单槽最新帧 watch。与 clients 并存（附加式）。
+    frame_clients: DashMap<String, tokio::sync::watch::Sender<Option<String>>>,
 }
 
 impl Hub {
@@ -29,6 +31,7 @@ impl Hub {
             sessions,
             audit,
             clients: DashMap::new(),
+            frame_clients: DashMap::new(),
         }
     }
 
@@ -36,8 +39,24 @@ impl Hub {
         self.clients.insert(id, tx);
     }
 
+    pub fn add_frame_client(
+        &self,
+        id: String,
+        frame_tx: tokio::sync::watch::Sender<Option<String>>,
+    ) {
+        self.frame_clients.insert(id, frame_tx);
+    }
+
+    /// 帧定向推送（drop-stale）：覆盖目标的单槽最新帧，陈旧未发帧被丢弃。
+    pub fn send_frame_to(&self, id: &str, json: &str) {
+        if let Some(tx) = self.frame_clients.get(id) {
+            let _ = tx.send_replace(Some(json.to_string()));
+        }
+    }
+
     pub fn remove_client(&self, id: &str) {
         self.clients.remove(id);
+        self.frame_clients.remove(id);
     }
 
     /// 定向推送给某个已注册的 client
@@ -192,9 +211,17 @@ impl Hub {
                 handlers::handle_session_end(self, session_id, now).await;
             }
 
-            // ── Frame / RemoteNotice / SetQuality / SetCapture / Clipboard：按 session 对端路由 ──
-            Message::Frame { session_id, .. }
-            | Message::RemoteNotice { session_id, .. }
+            // ── Frame：走帧 lane（drop-stale），按 session 对端路由 ──────────────
+            Message::Frame { session_id, .. } => {
+                if let Some(peer) = self.sessions.peer_of(session_id, &env.from) {
+                    if let Ok(json) = serde_json::to_string(&env) {
+                        self.send_frame_to(&peer, &json);
+                    }
+                }
+            }
+
+            // ── RemoteNotice / SetQuality / SetCapture / Clipboard：可靠 control lane ──
+            Message::RemoteNotice { session_id, .. }
             | Message::SetQuality { session_id, .. }
             | Message::SetCapture { session_id, .. }
             | Message::ClipboardSync { session_id, .. } => {
@@ -568,5 +595,51 @@ mod tests {
             env.payload,
             Message::SetCapture { active: false, .. }
         ));
+    }
+
+    /// 帧 lane(drop-stale):Frame 走独立 frame_clients,连发两帧只保留最新(coalesce)。
+    #[tokio::test]
+    async fn frame_routed_to_frame_lane_latest_wins() {
+        let hub = test_hub();
+        let (a_tx, _a_rx) = mpsc::unbounded_channel::<String>();
+        let (b_tx, _b_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("ep-a".into(), a_tx);
+        hub.add_client("ep-b".into(), b_tx);
+        let (bf_tx, bf_rx) = tokio::sync::watch::channel::<Option<String>>(None);
+        hub.add_frame_client("ep-b".into(), bf_tx);
+
+        let sid = "sess-f".to_string();
+        hub.sessions.insert(Session {
+            id: sid.clone(),
+            mode: Mode::B,
+            from_id: "ep-a".into(),
+            to_id: "ep-b".into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        // ep-a 连发两帧（seq 0,1）→ frame lane 只保留最新
+        for seq in 0u64..2 {
+            let env = Envelope {
+                from: "ep-a".into(),
+                to: None,
+                ts: 200,
+                payload: Message::Frame {
+                    session_id: sid.clone(),
+                    data: format!("d{seq}"),
+                    w: 1,
+                    h: 1,
+                    seq,
+                },
+            };
+            hub.handle(env, 200).await;
+        }
+        let latest = bf_rx.borrow().clone().expect("帧 lane 应有最新帧");
+        let env: Envelope = serde_json::from_str(&latest).unwrap();
+        match env.payload {
+            Message::Frame { seq, .. } => assert_eq!(seq, 1, "drop-stale：应保留最新 seq=1"),
+            other => panic!("应为 Frame，实际 {other:?}"),
+        }
     }
 }
