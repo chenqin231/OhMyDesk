@@ -4,12 +4,154 @@
 //! 内独占持有，不混进 async select；与 tokio 侧用 mpsc 通道交互（mpsc 的 send 同步非阻塞）。
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{capture, geom, inject, net};
+
+/// 最近一次"可见输入"(button/key)注入的 Unix 毫秒时刻。
+/// 注入线程写、抓帧线程读——事件驱动抓帧的唯一跨线程信号（KISS：只传时间戳，非业务态）。
+static LAST_INPUT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// 注入线程在注入 button/key 后调用，标记"刚发生输入"。
+pub fn mark_input_now() {
+    LAST_INPUT_MS.store(now_ms(), Ordering::Relaxed);
+}
+
+/// LAST_INPUT_MS 是否晚于给定时刻（抓帧线程判断"上次抓帧后是否有新输入"）。
+fn last_input_after(since_ms: u64) -> bool {
+    LAST_INPUT_MS.load(Ordering::Relaxed) > since_ms
+}
+
+/// 当前 Unix 毫秒。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// 是否应把本地剪贴板变化推给对端:非空且与上次同步值不同(防回环核心)。
 pub fn should_push_clipboard(current: &str, last_synced: &str) -> bool {
     !current.is_empty() && current != last_synced
+}
+
+/// drag-aware 合并：把一批输入事件压平为实际注入序列。
+/// 规则：buttons_down>0(拖拽中) 的 MouseMove 全保留；buttons_down==0(悬停) 的连续 MouseMove
+/// 只保留每段最后一个；任何非 move 事件前先 flush 暂存的悬停 move（保证点击前光标到位）。
+/// `buttons_down` 以引用传入并就地更新（跨批次保持按键状态）。
+fn coalesce_inputs(
+    batch: Vec<protocol::InputEvent>,
+    buttons_down: &mut i32,
+) -> Vec<protocol::InputEvent> {
+    use protocol::InputEvent::*;
+    let mut out = Vec::with_capacity(batch.len());
+    let mut pending_move: Option<protocol::InputEvent> = None;
+    for ev in batch {
+        match &ev {
+            MouseMove { .. } => {
+                if *buttons_down > 0 {
+                    out.push(ev); // 拖拽：全保真
+                } else {
+                    pending_move = Some(ev); // 悬停：覆盖暂存
+                }
+            }
+            other => {
+                if let Some(m) = pending_move.take() {
+                    out.push(m); // 非 move 前 flush 悬停 move
+                }
+                if let MouseButton { down, .. } = other {
+                    if *down {
+                        *buttons_down += 1;
+                    } else {
+                        *buttons_down = (*buttons_down - 1).max(0);
+                    }
+                }
+                out.push(ev);
+            }
+        }
+    }
+    if let Some(m) = pending_move.take() {
+        out.push(m);
+    }
+    out
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::coalesce_inputs;
+    use protocol::InputEvent::{Key, MouseButton, MouseMove};
+
+    #[test]
+    fn 悬停连续move只留最后一个() {
+        let mut b = 0;
+        let out = coalesce_inputs(
+            vec![
+                MouseMove { x: 1, y: 1 },
+                MouseMove { x: 2, y: 2 },
+                MouseMove { x: 3, y: 3 },
+            ],
+            &mut b,
+        );
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], MouseMove { x: 3, y: 3 }));
+    }
+
+    #[test]
+    fn 拖拽中move全保留() {
+        let mut b = 0;
+        // down 后两 move 再 up：down/up 之间的 move 必须全保留（拖拽保真）
+        let out = coalesce_inputs(
+            vec![
+                MouseButton { button: 0, down: true },
+                MouseMove { x: 1, y: 1 },
+                MouseMove { x: 2, y: 2 },
+                MouseButton { button: 0, down: false },
+            ],
+            &mut b,
+        );
+        // down + move1 + move2 + up = 4 条，无一丢失
+        assert_eq!(out.len(), 4);
+        assert_eq!(b, 0, "按键状态应回到 0");
+    }
+
+    #[test]
+    fn 点击前flush悬停move() {
+        let mut b = 0;
+        let out = coalesce_inputs(
+            vec![
+                MouseMove { x: 5, y: 5 },
+                MouseMove { x: 9, y: 9 }, // 悬停合并到 9,9
+                MouseButton { button: 0, down: true },
+            ],
+            &mut b,
+        );
+        // 应为 move(9,9) + button down，点击前光标到位
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0], MouseMove { x: 9, y: 9 }));
+        assert!(matches!(out[1], MouseButton { down: true, .. }));
+    }
+
+    #[test]
+    fn 跨批次保持按键状态() {
+        let mut b = 0;
+        // 批1：按下
+        let _ = coalesce_inputs(vec![MouseButton { button: 0, down: true }], &mut b);
+        assert_eq!(b, 1);
+        // 批2：仅 move——此时仍在拖拽，应保留
+        let out = coalesce_inputs(vec![MouseMove { x: 1, y: 1 }, MouseMove { x: 2, y: 2 }], &mut b);
+        assert_eq!(out.len(), 2, "跨批次拖拽中 move 应全保留");
+    }
+
+    #[test]
+    fn key事件前也flush悬停move() {
+        let mut b = 0;
+        let out = coalesce_inputs(
+            vec![MouseMove { x: 7, y: 7 }, Key { code: "a".into(), down: true }],
+            &mut b,
+        );
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0], MouseMove { x: 7, y: 7 }));
+    }
 }
 
 /// 注入消费：被控态收到的 Input 事件 → enigo 注入。
@@ -39,10 +181,23 @@ pub async fn consume_inject(
                 return;
             }
         };
-        while let Ok(ev) = blk_rx.recv() {
-            match injector.apply(&ev) {
-                Ok(()) => {}
-                Err(e) => tracing::warn!("注入失败 ev={ev:?}：{e}"),
+        // drag-aware 合并：每轮 recv 一个后抽干当前积压，压平悬停 move（拖拽保真），逐条注入。
+        let mut buttons_down: i32 = 0;
+        while let Ok(first) = blk_rx.recv() {
+            let mut batch = vec![first];
+            while let Ok(ev) = blk_rx.try_recv() {
+                batch.push(ev);
+            }
+            for ev in coalesce_inputs(batch, &mut buttons_down) {
+                // D：注入 button/key 后标记输入时刻，驱动事件驱动抓帧（见 Task 3）。
+                let is_actionable = !matches!(ev, protocol::InputEvent::MouseMove { .. });
+                match injector.apply(&ev) {
+                    Ok(()) => {}
+                    Err(e) => tracing::warn!("注入失败 ev={ev:?}：{e}"),
+                }
+                if is_actionable {
+                    mark_input_now();
+                }
             }
         }
     });
@@ -106,10 +261,20 @@ pub async fn consume_capture(
             let mut seq: u64 = 0;
             // 已就「截屏不可用」回执过的会话 id：每会话只回一次，避免刷屏。
             let mut notified_for: Option<String> = None;
+            // 事件驱动抓帧：小粒度轮询 + 满间隔 or 输入后即时触发；单轮最多一帧，coalesce input 洪泛。
+            let mut last_cap_ms: u64 = 0;
+            const TICK_MS: u64 = 16; // 轮询粒度（≤60fps 上限，coalesce input 洪泛）
             loop {
-                // 帧率随画质档位：流畅优先 ~16fps，高清优先 ~10fps（被控端 CPU 弱时由档位调控）。
+                std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
                 let qp = capture::current_params();
-                std::thread::sleep(std::time::Duration::from_millis(qp.interval_ms));
+                let now = now_ms();
+                // 满间隔 或 上次抓帧后有新输入 → 抓一帧；否则轻睡继续。
+                let due = now.saturating_sub(last_cap_ms) >= qp.interval_ms;
+                let input_driven = last_input_after(last_cap_ms);
+                if !due && !input_driven {
+                    continue;
+                }
+                last_cap_ms = now;
                 let sid = match active.lock().unwrap().clone() {
                     Some(s) => s,
                     None => continue, // 未在被控态，空转
@@ -297,5 +462,19 @@ mod clipboard_tests {
     #[test]
     fn 未变化_不推送() {
         assert!(!should_push_clipboard("same", "same"));
+    }
+}
+
+#[cfg(test)]
+mod input_signal_tests {
+    use super::{last_input_after, mark_input_now, now_ms};
+
+    #[test]
+    fn mark_后_last_input_after_为真() {
+        let before = now_ms().saturating_sub(1);
+        mark_input_now();
+        assert!(last_input_after(before), "mark 后应晚于此前时刻");
+        // 远未来时刻：不应晚于
+        assert!(!last_input_after(now_ms() + 10_000));
     }
 }

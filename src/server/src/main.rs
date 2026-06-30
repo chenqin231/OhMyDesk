@@ -198,12 +198,35 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
     }
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // 帧 lane：watch 单槽最新帧（drop-stale）。frame_rx move 进 pump；frame_tx 留在本作用域，
+    // 在唯一登记点 move 进 hub.frame_clients（watch::Sender 不可 Clone，故用 Option+take）。
+    let (frame_tx, mut frame_rx) = tokio::sync::watch::channel::<Option<String>>(None);
+    let mut frame_tx = Some(frame_tx);
 
-    // 出站泵：从 mpsc 收消息后写到 WS sink
+    // 出站泵：控制消息走可靠 FIFO（rx）；帧走 watch（frame_rx，单槽最新）。
     let pump = tokio::spawn(async move {
-        while let Some(s) = rx.recv().await {
-            if sink.send(WsMsg::Text(s)).await.is_err() {
-                break;
+        loop {
+            tokio::select! {
+                biased; // 控制消息优先（控制绝不被帧延迟）
+                ctrl = rx.recv() => {
+                    match ctrl {
+                        Some(s) => { if sink.send(WsMsg::Text(s)).await.is_err() { break; } }
+                        None => break, // 控制通道关闭 = 连接结束
+                    }
+                }
+                changed = frame_rx.changed() => {
+                    if changed.is_err() {
+                        // frame_tx 已 drop：转入纯控制循环直到关闭（不丢控制消息）。
+                        while let Some(s) = rx.recv().await {
+                            if sink.send(WsMsg::Text(s)).await.is_err() { break; }
+                        }
+                        break;
+                    }
+                    let latest = frame_rx.borrow_and_update().clone();
+                    if let Some(s) = latest {
+                        if sink.send(WsMsg::Text(s)).await.is_err() { break; }
+                    }
+                }
             }
         }
     });
@@ -235,6 +258,11 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
             }
             my_id = Some(id.clone());
             hub.add_client(id.clone(), tx.clone());
+            // 帧 lane 登记（唯一一次）：把 frame_tx move 进 hub。断开时 remove_client 移除它，
+            // pump 的 frame_rx.changed() 返回 Err → 转纯控制收尾。
+            if let Some(ftx) = frame_tx.take() {
+                hub.add_frame_client(id.clone(), ftx);
+            }
             // admin 连上立即推一次终端列表
             if id.starts_with("admin-") {
                 hub.push_list(now_sec());
