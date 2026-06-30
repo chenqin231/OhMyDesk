@@ -7,12 +7,13 @@ use std::sync::Arc;
 
 use axum::{
     async_trait,
-    extract::{FromRequestParts, Query, State},
-    http::{request::Parts, StatusCode},
+    extract::{ConnectInfo, FromRequestParts, Query, State},
+    http::{request::Parts, HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use std::net::SocketAddr;
 use serde::Deserialize;
 use serde_json::json;
 use tower_http::cors::CorsLayer;
@@ -59,6 +60,58 @@ impl FromRequestParts<HttpState> for AuthUser {
 
 fn unauth(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::UNAUTHORIZED, Json(json!({ "error": msg })))
+}
+
+/// 提取客户端真实 IP：优先 X-Forwarded-For（取首个）→ X-Real-IP → 直连对端。
+fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> String {
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = xff.split(',').next() {
+            let ip = first.trim();
+            if !ip.is_empty() {
+                return ip.to_string();
+            }
+        }
+    }
+    if let Some(xri) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        let ip = xri.trim();
+        if !ip.is_empty() {
+            return ip.to_string();
+        }
+    }
+    peer.ip().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderName;
+
+    fn hm(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn xff_takes_first() {
+        let h = hm(&[("x-forwarded-for", "203.0.113.9, 10.0.0.1")]);
+        let peer: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        assert_eq!(client_ip(&h, peer), "203.0.113.9");
+    }
+
+    #[test]
+    fn falls_back_to_real_ip_then_peer() {
+        let h = hm(&[("x-real-ip", "198.51.100.7")]);
+        let peer: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        assert_eq!(client_ip(&h, peer), "198.51.100.7");
+        let empty = HeaderMap::new();
+        assert_eq!(client_ip(&empty, peer), "127.0.0.1");
+    }
 }
 
 /// 构建 HTTP 路由，State = HttpState（与 WS router 分别挂 State，最终在 main.rs merge）
