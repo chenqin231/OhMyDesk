@@ -578,6 +578,15 @@ pub async fn consume_to_ui(
                         ui.set_connecting(false);
                         ui.set_remote_status("".into());
                         ui.set_remote_active(true);
+                        // 新会话进入工作台：回到远程桌面标签，同时消除懒推流接缝
+                        // （主控落桌面标签、被控进入态默认推流，二者一致）。
+                        ui.set_active_tab(0);
+                        // 清空各标签会话内残留状态，避免上一会话（目标 X）的数据带入本会话（目标 Y）。
+                        // 命令输出 / 聊天记录 / 未读红点 / 文件状态行清空；目录列表由下方 invoke 重新列出。
+                        ui.set_cmd_output("".into());
+                        ui.set_chat_log("".into());
+                        ui.set_chat_unread(false);
+                        ui.set_file_notice("".into());
                         // 进入主控画面态：放大窗口给远程桌面腾空间
                         ui.window().set_size(slint::LogicalSize::new(1280.0, 820.0));
                         // 进入工作台：左栏列本机 home、右栏列远端默认目录（空路径=被控 home）。
@@ -666,6 +675,23 @@ pub async fn consume_to_ui(
                         ui.set_connecting(false);
                         ui.set_remote_active(false);
                         ui.set_remote_status("会话已结束".into());
+                        // 会话结束清空各标签状态（spec §12）：回到远程桌面标签，下次新会话
+                        // active_tab 不残留非 0（与被控进入态默认推流一致，消除懒推流接缝）。
+                        ui.set_active_tab(0);
+                        // 命令输出 / 主控聊天记录 / 未读红点 清空。
+                        ui.set_cmd_output("".into());
+                        ui.set_chat_log("".into());
+                        ui.set_chat_unread(false);
+                        // 被控聊天记录 / 入口红点 / 面板开合 复位，避免残留面板与旧消息。
+                        ui.set_controlled_chat_log("".into());
+                        ui.set_controlled_chat_unread(false);
+                        ui.set_chat_panel_open(false);
+                        // 远端 / 本机目录条目与路径、文件状态行清空（下次会话由 RemoteAck 重列）。
+                        ui.set_remote_entries(build_file_model(&[]));
+                        ui.set_remote_path("".into());
+                        ui.set_local_entries(build_file_model(&[]));
+                        ui.set_local_path("".into());
+                        ui.set_file_notice("".into());
                         // 退出主控画面态：缩回紧凑小窗
                         if was_controlling {
                             ui.window().set_size(slint::LogicalSize::new(460.0, 620.0));
