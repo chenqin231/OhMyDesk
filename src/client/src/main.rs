@@ -17,6 +17,7 @@ mod asset;
 mod capture;
 mod elevate;
 mod exec;
+mod framediff;
 mod geom;
 mod history;
 mod inject;
