@@ -18,6 +18,8 @@ dist/
 *.key
 *.pem
 credentials.*
+# 例外：自动更新验签的「无口令测试公钥」（公开数据，私钥仍在 /tmp 不入库）
+!src/client/tests/fixtures/test-pub.key
 
 # 杂项
 *.log
