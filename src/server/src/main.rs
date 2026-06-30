@@ -41,6 +41,12 @@ use settings::SettingsStore;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
+    // CLI 子命令：set-password —— 复用 bcrypt + settings 落库，改完即退（不起服务）。
+    let cli_args: Vec<String> = std::env::args().collect();
+    if cli_args.get(1).map(String::as_str) == Some("set-password") {
+        return run_set_password(&cli_args).await;
+    }
+
     // ── DB 降级连接（M-SRV1）───────────────────────────────────────────────
     let db = db::connect().await; // Option<Db>，None 时审计 best-effort 跳过
 
@@ -251,4 +257,48 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
         tracing::info!("客户端断开: {id}");
     }
     pump.abort();
+}
+
+/// `ohmydesk-server set-password <新密码> [--user <用户名>]`
+/// 写入 SQLite settings 表（admin_user / admin_pass_hash）；重启 server 生效。
+async fn run_set_password(args: &[String]) -> anyhow::Result<()> {
+    let new_pass = args
+        .get(2)
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("用法: ohmydesk-server set-password <新密码> [--user <用户名>]")
+        })?;
+
+    // 解析可选 --user
+    let mut new_user: Option<String> = None;
+    let mut i = 3;
+    while i < args.len() {
+        if args[i] == "--user" {
+            new_user = args.get(i + 1).cloned();
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    let db = db::connect().await;
+    if db.is_none() {
+        anyhow::bail!("无法连接数据库，改密未生效；请检查 DATABASE_URL / 数据卷挂载");
+    }
+    let settings = SettingsStore::new(db);
+
+    // 用户名：--user 指定 > 现有持久化 > 默认 admin
+    let user = match new_user {
+        Some(u) if !u.trim().is_empty() => u.trim().to_string(),
+        _ => settings
+            .load_credential()
+            .await
+            .map(|(u, _)| u)
+            .unwrap_or_else(|| auth::DEFAULT_USER.to_string()),
+    };
+
+    let hash = auth::hash_password(new_pass);
+    settings.save_credential(&user, &hash).await;
+    println!("已更新管理员凭据：user={user}（重启 server 生效）");
+    Ok(())
 }
