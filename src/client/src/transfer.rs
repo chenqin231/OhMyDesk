@@ -32,6 +32,24 @@ struct RecvState {
 static RECEIVERS: LazyLock<Mutex<HashMap<String, RecvState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// 主控端取回保存目录：transfer_id → 本地保存目录。
+/// PullFile 上行时登记，被控端 FileOpen{dir:pull} 回流首包到达时取出（一次取用即移除）。
+static PULL_TARGETS: LazyLock<Mutex<HashMap<String, PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 登记一次取回的本地保存目录（主控端发 FilePullRequest 前调用）。
+pub fn set_pull_target(transfer_id: &str, dir: PathBuf) {
+    PULL_TARGETS
+        .lock()
+        .unwrap()
+        .insert(transfer_id.to_string(), dir);
+}
+
+/// 取出并移除取回目标目录（回流首包到达时调用）。未登记返回 None。
+pub fn take_pull_target(transfer_id: &str) -> Option<PathBuf> {
+    PULL_TARGETS.lock().unwrap().remove(transfer_id)
+}
+
 /// 固定接收目录：`<配置目录>/recv`（信创 Linux 上 directories 会小写化 app 名）。
 pub fn recv_dir() -> PathBuf {
     directories::ProjectDirs::from("", "", "OhMyDesk")
@@ -87,7 +105,11 @@ pub fn open_recv(
 
 /// 写一块（base64 解码后落盘）；`last` 时收尾并返回最终路径。
 /// `Err(reason)` 时调用方回 `FileError`，本函数已清理半成品。
-pub fn write_chunk(transfer_id: &str, data_b64: &str, last: bool) -> Result<Option<PathBuf>, String> {
+pub fn write_chunk(
+    transfer_id: &str,
+    data_b64: &str,
+    last: bool,
+) -> Result<Option<PathBuf>, String> {
     let bytes = STANDARD
         .decode(data_b64)
         .map_err(|e| format!("base64 解码失败: {e}"))?;
@@ -140,8 +162,7 @@ pub fn list_dir(path: &str) -> Result<(String, Vec<protocol::FileEntry>), String
         PathBuf::from(path)
     };
 
-    let canonical = std::fs::canonicalize(&target)
-        .map_err(|e| format!("目录不可访问: {e}"))?;
+    let canonical = std::fs::canonicalize(&target).map_err(|e| format!("目录不可访问: {e}"))?;
     if !canonical.is_dir() {
         return Err("目标不是目录".into());
     }
@@ -306,6 +327,88 @@ pub async fn send_file(
     }
 }
 
+/// push 下发：读取主控本机 `local_path` 文件，以 `FileOpen{dir:push, dest}` + `FileChunk` 流给被控端。
+/// 镜像 [`send_file`]，区别：方向为 Push、带目标目录 dest、文件读自主控本机。失败回 `FileError`。
+/// 在独立任务中调用（读 ≤50MB 文件进内存再分块）。
+pub async fn send_file_push(
+    out_tx: UnboundedSender<String>,
+    self_id: String,
+    session_id: String,
+    transfer_id: String,
+    local_path: String,
+    dest_dir: String,
+) {
+    let err = |reason: String| {
+        send(
+            &out_tx,
+            &self_id,
+            Message::FileError {
+                session_id: session_id.clone(),
+                transfer_id: transfer_id.clone(),
+                reason,
+            },
+        );
+    };
+
+    let p = Path::new(&local_path);
+    match tokio::fs::metadata(p).await {
+        Ok(m) if !m.is_file() => return err("目标不是常规文件".into()),
+        Ok(m) if m.len() > MAX_FILE => {
+            return err(format!("文件超过上限 {}MB", MAX_FILE / 1024 / 1024))
+        }
+        Err(e) => return err(format!("无法读取文件: {e}")),
+        _ => {}
+    }
+    let bytes = match tokio::fs::read(p).await {
+        Ok(b) => b,
+        Err(e) => return err(format!("读取失败: {e}")),
+    };
+    let name = safe_name(p.file_name().and_then(|s| s.to_str()).unwrap_or("file.bin"));
+
+    send(
+        &out_tx,
+        &self_id,
+        Message::FileOpen {
+            session_id: session_id.clone(),
+            transfer_id: transfer_id.clone(),
+            name,
+            size: bytes.len() as u64,
+            dir: FileDir::Push,
+            dest: Some(dest_dir),
+        },
+    );
+
+    if bytes.is_empty() {
+        send(
+            &out_tx,
+            &self_id,
+            Message::FileChunk {
+                session_id,
+                transfer_id,
+                seq: 0,
+                data: String::new(),
+                last: true,
+            },
+        );
+        return;
+    }
+    let total = bytes.len();
+    for (i, chunk) in bytes.chunks(CHUNK).enumerate() {
+        let last = (i + 1) * CHUNK >= total;
+        send(
+            &out_tx,
+            &self_id,
+            Message::FileChunk {
+                session_id: session_id.clone(),
+                transfer_id: transfer_id.clone(),
+                seq: i as u64,
+                data: STANDARD.encode(chunk),
+                last,
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,5 +473,85 @@ mod tests {
         assert!(r.is_err());
         // 已清理：再写同 id 应报未知 id
         assert!(write_chunk(tid, &STANDARD.encode(b"x"), true).is_err());
+    }
+
+    #[test]
+    fn pull_target_存取与取出清除() {
+        let tid = "t-pull-1";
+        let dir = std::env::temp_dir().join("ohmydesk-pull-target");
+        set_pull_target(tid, dir.clone());
+        // 取出一次即移除（落盘完成后不应残留）
+        assert_eq!(take_pull_target(tid), Some(dir));
+        assert_eq!(take_pull_target(tid), None, "二次取出应为 None");
+    }
+
+    #[tokio::test]
+    async fn 下发_推送首包为_file_open_push_带_dest() {
+        // 造一个本机小文件
+        let base = std::env::temp_dir().join("ohmydesk-push-src");
+        std::fs::create_dir_all(&base).unwrap();
+        let f = base.join("up.txt");
+        std::fs::write(&f, b"push-payload").unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        send_file_push(
+            tx,
+            "ep-self".into(),
+            "s-1".into(),
+            "tx-1".into(),
+            f.to_string_lossy().to_string(),
+            "/remote/dest/dir".into(),
+        )
+        .await;
+
+        // 首包：FileOpen{dir:push, dest:Some, name=up.txt, size=12}
+        let s = rx.recv().await.expect("应有 FileOpen 首包");
+        let env: Envelope = serde_json::from_str(&s).unwrap();
+        match env.payload {
+            Message::FileOpen {
+                dir,
+                dest,
+                name,
+                size,
+                ..
+            } => {
+                assert_eq!(dir, FileDir::Push);
+                assert_eq!(dest.as_deref(), Some("/remote/dest/dir"));
+                assert_eq!(name, "up.txt");
+                assert_eq!(size, 12);
+            }
+            other => panic!("首包应为 FileOpen，实际 {other:?}"),
+        }
+        // 次包：FileChunk last=true（小文件单块）
+        let s = rx.recv().await.expect("应有 FileChunk");
+        let env: Envelope = serde_json::from_str(&s).unwrap();
+        match env.payload {
+            Message::FileChunk { last, data, .. } => {
+                assert!(last, "12 字节单块即末块");
+                let raw = base64::engine::general_purpose::STANDARD
+                    .decode(&data)
+                    .unwrap();
+                assert_eq!(raw, b"push-payload");
+            }
+            other => panic!("次包应为 FileChunk，实际 {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn 下发_文件不存在回_file_error() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        send_file_push(
+            tx,
+            "ep-self".into(),
+            "s-1".into(),
+            "tx-err".into(),
+            "/no/such/ohmydesk/file.bin".into(),
+            "/remote/dir".into(),
+        )
+        .await;
+        let s = rx.recv().await.expect("应有 FileError");
+        let env: Envelope = serde_json::from_str(&s).unwrap();
+        assert!(matches!(env.payload, Message::FileError { .. }));
     }
 }

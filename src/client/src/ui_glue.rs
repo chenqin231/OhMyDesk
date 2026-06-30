@@ -423,6 +423,12 @@ pub async fn consume_to_ui(
                     }
                 });
             }
+            // ── 远程命令/文件/即时消息回执:UI 渲染在 Task 7~9(ui_glue)实装,此处先桩处理保证穷尽匹配 ──
+            net::ToUi::ExecResult { .. }
+            | net::ToUi::RemoteEntries { .. }
+            | net::ToUi::FileProgress { .. }
+            | net::ToUi::FileNotice { .. }
+            | net::ToUi::ChatIncoming { .. } => {}
         }
     }
 }
