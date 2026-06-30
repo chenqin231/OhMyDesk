@@ -90,6 +90,9 @@ pub enum ToUi {
     },
     /// 文件传输一次性通知（完成/失败提示，远程文件标签底部状态行）。
     FileNotice { text: String },
+    /// 传输完成后刷新对应文件栏：`local=true` 刷左栏（取回完成）、`false` 刷右栏（下发完成）。
+    /// 修复「取回/下发成功但 UI 不重列目录 → 文件已在盘上却看不到」。文件夹按文件逐次刷新。
+    PaneRefresh { local: bool },
     /// 收到会话内即时消息（即时消息标签 / 被控聊天面板渲染，对端发来）。
     ChatIncoming {
         session_id: String,

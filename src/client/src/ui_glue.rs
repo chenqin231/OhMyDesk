@@ -682,10 +682,11 @@ pub async fn consume_to_ui(
                         ui.set_cmd_output("".into());
                         ui.set_chat_log("".into());
                         ui.set_chat_unread(false);
-                        // 被控聊天记录 / 入口红点 / 面板开合 复位，避免残留面板与旧消息。
+                        // 被控聊天记录 / 入口红点 / 面板开合 / 右下角弹卡 复位，避免残留。
                         ui.set_controlled_chat_log("".into());
                         ui.set_controlled_chat_unread(false);
                         ui.set_chat_panel_open(false);
+                        ui.set_controlled_toast_visible(false);
                         // 远端 / 本机目录条目与路径、文件状态行清空（下次会话由 RemoteAck 重列）。
                         ui.set_remote_entries(build_file_model(&[]));
                         ui.set_remote_path("".into());
@@ -781,6 +782,19 @@ pub async fn consume_to_ui(
                     }
                 });
             }
+            // ── 传输完成 → 重列对应栏，使取回/下发的文件立即可见 ──
+            net::ToUi::PaneRefresh { local } => {
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        // 直填当前路径（resolve_path_arg 对非 <up>/<cd> 串原样列出），重列当前目录。
+                        if local {
+                            ui.invoke_list_local(ui.get_local_path());
+                        } else {
+                            ui.invoke_list_remote(ui.get_remote_path());
+                        }
+                    }
+                });
+            }
             // ── 即时消息：据当前会话角色渲染到主控聊天页或被控聊天面板 ──
             net::ToUi::ChatIncoming {
                 session_id, text, ..
@@ -800,6 +814,11 @@ pub async fn consume_to_ui(
                             ui.set_controlled_chat_log(append_line(&log, "对方", &text).into());
                             if !ui.get_chat_panel_open() {
                                 ui.set_controlled_chat_unread(true);
+                                // 右下角弹卡醒目提醒（面板未打开时）：被控用户此前看不到顶部小入口。
+                                ui.set_controlled_toast_text(text.into());
+                                ui.set_controlled_toast_visible(true);
+                                // 被控窗口可能最小化/在后台：尽力取消最小化，让弹卡可见（best-effort）。
+                                ui.window().set_minimized(false);
                             }
                         }
                     }
