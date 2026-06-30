@@ -49,9 +49,9 @@ pub struct Manifest {
     pub notes: Option<String>,
 }
 
-/// 更新清单签名公钥（minisign/rsign2，base64）。发版前由维护者替换为真实离线公钥；
-/// 占位时 from_base64 失败 → verify 恒 false → 自动更新 fail-closed 安全失效。
-pub const UPDATE_PUBKEY: &str = "REPLACE_BEFORE_RELEASE";
+/// 更新清单签名公钥（minisign/rsign2，base64）。生产离线私钥在仓库外（~/.ohmydesk/update-sec.key）。
+/// 仅持有该私钥者能签发更新；公钥变更需发一次客户端更新。
+pub const UPDATE_PUBKEY: &str = "RWS0AI/ZpzOZlNDOZTZgprG0z8RXAYlVp44zo22Zo6Kkm2wOidzPz+Cl";
 
 /// 解析清单，先卡 64KB 上限。
 pub fn parse_manifest(bytes: &[u8]) -> anyhow::Result<Manifest> {
@@ -570,8 +570,15 @@ mod tests {
     }
 
     #[test]
-    fn 占位公钥_fail_closed() {
+    fn 生产公钥_拒绝非己签名() {
+        // 夹具由测试密钥签名；生产 UPDATE_PUBKEY 必拒（验证内置公钥与签名绑定，非任意签名都收）。
         assert!(!verify_manifest_sig(UPDATE_PUBKEY, FIXTURE_JSON, FIXTURE_SIG));
+    }
+
+    #[test]
+    fn 内置公钥_可解析() {
+        // 防发版误填/截断：UPDATE_PUBKEY 必须是合法 minisign 公钥，否则 verify 恒 false 静默禁更。
+        assert!(minisign_verify::PublicKey::from_base64(UPDATE_PUBKEY).is_ok());
     }
 
     // ── Task 7 Step1: CapReader ──
