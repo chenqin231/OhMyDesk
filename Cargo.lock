@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4435,7 +4435,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5128,7 +5128,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
