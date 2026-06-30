@@ -107,15 +107,14 @@ jobs:
         with:
           targets: x86_64-pc-windows-gnu
       - uses: Swatinem/rust-cache@v2
-      - name: 交叉编译并收拢产物
+      - name: 交叉编译并收拢产物（单文件 exe）
         run: bash packaging/windows/build-windows.sh
-      - name: 打包 zip
-        run: |
-          cd dist-windows && zip -r ../ohmydesk-client-windows-x86_64.zip . && cd -
+      - name: 重命名为发布文件名
+        run: cp dist-windows/ohmydesk-client.exe ohmydesk-client-windows-x86_64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: ohmydesk-client-windows
-          path: ohmydesk-client-windows-x86_64.zip
+          path: ohmydesk-client-windows-x86_64.exe
           if-no-files-found: error
 
   # ── macOS：Apple Silicon(arm64) + Intel(x86_64)，原生编译，打 tar.gz ────────
