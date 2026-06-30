@@ -45,3 +45,4 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 
 [build-dependencies]
 slint-build = "1.17"
+winresource = "0.1"
