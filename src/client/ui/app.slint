@@ -310,16 +310,49 @@ component HistoryRow inherits Rectangle {
     }
 }
 
+// 行内操作按钮（下发/取回）——描边 + 主色文字，比 GhostButton 更显眼，提升可发现性。
+component RowActionButton inherits Rectangle {
+    in property <string> label;
+    callback clicked;
+    width: 68px;
+    height: 24px;
+    border-radius: 6px;
+    background: ta.has-hover ? #3b82f640 : #3b82f61f;
+    border-width: 1px;
+    border-color: #3b82f566;
+    animate background { duration: 120ms; }
+    Text {
+        text: root.label;
+        color: Theme.primary-hover;
+        font-size: 11px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
 // 文件浏览单栏：标题 + 路径行（含上级/刷新）+ 条目列表 + 操作（下发/取回）。
 // 路径父/子计算下沉到 Rust：open_dir 回调收到 "<up>:"/"<cd>:" 指令串，ui_glue 解析后列目录。
+// 交互（强化点击式）：
+//   - 名称区与操作按钮各自独立、互不重叠的 TouchArea —— 杜绝「全行 TouchArea 罩在按钮上、
+//     按钮永不触发」的 z-order 陷阱（取回/下发点了没反应的根因）。
+//   - 名称区点击：目录→进入，文件→选中高亮（视觉反馈）。
+//   - 操作按钮：文件与目录都显示；目录即「整个文件夹」一并传输。
 component FilePane inherits Rectangle {
     in property <string> title;
     in property <string> path;
     in property <[FileEntry]> entries;
     in property <string> action_label;          // "下发→" 或 "←取回"
+    in-out property <string> selected_name;      // 当前选中文件名（高亮反馈；进目录/刷新即清空）
     callback open_dir(string /*path*/);          // 进入子目录/上级
     callback refresh();
-    callback act(string /*entry_name*/);         // 对选中文件执行下发/取回
+    callback act(string /*entry_name*/);         // 对选中文件/文件夹执行下发/取回
     border-radius: 10px;
     background: #0d0d10;
     border-width: 1px;
@@ -349,6 +382,7 @@ component FilePane inherits Rectangle {
             GhostButton {
                 label: "上级";
                 clicked => {
+                    root.selected_name = "";
                     root.open_dir(PathUtil.parent_path(root.path));
                 }
             }
@@ -375,42 +409,59 @@ component FilePane inherits Rectangle {
                         font-size: 12px;
                     }
                     for e in root.entries: Rectangle {
-                        height: 32px;
+                        height: 34px;
                         border-radius: 6px;
-                        background: row_ta.has-hover ? #ffffff0a : transparent;
+                        background: (e.name == root.selected_name && !e.is_dir)
+                            ? #3b82f626
+                            : (name_ta.has-hover ? #ffffff0a : transparent);
+                        animate background { duration: 100ms; }
                         HorizontalLayout {
                             padding-left: 8px;
                             padding-right: 8px;
                             spacing: 8px;
-                            Text {
-                                text: e.is_dir ? "[目录]" : "[文件]";
-                                color: e.is_dir ? Theme.primary : Theme.fg-muted;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: e.name;
-                                color: Theme.fg;
-                                font-size: 13px;
-                                font-family: "monospace";
-                                vertical-alignment: center;
+                            // 名称区（独立 TouchArea，仅覆盖名称区域，不与按钮重叠）
+                            Rectangle {
                                 horizontal-stretch: 1;
-                                overflow: elide;
-                            }
-                            // 文件才显示下发/取回按钮
-                            if !e.is_dir: GhostButton {
-                                label: root.action_label;
-                                clicked => {
-                                    root.act(e.name);
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: e.is_dir ? "[目录]" : "[文件]";
+                                        color: e.is_dir ? Theme.primary : Theme.fg-muted;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: e.name;
+                                        color: Theme.fg;
+                                        font-size: 13px;
+                                        font-family: "monospace";
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                    }
+                                }
+                                name_ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        // 目录→进入（清选中）；文件→选中高亮
+                                        if (e.is_dir) {
+                                            root.selected_name = "";
+                                            root.open_dir(PathUtil.child_path(root.path, e.name));
+                                        } else {
+                                            root.selected_name = e.name;
+                                        }
+                                    }
                                 }
                             }
-                        }
-                        row_ta := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                // 点目录进入；点文件不动（用右侧按钮）
-                                if (e.is_dir) {
-                                    root.open_dir(PathUtil.child_path(root.path, e.name));
+                            // 操作按钮（文件与目录都显示；目录=整个文件夹）——独立区域，点击必触发
+                            VerticalLayout {
+                                alignment: center;
+                                RowActionButton {
+                                    label: root.action_label;
+                                    clicked => {
+                                        root.selected_name = e.name;
+                                        root.act(e.name);
+                                    }
                                 }
                             }
                         }
@@ -456,6 +507,9 @@ export component AppWindow inherits Window {
     in-out property <string> controlled_chat_log;     // 被控侧聊天记录累积
     in-out property <string> controlled_chat_input;   // 被控侧输入
     callback send_controlled_chat(string /*text*/);   // 被控发送（复用 SendChat，session=被控会话）
+    // 被控端右下角新消息弹卡：对端发来且聊天面板未打开时弹出，醒目提醒（修复消息藏在顶部看不到）
+    in-out property <bool> controlled_toast_visible: false;
+    in property <string> controlled_toast_text;       // 弹卡内最新消息预览（Rust 侧 set）
 
     // ── 主控端状态（模式 B：client→client 发起）──
     in property <bool> remote_active: false;      // 已进入主控画面态
@@ -1451,6 +1505,100 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // 被控端右下角即时消息弹卡（非模态：不吃背景点击，被控用户仍可正常操作电脑）。
+    // 仅 being_controlled 且 controlled_toast_visible 时出现，醒目提醒被控用户有新消息。
+    if root.being_controlled && root.controlled_toast_visible: Rectangle {
+        // 占满窗口仅用于把弹卡定位到右下角；不放任何 TouchArea，避免遮挡背景交互。
+        VerticalLayout {
+            alignment: end;
+            HorizontalLayout {
+                alignment: end;
+                padding: 16px;
+                Rectangle {
+                    width: 300px;
+                    border-radius: 12px;
+                    background: #1b2030f7;
+                    border-width: 1px;
+                    border-color: Theme.primary;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 9px;
+                        // 标题：圆点 + 发送方
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: Theme.primary;
+                                }
+                            }
+                            Text {
+                                text: "新消息 · " + root.peer_name;
+                                color: Theme.fg;
+                                font-size: 13px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        // 消息预览
+                        Text {
+                            text: root.controlled_toast_text;
+                            color: Theme.fg;
+                            font-size: 14px;
+                            wrap: word-wrap;
+                        }
+                        // 操作行
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle { } // 撑开，按钮靠右
+                            GhostButton {
+                                label: "忽略";
+                                clicked => {
+                                    root.controlled_toast_visible = false;
+                                }
+                            }
+                            Rectangle {
+                                width: 72px;
+                                height: 30px;
+                                border-radius: 8px;
+                                background: rta.has-hover ? Theme.primary-hover : Theme.primary;
+                                animate background { duration: 120ms; }
+                                Text {
+                                    text: "回复";
+                                    color: white;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                rta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.chat_panel_open = true;
+                                        root.controlled_chat_unread = false;
+                                        root.controlled_toast_visible = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 10s 自动收起（顶部「聊天 ●」红点仍在，用户可再打开），避免长期遮挡。
+        Timer {
+            interval: 10s;
+            running: root.controlled_toast_visible;
+            triggered => {
+                root.controlled_toast_visible = false;
             }
         }
     }
