@@ -170,6 +170,13 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
     };
   }, [sendInput, tab]);
 
+  // 懒推流：仅「远程控制」标签需要桌面帧。进入该标签 → 恢复推流；离开 → 暂停（省内网带宽）。
+  // 与 Slint 端一致，复用 set_capture 协议（计划①导出）。
+  useEffect(() => {
+    if (!remoteSessionId) return;
+    sendEnvelope({ type: "set_capture", session_id: remoteSessionId, active: tab === "remote" });
+  }, [tab, remoteSessionId, sendEnvelope]);
+
   return (
     <div className="flex h-full min-h-[calc(100vh-7rem)] w-full flex-col bg-background">
       {/* 顶部细工具栏 */}
