@@ -4,8 +4,31 @@
 //! 内独占持有，不混进 async select；与 tokio 侧用 mpsc 通道交互（mpsc 的 send 同步非阻塞）。
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{capture, geom, inject, net};
+
+/// 最近一次"可见输入"(button/key)注入的 Unix 毫秒时刻。
+/// 注入线程写、抓帧线程读——事件驱动抓帧的唯一跨线程信号（KISS：只传时间戳，非业务态）。
+static LAST_INPUT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// 注入线程在注入 button/key 后调用，标记"刚发生输入"。
+pub fn mark_input_now() {
+    LAST_INPUT_MS.store(now_ms(), Ordering::Relaxed);
+}
+
+/// LAST_INPUT_MS 是否晚于给定时刻（抓帧线程判断"上次抓帧后是否有新输入"）。
+fn last_input_after(since_ms: u64) -> bool {
+    LAST_INPUT_MS.load(Ordering::Relaxed) > since_ms
+}
+
+/// 当前 Unix 毫秒。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// 是否应把本地剪贴板变化推给对端:非空且与上次同步值不同(防回环核心)。
 pub fn should_push_clipboard(current: &str, last_synced: &str) -> bool {
@@ -297,5 +320,19 @@ mod clipboard_tests {
     #[test]
     fn 未变化_不推送() {
         assert!(!should_push_clipboard("same", "same"));
+    }
+}
+
+#[cfg(test)]
+mod input_signal_tests {
+    use super::{last_input_after, mark_input_now, now_ms};
+
+    #[test]
+    fn mark_后_last_input_after_为真() {
+        let before = now_ms().saturating_sub(1);
+        mark_input_now();
+        assert!(last_input_after(before), "mark 后应晚于此前时刻");
+        // 远未来时刻：不应晚于
+        assert!(!last_input_after(now_ms() + 10_000));
     }
 }
