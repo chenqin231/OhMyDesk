@@ -24,17 +24,30 @@ pub struct ExecOutcome {
     pub duration_ms: u32,
 }
 
-/// 构造平台 shell 命令。
+/// 构造平台 shell 命令（Windows：`cmd /C`；类 Unix：`sh -c`）。
+///
+/// Windows 必须设 `CREATE_NO_WINDOW` 创建标志：客户端 release 是 GUI 子系统进程
+/// （`main.rs` 的 `windows_subsystem = "windows"`，自身无控制台），不设此标志时 `cmd`
+/// 会为自己分配一个一闪而过的控制台窗口（被控端用户可见的黑框）。该标志令子进程不创建
+/// 控制台，实现被控端无感的静默执行（stdout/stderr 仍经管道捕获，不受影响）。
+/// 用 `#[cfg(windows)]` 条件编译而非运行时 `cfg!`：`creation_flags` 是 Windows-only API，
+/// 运行时分支在非 Windows 目标上也要编译，会找不到该方法。
+#[cfg(windows)]
 fn shell_command(command: &str) -> Command {
-    if cfg!(target_os = "windows") {
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(command);
-        c
-    } else {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(command);
-        c
-    }
+    /// Win32 进程创建标志：不为子进程分配控制台窗口（避免 GUI 进程派生 cmd 时弹黑框）。
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut c = Command::new("cmd");
+    c.arg("/C").arg(command);
+    c.creation_flags(CREATE_NO_WINDOW);
+    c
+}
+
+/// 构造类 Unix shell 命令：`sh -c <command>`。
+#[cfg(not(windows))]
+fn shell_command(command: &str) -> Command {
+    let mut c = Command::new("sh");
+    c.arg("-c").arg(command);
+    c
 }
 
 /// 解码控制台原始字节为字符串：优先严格 UTF-8；失败时 Windows 按 GBK/CP936 解码

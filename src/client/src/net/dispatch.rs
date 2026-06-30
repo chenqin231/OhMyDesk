@@ -242,6 +242,7 @@ pub(super) async fn handle_downlink(
                 CAPTURE_CTRL.send(CaptureCtrl::Stop); // 停被控端推帧
             }
             CLIPBOARD_TX.send(ClipboardMsg::Stop);
+            crate::transfer::clear_pull_targets(); // 清理本会话残留的取回目标登记
             let _ = to_ui.send(ToUi::SessionEnded);
         }
 
@@ -357,8 +358,9 @@ pub(super) async fn handle_downlink(
                     send_file_error(out_tx, self_id, session_id, transfer_id, reason);
                 }
             } else if controlling && dir == protocol::FileDir::Pull {
-                // 主控端：pull 回流首包 → 取出本地保存目录，打开本地接收文件
-                let local_dir = crate::transfer::take_pull_target(&transfer_id)
+                // 主控端：pull 回流首包 → peek 本地保存目录（不消费，文件夹多文件复用同一登记），
+                // 打开本地接收文件。登记在会话结束时由 clear_pull_targets 统一清理。
+                let local_dir = crate::transfer::peek_pull_target(&transfer_id)
                     .map(|p| p.to_string_lossy().to_string());
                 match crate::transfer::open_recv(&transfer_id, &name, size, local_dir.as_deref()) {
                     Ok(_) => {
@@ -412,6 +414,8 @@ pub(super) async fn handle_downlink(
                         let _ = to_ui.send(ToUi::FileNotice {
                             text: format!("已取回到本机：{}", path.to_string_lossy()),
                         });
+                        // 取回完成 → 刷新左栏，让取回的文件/文件夹立即可见。
+                        let _ = to_ui.send(ToUi::PaneRefresh { local: true });
                     }
                     Ok(None) => {}
                     Err(reason) => {
@@ -502,6 +506,8 @@ pub(super) async fn handle_downlink(
             let _ = to_ui.send(ToUi::FileNotice {
                 text: format!("已下发到远端：{path}"),
             });
+            // 下发完成 → 刷新右栏，让下发到远端的文件/文件夹立即可见。
+            let _ = to_ui.send(ToUi::PaneRefresh { local: false });
         }
         // ── 传输失败：清理在途接收 + 通知 UI ───────────────────────────────────
         Message::FileError {
@@ -662,6 +668,7 @@ pub(super) async fn handle_uplink(
         FromUi::Disconnect { session_id } => {
             session.lock().await.controlling = None;
             CLIPBOARD_TX.send(ClipboardMsg::Stop);
+            crate::transfer::clear_pull_targets(); // 主控自断开：清理取回目标登记
             Envelope {
                 from: self_id.to_string(),
                 to: None,
@@ -990,8 +997,8 @@ mod uplink_tests {
             } => {
                 assert_eq!(session_id, "s-1");
                 assert_eq!(path, "/etc/hostname");
-                // 取回目标已登记：取出应等于本地目录
-                let got = crate::transfer::take_pull_target(&transfer_id);
+                // 取回目标已登记：peek（不消费）应等于本地目录
+                let got = crate::transfer::peek_pull_target(&transfer_id);
                 assert_eq!(
                     got.as_deref(),
                     Some(tmp.as_path()),
