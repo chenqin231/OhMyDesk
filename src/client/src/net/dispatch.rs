@@ -629,6 +629,9 @@ pub(super) async fn handle_uplink(
             ts: now(),
             payload: Message::Input { session_id, event },
         },
+        // 注意：正常路径下 FromUi::Frame 已在 connect_once 出站泵处被拦截、改走 frame_tx
+        // 单槽 watch（drop-stale），不会到达这里。此臂仅作穷尽匹配的安全兜底——若被命中
+        // 仍能正确出帧（退化为走可靠 out_tx，不丢但不 drop-stale）。切勿据此误判帧走 control lane。
         FromUi::Frame {
             session_id,
             data,

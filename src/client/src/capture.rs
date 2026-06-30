@@ -46,7 +46,7 @@ pub fn params_for(mode: protocol::QualityMode) -> QualityParams {
             max_w: 1280,
             max_h: 720,
             jpeg_q: 80,
-            interval_ms: 62,
+            interval_ms: 40,
         },
     }
 }

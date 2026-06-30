@@ -34,12 +34,34 @@ pub(super) async fn connect_once(
     let id = info.id.clone();
     let cur_pw = || password.lock().unwrap().clone();
 
-    // ── M-CLI1：mpsc 出站泵 —— write 只被本任务独占 ──
+    // ── 出站泵：控制消息走可靠 FIFO out_tx；帧走 frame watch（单槽最新，drop-stale）──
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+    let (frame_tx, mut frame_rx) = tokio::sync::watch::channel::<Option<String>>(None);
     let pump = tokio::spawn(async move {
-        while let Some(text) = out_rx.recv().await {
-            if write.send(WsMsg::Text(text)).await.is_err() {
-                break;
+        loop {
+            tokio::select! {
+                biased; // 控制消息优先（input/心跳/控制绝不被帧延迟）
+                ctrl = out_rx.recv() => {
+                    match ctrl {
+                        Some(text) => {
+                            if write.send(WsMsg::Text(text)).await.is_err() { break; }
+                        }
+                        None => break, // 控制通道关闭 = 连接结束
+                    }
+                }
+                changed = frame_rx.changed() => {
+                    if changed.is_err() {
+                        // frame_tx 已 drop：转入纯控制循环直到关闭（不丢控制消息）
+                        while let Some(text) = out_rx.recv().await {
+                            if write.send(WsMsg::Text(text)).await.is_err() { break; }
+                        }
+                        break;
+                    }
+                    let latest = frame_rx.borrow_and_update().clone();
+                    if let Some(text) = latest {
+                        if write.send(WsMsg::Text(text)).await.is_err() { break; }
+                    }
+                }
             }
         }
     });
@@ -128,6 +150,18 @@ pub(super) async fn connect_once(
                         }
                         let _ = to_ui.send(ToUi::Registered { id: id.clone(), password: newpw });
                     }
+                    // 帧走单槽 watch：网络慢时陈旧帧被覆盖，只发最新（drop-stale 核心）。
+                    Some(FromUi::Frame { session_id, data, w, h, seq }) => {
+                        let env = Envelope {
+                            from: id.clone(),
+                            to: None,
+                            ts: now(),
+                            payload: Message::Frame { session_id, data, w, h, seq },
+                        };
+                        if let Ok(s) = serde_json::to_string(&env) {
+                            let _ = frame_tx.send_replace(Some(s));
+                        }
+                    }
                     Some(a) => handle_uplink(a, &id, &out_tx, &session).await,
                     None => break Ok(()), // UI 关闭
                 }
@@ -138,6 +172,7 @@ pub(super) async fn connect_once(
     // 清理：停泵/心跳
     hb.abort();
     drop(out_tx);
+    drop(frame_tx); // 关帧 lane，泵转入纯控制收尾后退出
     let _ = pump.await;
     result
 }
