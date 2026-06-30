@@ -1,6 +1,7 @@
 import type { Envelope } from "@/lib/types/Envelope";
 import type { AuditLog } from "@/lib/types/AuditLog";
 import type { Session } from "@/lib/types/Session";
+import type { LoginLogEntry } from "@/lib/types/LoginLogEntry";
 
 // 审计查询参数（对应 GET /api/audit?endpoint=&from=&to=&result=）
 export type AuditQuery = {
@@ -20,6 +21,8 @@ export interface Transport {
   fetchAudit(q: AuditQuery): Promise<AuditLog[]>;
   // 获取会话历史
   fetchSessions(): Promise<Session[]>;
+  // 获取管理员登录日志（分页）
+  fetchLoginLogs(limit?: number, offset?: number): Promise<LoginLogEntry[]>;
   // 删除终端记录（单个或批量；清理离线/冗余）
   deleteEndpoints(ids: string[]): Promise<void>;
   // 断开连接并清理资源
