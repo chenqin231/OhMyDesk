@@ -32,6 +32,7 @@ use audit::AuditStore;
 use auth::Auth;
 use hub::{now_sec, Hub};
 use http::{router as http_router, HttpState};
+use login_log::LoginLogStore;
 use registry::Registry;
 use session::SessionStore;
 use settings::SettingsStore;
@@ -49,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
     reg.load_from_db(hub::now_sec()).await;
     let sessions = Arc::new(SessionStore::new());
     let audit = Arc::new(AuditStore::new(db.clone()));
+    let login_log = Arc::new(LoginLogStore::new(db.clone()));
     let settings = Arc::new(SettingsStore::new(db));
 
     // ── 鉴权：JWT secret 取环境（缺省随机，重启失效 token）；凭据取持久化或写死默认 ──
@@ -79,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
         audit: Arc::clone(&audit),
         auth: Arc::clone(&auth),
         settings: Arc::clone(&settings),
+        login_log: Arc::clone(&login_log),
     };
 
     // ── 静态托管 admin-web/dist（P-SRV5：单一内网 URL 同时供 UI + API + WS）──────

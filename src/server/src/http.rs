@@ -20,6 +20,7 @@ use tower_http::cors::CorsLayer;
 use crate::auth::Auth;
 use crate::audit::AuditStore;
 use crate::hub::{now_sec, Hub};
+use crate::login_log::LoginLogStore;
 use crate::settings::SettingsStore;
 
 /// HTTP layer 的共享状态（M-SRV3 + 鉴权）
@@ -29,6 +30,7 @@ pub struct HttpState {
     pub audit: Arc<AuditStore>,
     pub auth: Arc<Auth>,
     pub settings: Arc<SettingsStore>,
+    pub login_log: Arc<LoginLogStore>,
 }
 
 /// 已认证管理员（提取器）：校验 Authorization: Bearer <jwt>，失败 401。
