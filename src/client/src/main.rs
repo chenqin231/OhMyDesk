@@ -22,6 +22,7 @@ mod inject;
 mod net;
 mod transfer;
 mod ui_glue;
+mod update;
 mod workers;
 
 use slint::ComponentHandle;
