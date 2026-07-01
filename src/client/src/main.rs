@@ -17,6 +17,7 @@ mod adaptive;
 mod asset;
 mod capture;
 mod elevate;
+mod suwen;
 mod exec;
 mod framediff;
 mod telemetry;
