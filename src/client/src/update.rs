@@ -319,6 +319,7 @@ pub fn spawn_update_daemon(
         loop {
             if let Err(e) = run_once(&base, &endpoint_id, &state, &to_ui) {
                 tracing::warn!("更新检查失败：{e}");
+                let _ = to_ui.send(ToUi::UpdateStatus { text: "更新检查失败，稍后重试".into() });
             }
             let _ = nudge_rx.recv_timeout(Duration::from_secs(interval)); // nudge 或超时唤醒
         }
@@ -326,6 +327,7 @@ pub fn spawn_update_daemon(
 }
 
 fn run_once(base: &url::Url, endpoint_id: &str, state: &Arc<ClientActivityState>, to_ui: &UnboundedSender<ToUi>) -> anyhow::Result<()> {
+    let _ = to_ui.send(ToUi::UpdateStatus { text: "正在检查更新…".into() });
     let agent = build_agent(10, 30);
     let manifest_url = base.join("latest.json")?;
     let sig_url = base.join("latest.json.minisig")?;
@@ -346,7 +348,7 @@ fn run_once(base: &url::Url, endpoint_id: &str, state: &Arc<ClientActivityState>
     }
     let current = env!("CARGO_PKG_VERSION");
     match decide(&m, current, endpoint_id) {
-        UpdateAction::Skip => Ok(()),
+        UpdateAction::Skip => { let _ = to_ui.send(ToUi::UpdateStatus { text: format!("已是最新（当前 v{}）", env!("CARGO_PKG_VERSION")) }); Ok(()) }
         UpdateAction::Notice { version, url, notes } => {
             let _ = to_ui.send(ToUi::UpdateAvailable { version, url, notes });
             Ok(())
@@ -361,6 +363,7 @@ fn run_once(base: &url::Url, endpoint_id: &str, state: &Arc<ClientActivityState>
 fn apply_auto(state: &Arc<ClientActivityState>, to_ui: &UnboundedSender<ToUi>, version: &str, url: &str, sha256: &str, size: u64) -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
     let dir = exe.parent().ok_or_else(|| anyhow::anyhow!("无 exe 目录"))?;
+    let _ = to_ui.send(ToUi::UpdateStatus { text: format!("正在下载更新 v{version}…") });
     let staged = match download_verified(url, sha256, size, dir) {
         Ok(p) => p,
         Err(e) => { // 下载/校验失败兜底提示手动
@@ -379,6 +382,7 @@ fn apply_auto(state: &Arc<ClientActivityState>, to_ui: &UnboundedSender<ToUi>, v
         r
     } else {
         tracing::info!("有会话进行中，推迟替换到下个周期");
+        let _ = to_ui.send(ToUi::UpdateStatus { text: format!("有远控会话，稍后自动更新 v{version}") });
         Ok(()) // staged 临时文件随 drop 删除，下周期重下
     }
 }
