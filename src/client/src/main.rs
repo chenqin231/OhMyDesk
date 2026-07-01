@@ -90,6 +90,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     let ui = AppWindow::new()?;
+    ui.set_app_version(env!("CARGO_PKG_VERSION").into()); // 标题栏「OhMyDesk v{版本} 极速远控」
     ui.set_self_id(ui_glue::group_digits(&self_id).into());
     // 最近连接历史（本地持久化）初始填充
     ui.set_history(ui_glue::build_history_model(&history::load(), net::now()));
