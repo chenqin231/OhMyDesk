@@ -11,6 +11,8 @@ pub struct FrameSample {
     pub dirty_ratio: f32,
     pub keyframe_forced: bool,
     pub encode_ms: u32,
+    pub resize_ms: u32,
+    pub jpeg_ms: u32,
     pub encoded_bytes: usize,
     pub w: u32,
     pub h: u32,
@@ -41,6 +43,10 @@ pub struct WindowStats {
     pub cap_p95_ms: u32,
     pub enc_avg_ms: u32,
     pub enc_p95_ms: u32,
+    pub resize_avg_ms: u32,
+    pub resize_p95_ms: u32,
+    pub jpeg_avg_ms: u32,
+    pub jpeg_p95_ms: u32,
     pub stall_p95_ms: u32,
     pub egress_drop: usize,   // sent(非跳过) − egress_writes，clamp≥0
 }
@@ -96,6 +102,13 @@ pub fn aggregate(
     let egress_writes = egress.len();
     let egress_drop = sent.saturating_sub(egress_writes);
 
+    let mut resize_v: Vec<u32> = sent_frames.iter().map(|f| f.resize_ms).collect();
+    resize_v.sort_unstable();
+    let mut jpeg_v: Vec<u32> = sent_frames.iter().map(|f| f.jpeg_ms).collect();
+    jpeg_v.sort_unstable();
+    let resize_avg_ms = if sent > 0 { resize_v.iter().sum::<u32>() / sent as u32 } else { 0 };
+    let jpeg_avg_ms = if sent > 0 { jpeg_v.iter().sum::<u32>() / sent as u32 } else { 0 };
+
     WindowStats {
         frames: total,
         sent,
@@ -110,6 +123,10 @@ pub fn aggregate(
         cap_p95_ms: percentile(&cap_ms, 0.95),
         enc_avg_ms,
         enc_p95_ms: percentile(&enc_ms, 0.95),
+        resize_avg_ms,
+        resize_p95_ms: percentile(&resize_v, 0.95),
+        jpeg_avg_ms,
+        jpeg_p95_ms: percentile(&jpeg_v, 0.95),
         stall_p95_ms: percentile(&stall, 0.95),
         egress_drop,
     }
@@ -247,14 +264,15 @@ pub enum TelemetryMsg {
 }
 
 /// 把窗口聚合格式化成一行可 grep 的日志（spec §4.2）。
-pub fn format_log(s: &WindowStats, sid: &str) -> String {
+pub fn format_log(s: &WindowStats, sid: &str, adapt_level: u8) -> String {
     format!(
         "遥测 sid={sid} win=10s effective_fps={:.1} skip_pct={:.2} dirty_p50={:.2} dirty_p95={:.2} \
          sent_frames={} egress_writes={} egress_drop={} enc_Bps={} bytes_avg={} bytes_p95={} \
-         cap_p95_ms={} enc_avg_ms={} enc_p95_ms={} stall_p95_ms={}",
+         cap_p95_ms={} enc_avg_ms={} enc_p95_ms={} resize_avg_ms={} jpeg_avg_ms={} stall_p95_ms={} adapt_level={}",
         s.effective_fps, s.skip_pct, s.dirty_p50, s.dirty_p95,
         s.sent, s.egress_writes, s.egress_drop, s.enc_bps, s.bytes_avg, s.bytes_p95,
-        s.cap_p95_ms, s.enc_avg_ms, s.enc_p95_ms, s.stall_p95_ms
+        s.cap_p95_ms, s.enc_avg_ms, s.enc_p95_ms, s.resize_avg_ms, s.jpeg_avg_ms,
+        s.stall_p95_ms, adapt_level
     )
 }
 
@@ -271,6 +289,8 @@ mod tests {
             dirty_ratio: dirty,
             keyframe_forced: false,
             encode_ms: enc_ms,
+            resize_ms: 0,
+            jpeg_ms: 0,
             encoded_bytes: bytes,
             w: 1280,
             h: 720,
@@ -344,7 +364,7 @@ mod tests {
     }
 
     fn frame_at(seq: u64, ts: u64) -> FrameSample {
-        FrameSample { ts_ms: ts, seq, capture_ms: 10, skipped: false, dirty_ratio: 0.2, keyframe_forced: false, encode_ms: 30, encoded_bytes: 50_000, w: 1280, h: 720 }
+        FrameSample { ts_ms: ts, seq, capture_ms: 10, skipped: false, dirty_ratio: 0.2, keyframe_forced: false, encode_ms: 30, resize_ms: 0, jpeg_ms: 0, encoded_bytes: 50_000, w: 1280, h: 720 }
     }
 
     #[test]
@@ -392,7 +412,7 @@ mod tests {
     #[test]
     fn format_log含关键字段() {
         let s = WindowStats { sent: 2, egress_writes: 2, egress_drop: 0, skip_pct: 0.8, effective_fps: 0.2, enc_bps: 12_000, stall_p95_ms: 180, ..Default::default() };
-        let line = format_log(&s, "ab12");
+        let line = format_log(&s, "ab12", 0);
         assert!(line.contains("sid=ab12"));
         assert!(line.contains("skip_pct=0.80"));
         assert!(line.contains("egress_drop=0"));
@@ -418,6 +438,28 @@ mod tests {
         s.on_frame(1, 10, 1000);
         let line = s.on_frame(2, 10, 12_000).unwrap();
         assert!(line.contains("drop_stale=3"));
+    }
+
+    #[test]
+    fn aggregate拆分resize_jpeg() {
+        let mk = |resize_ms, jpeg_ms| FrameSample {
+            ts_ms: 0, seq: 1, capture_ms: 5, skipped: false, dirty_ratio: 0.2,
+            keyframe_forced: false, encode_ms: resize_ms + jpeg_ms, resize_ms, jpeg_ms,
+            encoded_bytes: 1000, w: 100, h: 100,
+        };
+        let frames = vec![mk(10, 100), mk(30, 200)];
+        let s = aggregate(&frames, &[], 10_000);
+        assert_eq!(s.resize_avg_ms, 20, "resize 均值 (10+30)/2");
+        assert_eq!(s.jpeg_avg_ms, 150, "jpeg 均值 (100+200)/2");
+    }
+
+    #[test]
+    fn format_log含resize_jpeg_adapt字段() {
+        let s = WindowStats { resize_avg_ms: 12, jpeg_avg_ms: 340, ..Default::default() };
+        let out = format_log(&s, "sid1", 2);
+        assert!(out.contains("resize_avg_ms=12"), "含 resize_avg_ms");
+        assert!(out.contains("jpeg_avg_ms=340"), "含 jpeg_avg_ms");
+        assert!(out.contains("adapt_level=2"), "含 adapt_level");
     }
 }
 
@@ -455,6 +497,7 @@ pub async fn run_collector(
     let mut win_frames: Vec<FrameSample> = vec![];
     let mut win_egress: Vec<EgressSample> = vec![];
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10));
+    let mut adaptive = crate::adaptive::AdaptiveController::default();
     loop {
         tokio::select! {
             msg = rx.recv() => match msg {
@@ -475,7 +518,9 @@ pub async fn run_collector(
             _ = ticker.tick() => {
                 if win_frames.is_empty() { continue; }
                 let stats = aggregate(&win_frames, &win_egress, 10_000);
-                tracing::info!("{}", format_log(&stats, &collector.sid_str()));
+                let lvl = adaptive.observe(&stats);
+                crate::adaptive::store_level(lvl);
+                tracing::info!("{}", format_log(&stats, &collector.sid_str(), lvl));
                 let anomalies = classify(&stats);
                 if !anomalies.is_empty() {
                     tracing::warn!("遥测异常 {anomalies:?}");
