@@ -360,4 +360,27 @@ mod tests {
         let per = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
         println!("encode_frame_q 1280x720 q80: {per:.1} ms/帧 (n={n})");
     }
+
+    #[test]
+    #[ignore] // 手动：cargo test -p client --release encode_bench_split -- --ignored --nocapture
+    fn encode_bench_split() {
+        // 分段计时：RGBA→RGB 转换 vs JPEG 编码，定位热点
+        let img = image::RgbaImage::from_fn(1280, 720, |x, y| {
+            image::Rgba([(x % 256) as u8, (y % 256) as u8, 128, 255])
+        });
+        let n = 30u64;
+        let mut tr = 0u64;
+        let mut tj = 0u64;
+        for _ in 0..n {
+            let o = encode_frame_q(&img, 1280, 720, 80).unwrap();
+            tr += o.resize_ms as u64;
+            tj += o.jpeg_ms as u64;
+        }
+        println!(
+            "resize: {:.1} ms/帧  jpeg: {:.1} ms/帧  total: {:.1} ms/帧 (n={n})",
+            tr as f64 / n as f64,
+            tj as f64 / n as f64,
+            (tr + tj) as f64 / n as f64,
+        );
+    }
 }
