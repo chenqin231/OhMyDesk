@@ -112,6 +112,26 @@ impl SessionStore {
             .map(|e| e.meta.id.clone())
     }
 
+    /// 移除并返回该客户端参与（作 from_id 或 to_id）的所有会话，供断开时批量结束。
+    /// 返回 `Vec<(Session, 输入摘要)>`，每条 set end_at=now/status，供审计落库 + 通知对端。
+    /// 先收集要删的 key 再删，避免 DashMap 迭代中删的借用冲突。
+    pub fn remove_sessions_of(
+        &self,
+        client_id: &str,
+        now: i64,
+        status: SessionStatus,
+    ) -> Vec<(Session, String)> {
+        let keys: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|e| e.meta.from_id == client_id || e.meta.to_id == client_id)
+            .map(|e| e.meta.id.clone())
+            .collect();
+        keys.into_iter()
+            .filter_map(|k| self.end_session(&k, now, status))
+            .collect()
+    }
+
     /// 返回会话中 sender 的对端 id（Frame/Input 按 session 路由）：
     /// sender=主控(from_id) → 被控(to_id)；sender=被控(to_id) → 主控(from_id)
     pub fn peer_of(&self, session_id: &str, sender: &str) -> Option<String> {
@@ -219,6 +239,59 @@ mod tests {
         // 结束后不再命中
         store.end_session("s-out", 10, SessionStatus::Ended);
         assert_eq!(store.outbound_session("ep-a", "ep-b"), None);
+    }
+
+    #[test]
+    fn remove_sessions_of_only_removes_participating() {
+        let store = SessionStore::new();
+        // client 作 from
+        store.insert(Session {
+            id: "s-from".into(),
+            mode: Mode::A,
+            from_id: "ep-x".into(),
+            to_id: "ep-1".into(),
+            start_at: 0,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+        // client 作 to
+        store.insert(Session {
+            id: "s-to".into(),
+            mode: Mode::B,
+            from_id: "ep-2".into(),
+            to_id: "ep-x".into(),
+            start_at: 0,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+        // 无关会话
+        store.insert(Session {
+            id: "s-other".into(),
+            mode: Mode::B,
+            from_id: "ep-3".into(),
+            to_id: "ep-4".into(),
+            start_at: 0,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        let mut removed = store.remove_sessions_of("ep-x", 500, SessionStatus::Ended);
+        assert_eq!(removed.len(), 2, "应仅移除 ep-x 参与的 2 条会话");
+        // 每条已置 end_at/status
+        for (sess, summary) in &removed {
+            assert_eq!(sess.end_at, Some(500));
+            assert_eq!(sess.status, SessionStatus::Ended);
+            assert_eq!(summary, "输入操作 0 次");
+        }
+        // 返回的会话 id 恰为两条参与会话
+        removed.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+        assert_eq!(removed[0].0.id, "s-from");
+        assert_eq!(removed[1].0.id, "s-to");
+
+        // 无关会话仍在册
+        let remaining = store.active_sessions();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "s-other");
     }
 
     #[test]

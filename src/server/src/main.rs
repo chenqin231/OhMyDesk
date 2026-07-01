@@ -292,6 +292,10 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
     }
 
     if let Some(id) = &my_id {
+        // 先结束该客户端参与的所有活跃会话（通知对端 + 落审计），再摘除连接。
+        // 修 orphan active 泄漏：主控（尤其 WEB admin 直接关标签）不发 SessionEnd 就离开，
+        // 会让会话永久留在 status=active，且陈旧会话残留致 route_to_peer 查无对端。
+        hub.end_client_sessions(id, now_sec()).await;
         hub.remove_client(id);
         tracing::info!("客户端断开: {id}");
     }
