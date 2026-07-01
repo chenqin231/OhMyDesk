@@ -15,11 +15,10 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
-
-# 图像热路径（Lanczos3 缩放 / JPEG 编码）为速度编译，抵消 opt-level="z" 对纯 Rust
-# 图像处理的拖累；client 主 crate 与其余依赖仍 opt="z"，分发体积基本不膨胀。
-[profile.release.package.image]
-opt-level = 3
+# 注：曾试 [profile.release.package.image] opt-level=3 提速图像热路径，实测无效——
+# fat LTO(lto=true)+codegen-units=1 会把 per-package opt-level 洗掉，最终机器码优化等级由
+# LTO 链接阶段的 "z" 决定(实测 1.03× 提速 / +2.8% 体积，不划算，已撤)。基准测量证实：
+# 编码耗时 97% 在 JPEG 编码(纯 Rust 标量)，缩放仅 3% → 真正提速路径是 turbojpeg(SIMD)，另立 spec。
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
