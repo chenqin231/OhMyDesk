@@ -552,6 +552,24 @@ fn frame_belongs_to_ended(ended: &Option<String>, session_id: &str) -> bool {
     ended.as_deref() == Some(session_id)
 }
 
+/// SessionEnd 到达时，UI 侧被控会话副本 `ctrl_session` 的门控清理。
+///
+/// 与权威源 `SessionCtx.controlled` 的清理条件对齐（见 `net/dispatch.rs` SessionEnd：
+/// 仅当结束的 session_id 等于当前被控会话时才清）。这样在「重控 / 多会话 / 迟到
+/// SessionEnd」序列下，`ctrl_session` 不会被无关会话的结束错误清空或指向失效 id，
+/// 避免被控发聊天带失效 session_id 上行被服务端静默丢弃。
+///
+/// - `current == Some(ending)`：结束的正是当前被控会话 → 清空。
+/// - `current == Some(其它)`：结束的是旧/别的会话（如迟到 SessionEnd{S1}，而当前已重控 S2）→ 保留。
+/// - `current == None`：本无被控会话 → 保持 None。
+fn next_ctrl_session_after_end(current: Option<&str>, ending_session_id: &str) -> Option<String> {
+    if current == Some(ending_session_id) {
+        None
+    } else {
+        current.map(str::to_owned)
+    }
+}
+
 /// 拉 ToUi 流，逐条应用到 UI（invoke_from_event_loop），并维护主控/被控会话 id。
 pub async fn consume_to_ui(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<net::ToUi>,
@@ -719,15 +737,20 @@ pub async fn consume_to_ui(
                     });
                 }
             }
-            net::ToUi::SessionEnded => {
+            net::ToUi::SessionEnded { session_id } => {
                 // 记下结束的会话 id，丢弃其迟到帧（与本地断开同样防「复活」）。
                 activity.end_pending_connect();
                 let prev = cur_session.lock().unwrap().take();
                 if prev.is_some() {
                     *ended_session.lock().unwrap() = prev;
                 }
-                // 被控会话结束：清被控会话 id（含主控取消挂起申请的场景）。
-                *ctrl_session.lock().unwrap() = None;
+                // 被控会话结束：门控清理被控会话副本——只有结束的正是当前被控会话才清，
+                // 否则保留（对齐权威源 dispatch.rs 的按 session_id 清理）。避免重控/多会话/
+                // 迟到 SessionEnd 下 `ctrl_session` 被无关会话错误清空 → 被控发聊天带失效 id 被丢弃。
+                {
+                    let mut g = ctrl_session.lock().unwrap();
+                    *g = next_ctrl_session_after_end(g.as_deref(), &session_id);
+                }
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         let was_controlling = ui.get_remote_active();
@@ -984,5 +1007,18 @@ mod tests {
     fn 聊天行追加() {
         assert_eq!(append_line("", "我", "hi"), "我: hi");
         assert_eq!(append_line("我: hi", "对方", "yo"), "我: hi\n对方: yo");
+    }
+
+    #[test]
+    fn next_ctrl_session_门控清理() {
+        // 匹配才清：结束的正是当前被控会话 → 清空（与权威 controlled 对齐）。
+        assert_eq!(next_ctrl_session_after_end(Some("S1"), "S1"), None);
+        // 漂移序列核心：控制 S1 → 重控 S2 → 迟到 SessionEnd{S1} 不该清掉 S2。
+        assert_eq!(
+            next_ctrl_session_after_end(Some("S2"), "S1"),
+            Some("S2".to_string())
+        );
+        // 本无被控会话：保持 None。
+        assert_eq!(next_ctrl_session_after_end(None, "S1"), None);
     }
 }
