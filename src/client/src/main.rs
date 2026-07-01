@@ -130,6 +130,15 @@ fn main() -> anyhow::Result<()> {
     }
     tracing::info!("渲染模式 mode={:?} frameskip={} telemetry={}", render_mode::current_mode(), render_mode::frameskip_on(), render_mode::telemetry_on());
 
+    // 过载自适应开关：env OHMYDESK_ADAPTIVE > config.toml [render].adaptive > 默认 ON
+    let cfg_adaptive = std::fs::read_to_string(ohmydesk_state_dir().join("config.toml"))
+        .ok()
+        .and_then(|s| s.parse::<toml::Table>().ok())
+        .and_then(|t| t.get("render").and_then(|r| r.get("adaptive")).and_then(|a| a.as_bool()));
+    let env_adaptive = std::env::var("OHMYDESK_ADAPTIVE").ok();
+    adaptive::set_enabled(adaptive::resolve_enabled(env_adaptive.as_deref(), cfg_adaptive));
+    tracing::info!("过载自适应 adaptive_enabled={}", adaptive::enabled());
+
     // 共享：当前主控会话 id（键鼠回传需要）+ 当前被控会话 id（授权回传需要）
     let cur_session: SharedSession = Arc::new(std::sync::Mutex::new(None));
     let ctrl_session: SharedSession = Arc::new(std::sync::Mutex::new(None));

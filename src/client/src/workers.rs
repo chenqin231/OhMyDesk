@@ -269,6 +269,7 @@ pub async fn consume_capture(
                 std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
                 let mode = crate::render_mode::current_mode();
                 let qp = crate::render_mode::clamp_params(capture::current_params(), mode);
+                let qp = crate::adaptive::clamp(qp, crate::adaptive::level());
                 let now = now_ms();
                 let input_driven = last_input_after(last_cap_ms);
                 // 空闲降采（spec §3.5）：连续静止且无近期输入时放宽截帧间隔。
