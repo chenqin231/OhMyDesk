@@ -794,6 +794,7 @@ dependencies = [
  "futures-util",
  "image 0.25.10",
  "minisign-verify",
+ "native-tls",
  "protocol",
  "rand 0.8.6",
  "rustls",

@@ -238,10 +238,7 @@ pub fn download_verified(
     if expect_size > CAP {
         anyhow::bail!("size {expect_size} 超 50MB 上限");
     }
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(120))
-        .build();
+    let agent = build_agent(10, 120);
     // ureq 启用 gzip 特性后自动加 Accept-Encoding 并透明解压；sha256/size 针对解压后字节。
     let resp = agent.get(url).call()?;
     let mut tmp = tempfile::Builder::new()
@@ -277,6 +274,28 @@ use crate::activity::ClientActivityState;
 use crate::net::ToUi;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// 构建带 TLS 后端的 ureq Agent（自动更新 HTTPS 用）。
+/// Windows：ureq 仅启 `native-tls` 特性**不会自动接管** TLS，必须显式 `tls_connector` 装配
+/// SChannel，否则运行时报「no TLS backend is configured」→ HTTPS 全废、自动更新永久失败
+/// （2026-07-01 实测根因：Windows 自更新从上线起从未成功）。非 Windows 用 rustls(`tls`)默认后端。
+#[cfg(windows)]
+fn build_agent(connect_s: u64, read_s: u64) -> ureq::Agent {
+    let b = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(connect_s))
+        .timeout_read(Duration::from_secs(read_s));
+    match native_tls::TlsConnector::new() {
+        Ok(c) => b.tls_connector(Arc::new(c)).build(),
+        Err(e) => { tracing::warn!("native-tls 初始化失败：{e}"); b.build() }
+    }
+}
+#[cfg(not(windows))]
+fn build_agent(connect_s: u64, read_s: u64) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(connect_s))
+        .timeout_read(Duration::from_secs(read_s))
+        .build()
+}
+
 /// 启动更新守护（独立 std 线程）。触发：启动延迟 30s + 周期 + nudge。
 pub fn spawn_update_daemon(
     server_url: String,
@@ -296,7 +315,7 @@ pub fn spawn_update_daemon(
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() { cleanup_stale_temp(dir); }
         }
-        std::thread::sleep(Duration::from_secs(30)); // 启动延迟，避开连接抖动
+        std::thread::sleep(Duration::from_secs(5)); // 启动延迟：短暂避开连接抖动，尽快「打开即检查」
         loop {
             if let Err(e) = run_once(&base, &endpoint_id, &state, &to_ui) {
                 tracing::warn!("更新检查失败：{e}");
@@ -307,10 +326,7 @@ pub fn spawn_update_daemon(
 }
 
 fn run_once(base: &url::Url, endpoint_id: &str, state: &Arc<ClientActivityState>, to_ui: &UnboundedSender<ToUi>) -> anyhow::Result<()> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(30))
-        .build();
+    let agent = build_agent(10, 30);
     let manifest_url = base.join("latest.json")?;
     let sig_url = base.join("latest.json.minisig")?;
     // manifest（限 64KB）
