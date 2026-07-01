@@ -58,10 +58,11 @@ impl Injector {
                 self.enigo.move_mouse(rx, ry, Abs)?;
             }
             InputEvent::MouseButton { button, down } => {
-                // 点击诊断：打出最近一次移动的全链路映射，定位「点击错位」错在哪一段。
+                // 点击坐标映射诊断（debug 级：默认不进日志，避免逐次点击的隐私/噪音；
+                // 需排查点击错位时用 RUST_LOG=client=debug 开启）。坐标映射已实证正确。
                 if *down {
                     let (ix, iy, fw, fh, rx, ry) = self.last_click_dbg;
-                    tracing::info!(
+                    tracing::debug!(
                         "点击注入诊断 收到帧内=({ix},{iy}) 帧尺寸={fw}x{fh} 真实屏={}x{} → 注入=({rx},{ry})",
                         self.real_w,
                         self.real_h
