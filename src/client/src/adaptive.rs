@@ -21,6 +21,8 @@ const FLOOR_H: u32 = 180;
 
 static LEVEL: AtomicU8 = AtomicU8::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(true);
+/// 手动切档请求重置的标志：dispatch 收到 SetQuality 时置位，collector 每窗取一次并重建控制器。
+static PENDING_RESET: AtomicBool = AtomicBool::new(false);
 
 /// 抓帧线程读取的当前档（关闭时恒 0=旁路）。
 pub fn level() -> u8 {
@@ -29,6 +31,18 @@ pub fn level() -> u8 {
 pub fn store_level(l: u8) { LEVEL.store(l.min(MAX_LEVEL), Ordering::Relaxed); }
 pub fn set_enabled(on: bool) { ENABLED.store(on, Ordering::Relaxed); }
 pub fn enabled() -> bool { ENABLED.load(Ordering::Relaxed) }
+
+/// 手动切换画质时请求重置自适应：**立即**把 level 归零（抓帧线程下一帧即解除降档钳制，让用户
+/// 手动选择先生效），并置标志让 collector 下一窗重建控制器（清空 streak，需重新累计过载才再降）。
+/// 解决「弱机上手动切高清被 adaptive 立即拉回」的拉锯。
+pub fn request_reset() {
+    store_level(0);
+    PENDING_RESET.store(true, Ordering::Relaxed);
+}
+/// collector 每窗取一次：若上次请求过重置则返回 true（并清标志），据此重建 AdaptiveController。
+pub fn take_reset() -> bool {
+    PENDING_RESET.swap(false, Ordering::Relaxed)
+}
 
 /// 过载：与 telemetry::classify 的「编码过载/投递饥饿」口径一致。
 pub fn is_overload(s: &WindowStats) -> bool {
@@ -168,6 +182,15 @@ mod tests {
         assert_eq!(level(), 0, "关闭时 level() 恒 0(旁路)");
         set_enabled(true);
         assert_eq!(level(), 3, "开启时反映实际档");
+        // 手动切档重置（并入此唯一触及全局 LEVEL/ENABLED 的测试，避免并发竞争）：
+        store_level(3);
+        request_reset();
+        assert_eq!(level(), 0, "request_reset 后 level() 立即为 0");
+        assert!(take_reset(), "take_reset 首次为真");
+        assert!(!take_reset(), "再次为假（已清）");
+        // 重置=collector 重建控制器后，一窗过载不应立即回到高档
+        let mut c = AdaptiveController::default();
+        assert_eq!(c.observe(&overload()), 0, "重建后第1窗过载不降");
         store_level(0); // 复位避免污染其它测试
     }
 }
