@@ -129,6 +129,60 @@ mod win {
     }
 }
 
+/// UI 线程调用:后台线程编排「检测→[下载→安装→等待]→拉起」,全程回写 suwen_phase/suwen_status。
+/// 防重入:UI 侧按钮 enabled 仅在 phase 0/4 可点;此处 AtomicBool 二次兜底。
+#[cfg(windows)]
+pub fn ensure_and_launch(ui: slint::Weak<crate::AppWindow>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return; // 已有任务在跑,忽略连点
+    }
+    std::thread::spawn(move || {
+        match run_flow(&ui) {
+            Ok(()) => set_state(&ui, PHASE_IDLE, String::new()),
+            Err(e) => {
+                tracing::warn!("素问部署失败:{e:#}");
+                set_state(&ui, PHASE_FAILED, format!("失败:{e}"));
+            }
+        }
+        RUNNING.store(false, Ordering::SeqCst);
+    });
+}
+
+/// 线性状态机主体。已安装则跳过下载/安装直接拉起。
+#[cfg(windows)]
+fn run_flow(ui: &slint::Weak<crate::AppWindow>) -> anyhow::Result<()> {
+    if !is_installed() {
+        set_state(ui, PHASE_DOWNLOAD, "正在下载素问…".into());
+        let setup = win::download_setup()?;
+        set_state(ui, PHASE_INSTALL, "正在安装素问…".into());
+        win::run_installer(&setup)?;
+        win::wait_installed()?;
+        // setup(TempPath)在此 drop:安装已完成,可安全删除临时安装包。
+    }
+    set_state(ui, PHASE_LAUNCH, "正在启动素问…".into());
+    win::launch_gui()?;
+    Ok(())
+}
+
+/// 跨线程回写 UI 相位与状态文本(AppWindow 句柄非 Send,必须经事件循环)。
+#[cfg(windows)]
+fn set_state(ui: &slint::Weak<crate::AppWindow>, phase: i32, status: String) {
+    let ui = ui.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui.upgrade() {
+            // set_suwen_* 为 Slint 生成的固有方法;upgrade() 为 Weak 固有方法,均无需 ComponentHandle。
+            ui.set_suwen_phase(phase);
+            ui.set_suwen_status(status.into());
+        }
+    });
+}
+
+/// 非 Windows:按钮已被 suwen_supported=false 隐藏,此处兜底空实现(保证跨平台可编译)。
+#[cfg(not(windows))]
+pub fn ensure_and_launch(_ui: slint::Weak<crate::AppWindow>) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
