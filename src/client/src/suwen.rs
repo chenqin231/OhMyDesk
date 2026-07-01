@@ -1,7 +1,7 @@
 //! 「AI助手」按钮后端:检测/静默安装/拉起素问(Suwen)。仅 Windows 有实体逻辑。
 //!
-//! 流程:检测 suwen-daemon.exe 是否存在 → 不存在则下载 suwen-setup.exe 静默安装(/S)
-//! → 等安装器退出 + 轮询 daemon.exe 落盘 → 拉起 suwen-gui.exe。
+//! 流程:检测 suwen-gui.exe 是否存在 → 不存在则下载 suwen-setup.exe 静默安装(/S)
+//! → 等安装器退出 + 轮询 suwen-gui.exe 落盘 → 拉起它。
 //! 客户端启动即提权(main.rs ensure_elevated),安装器子进程继承管理员令牌,不二次弹 UAC。
 #![cfg_attr(not(windows), allow(dead_code))]
 
@@ -9,9 +9,8 @@ use std::path::PathBuf;
 
 /// 素问安装器下载地址(带 /S 静默安装)。
 pub const SETUP_URL: &str = "https://ai-agent.guoziweb.com/downloads/client/suwen-setup.exe";
-/// 素问守护进程名(检测锚点)。
-pub const DAEMON_EXE: &str = "suwen-daemon.exe";
-/// 素问 GUI 进程名(拉起目标)。
+/// 素问 GUI 进程名:既是安装检测锚点(实测素问 0.8.14 装出的目录无独立 daemon,
+/// 仅有 suwen-gui.exe/uninstall.exe/resources),也是拉起目标——检测本就要启动的 exe,自洽。
 pub const GUI_EXE: &str = "suwen-gui.exe";
 
 // UI 相位:与 app.slint `suwen_phase` 取值一一对应。
@@ -53,9 +52,9 @@ fn find_exe(name: &str) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
-/// 素问是否已安装(以 daemon.exe 存在为锚点)。
+/// 素问是否已安装(以 suwen-gui.exe 存在为锚点;素问装出的目录无独立 daemon)。
 pub fn is_installed() -> bool {
-    find_exe(DAEMON_EXE).is_some()
+    find_exe(GUI_EXE).is_some()
 }
 
 #[cfg(windows)]
@@ -101,8 +100,8 @@ mod win {
         Ok(())
     }
 
-    /// 轮询等待 daemon.exe 落盘(安装真正完成),超时报错。
-    /// 双保险:安装器 `.status()` 已等到进程退出,但仍轮询确认 daemon.exe 可见,
+    /// 轮询等待 suwen-gui.exe 落盘(安装真正完成),超时报错。
+    /// 双保险:安装器 `.status()` 已等到进程退出,但仍轮询确认 suwen-gui.exe 可见,
     /// 兜底"安装器早退但文件系统写入/可见性延迟"及安装器行为差异,避免过早拉起 GUI。
     pub fn wait_installed() -> anyhow::Result<()> {
         let deadline = Instant::now() + INSTALL_TIMEOUT;
@@ -111,7 +110,7 @@ mod win {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                anyhow::bail!("安装超时:{}s 内未见 {DAEMON_EXE}", INSTALL_TIMEOUT.as_secs());
+                anyhow::bail!("安装超时:{}s 内未见 {GUI_EXE}", INSTALL_TIMEOUT.as_secs());
             }
             std::thread::sleep(POLL_INTERVAL);
         }
