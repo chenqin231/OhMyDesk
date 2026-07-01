@@ -345,4 +345,19 @@ mod tests {
             b64.len()
         );
     }
+
+    #[test]
+    #[ignore] // 手动：cargo test -p client --release encode_bench_1280x720 -- --ignored --nocapture
+    fn encode_bench_1280x720() {
+        let img = image::RgbaImage::from_fn(1280, 720, |x, y| {
+            image::Rgba([(x % 256) as u8, (y % 256) as u8, 128, 255])
+        });
+        let n = 30;
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            let _ = encode_frame_q(&img, 1280, 720, 80).unwrap();
+        }
+        let per = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
+        println!("encode_frame_q 1280x720 q80: {per:.1} ms/帧 (n={n})");
+    }
 }
