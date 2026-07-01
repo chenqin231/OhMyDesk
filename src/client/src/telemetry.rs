@@ -497,6 +497,7 @@ pub async fn run_collector(
     let mut win_frames: Vec<FrameSample> = vec![];
     let mut win_egress: Vec<EgressSample> = vec![];
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10));
+    let mut adaptive = crate::adaptive::AdaptiveController::default();
     loop {
         tokio::select! {
             msg = rx.recv() => match msg {
@@ -517,7 +518,9 @@ pub async fn run_collector(
             _ = ticker.tick() => {
                 if win_frames.is_empty() { continue; }
                 let stats = aggregate(&win_frames, &win_egress, 10_000);
-                tracing::info!("{}", format_log(&stats, &collector.sid_str(), 0));
+                let lvl = adaptive.observe(&stats);
+                crate::adaptive::store_level(lvl);
+                tracing::info!("{}", format_log(&stats, &collector.sid_str(), lvl));
                 let anomalies = classify(&stats);
                 if !anomalies.is_empty() {
                     tracing::warn!("遥测异常 {anomalies:?}");
