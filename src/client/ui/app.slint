@@ -780,52 +780,6 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: 1px;
-                                Text {
-                                    text: "OhMyDesk";
-                                    color: Theme.fg;
-                                    font-size: 15px;
-                                    font-weight: 700;
-                                }
-                                Text {
-                                    text: "信创内网安全管控客户端";
-                                    color: Theme.fg-muted;
-                                    font-size: 11px;
-                                }
-                            }
-                            Rectangle { } // 撑开
-                            // 在线胶囊
-                            Rectangle {
-                                border-radius: 12px;
-                                background: Theme.muted;
-                                border-width: 1px;
-                                border-color: Theme.card-border;
-                                HorizontalLayout {
-                                    padding-left: 9px;
-                                    padding-right: 11px;
-                                    padding-top: 5px;
-                                    padding-bottom: 5px;
-                                    spacing: 6px;
-                                    VerticalLayout {
-                                        alignment: center;
-                                        Rectangle {
-                                            width: 7px;
-                                            height: 7px;
-                                            border-radius: 4px;
-                                            background: root.connected ? Theme.emerald : Theme.fg-muted;
-                                        }
-                                    }
-                                    Text {
-                                        text: root.connected ? "在线" : "连接中";
-                                        color: root.connected ? Theme.fg : Theme.fg-muted;
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
                         }
 
                         // ── 设备卡（本机 ID + 临时密码）──
