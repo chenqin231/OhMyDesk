@@ -41,10 +41,12 @@ impl Injector {
         })
     }
 
-    /// 帧内坐标 → 真实屏坐标。帧尺寸取当前画质档位下的推帧分辨率（与采集线程同源），
-    /// 故高清/流畅切换后即时跟随，不会用陈旧尺寸还原坐标（修复「切高清后点击错位」）。
+    /// 帧内坐标 → 真实屏坐标。帧尺寸优先取「最近实际发出帧」的真实尺寸（含 adaptive 动态降档/
+    /// 低带宽钳制的结果），尚无帧发出时回退当前档位标称尺寸。这样 adaptive 降档后两端「帧多大」
+    /// 一致，不会用标称尺寸还原致点击错位（修复自适应引入的「切高清/过载降档后点击错位」）。
     fn to_real(&self, x: i32, y: i32) -> (i32, i32) {
-        let (frame_w, frame_h) = crate::capture::current_frame_dims(self.real_w, self.real_h);
+        let (frame_w, frame_h) = crate::capture::last_frame_dims()
+            .unwrap_or_else(|| crate::capture::current_frame_dims(self.real_w, self.real_h));
         map_frame_to_real(x, y, frame_w, frame_h, self.real_w, self.real_h)
     }
 

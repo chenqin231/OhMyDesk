@@ -295,6 +295,7 @@ pub async fn consume_capture(
                 if fake {
                     seq += 1;
                     if let Ok((data, w, h)) = capture::placeholder_frame(seq) {
+                        capture::set_last_frame_dims(w, h); // 注入坐标还原用实际发出尺寸
                         if from_ui_tx
                             .send(net::FromUi::Frame { session_id: sid, data, w, h, seq })
                             .is_err()
@@ -348,6 +349,7 @@ pub async fn consume_capture(
                     match cap.frame_q(&qp) {
                         Ok((data, w, h)) => {
                             seq += 1;
+                            capture::set_last_frame_dims(w, h); // 注入坐标还原用实际发出尺寸
                             if from_ui_tx
                                 .send(net::FromUi::Frame { session_id: sid, data, w, h, seq })
                                 .is_err()
@@ -409,6 +411,7 @@ pub async fn consume_capture(
                         let (data, w, h) = (o.data, o.w, o.h);
                         let encoded_bytes = data.len(); // base64 长度=上网字节(JSON 内即此串)
                         seq += 1;
+                        capture::set_last_frame_dims(w, h); // 注入坐标还原用实际发出(含 adaptive 降档)尺寸
                         if tele_on {
                             let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Frame(crate::telemetry::FrameSample {
                                 ts_ms: tick_now,

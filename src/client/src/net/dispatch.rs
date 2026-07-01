@@ -204,6 +204,8 @@ pub(super) async fn handle_downlink(
             );
             if controlled {
                 crate::capture::set_quality(mode);
+                // 手动切档立即重置自适应降档，让用户选择先生效（弱机上避免被 adaptive 立即拉回）。
+                crate::adaptive::request_reset();
                 let p = crate::capture::current_params();
                 tracing::info!(
                     "被控已应用画质 上限={}x{} q={} 间隔={}ms",
