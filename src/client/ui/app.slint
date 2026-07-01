@@ -666,75 +666,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        // 被控端聊天紧凑面板（被控期间真人回复）
-        if root.being_controlled && root.chat_panel_open: Rectangle {
-            height: 220px;
-            background: #131316;
-            border-width: 1px;
-            border-color: Theme.card-border;
-            VerticalLayout {
-                padding: 10px;
-                spacing: 8px;
-                HorizontalLayout {
-                    Text {
-                        text: "与 " + root.peer_name + " 的会话";
-                        color: Theme.fg;
-                        font-size: 13px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    GhostButton {
-                        label: "收起";
-                        clicked => {
-                            root.chat_panel_open = false;
-                        }
-                    }
-                }
-                Rectangle {
-                    vertical-stretch: 1;
-                    border-radius: 8px;
-                    background: #0d0d10;
-                    Flickable {
-                        width: 100%;
-                        height: 100%;
-                        viewport-width: self.width;
-                        viewport-height: cc_text.preferred-height + 16px;
-                        cc_text := Text {
-                            x: 10px;
-                            y: 8px;
-                            width: parent.width - 20px;
-                            text: root.controlled_chat_log == "" ? "暂无消息" : root.controlled_chat_log;
-                            color: root.controlled_chat_log == "" ? Theme.fg-muted : Theme.fg;
-                            font-size: 13px;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    FieldInput {
-                        horizontal-stretch: 1;
-                        placeholder: "回复…";
-                        text <=> root.controlled_chat_input;
-                        accepted => {
-                            if (root.controlled_chat_input != "") {
-                                root.send_controlled_chat(root.controlled_chat_input);
-                                root.controlled_chat_input = "";
-                            }
-                        }
-                    }
-                    PrimaryButton {
-                        label: "发送";
-                        enabled: root.controlled_chat_input != "";
-                        clicked => {
-                            root.send_controlled_chat(root.controlled_chat_input);
-                            root.controlled_chat_input = "";
-                        }
-                    }
-                }
-            }
-        }
+        // 被控端聊天已改为右侧滑出抽屉（见根组件底部 overlay 层），此处不再内联面板。
 
         // 卡片区（可滚动：历史变多/窗口偏小时内容不被裁切；窗口紧凑贴合原型）
         Rectangle {
@@ -1543,6 +1475,97 @@ export component AppWindow inherits Window {
                         }
                         ValueRow { caption: "诊断目录"; value: root.diag_dir; }
                         DangerButton { label: "关闭"; clicked => { root.diag_visible = false; } }
+                    }
+                }
+            }
+        }
+    }
+
+    // 被控端聊天抽屉（右侧滑出，覆盖在界面之上，overlay 层）。
+    // 常驻于 being_controlled 期间，靠 x/opacity 动画驱动滑入滑出，chat_panel_open 控制开合。
+    if root.being_controlled: Rectangle {
+        // 半透明遮罩：仅面板打开时显示并吃背景点击（点击遮罩关闭抽屉）。
+        Rectangle {
+            background: #00000080;
+            opacity: root.chat_panel_open ? 1.0 : 0.0;
+            visible: root.chat_panel_open;
+            animate opacity { duration: 200ms; easing: ease-out; }
+            TouchArea {
+                clicked => {
+                    root.chat_panel_open = false;
+                }
+            }
+        }
+        // 抽屉本体：贴右边，满高，320px 宽；关闭时移出屏幕右侧（x 动画滑入滑出）。
+        chat_drawer := Rectangle {
+            width: 320px;
+            height: 100%;
+            x: root.chat_panel_open ? parent.width - self.width : parent.width;
+            animate x { duration: 200ms; easing: ease-out; }
+            background: #131316;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            // 吃掉抽屉内的背景点击，避免穿透到遮罩导致误关。
+            TouchArea { }
+            VerticalLayout {
+                padding: 14px;
+                spacing: 10px;
+                HorizontalLayout {
+                    Text {
+                        text: "与 " + root.peer_name + " 的会话";
+                        color: Theme.fg;
+                        font-size: 14px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    GhostButton {
+                        label: "收起";
+                        clicked => {
+                            root.chat_panel_open = false;
+                        }
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    border-radius: 8px;
+                    background: #0d0d10;
+                    Flickable {
+                        width: 100%;
+                        height: 100%;
+                        viewport-width: self.width;
+                        viewport-height: cc_text.preferred-height + 16px;
+                        cc_text := Text {
+                            x: 10px;
+                            y: 8px;
+                            width: parent.width - 20px;
+                            text: root.controlled_chat_log == "" ? "暂无消息" : root.controlled_chat_log;
+                            color: root.controlled_chat_log == "" ? Theme.fg-muted : Theme.fg;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    FieldInput {
+                        horizontal-stretch: 1;
+                        placeholder: "回复…";
+                        text <=> root.controlled_chat_input;
+                        accepted => {
+                            if (root.controlled_chat_input != "") {
+                                root.send_controlled_chat(root.controlled_chat_input);
+                                root.controlled_chat_input = "";
+                            }
+                        }
+                    }
+                    PrimaryButton {
+                        label: "发送";
+                        enabled: root.controlled_chat_input != "";
+                        clicked => {
+                            root.send_controlled_chat(root.controlled_chat_input);
+                            root.controlled_chat_input = "";
+                        }
                     }
                 }
             }
