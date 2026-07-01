@@ -122,7 +122,8 @@ impl Capturer {
     /// 按画质档位截一帧（推流用）：分辨率上限/质量由 `QualityParams` 决定。
     pub fn frame_q(&self, p: &QualityParams) -> anyhow::Result<(String, u32, u32)> {
         let img = self.mon.capture_image()?;
-        encode_frame_q(&img, p.max_w, p.max_h, p.jpeg_q)
+        let o = encode_frame_q(&img, p.max_w, p.max_h, p.jpeg_q)?;
+        Ok((o.data, o.w, o.h))
     }
 
     /// 截一帧原始 RGBA（不缩放不编码），供变化检测先行（spec §3.1）。
@@ -133,7 +134,17 @@ impl Capturer {
 
 /// 把一帧 RGBA 等比缩放 + JPEG q85 + base64（默认 1280×720 上限，截图/默认路径用）。
 pub fn encode_frame(img: &RgbaImage) -> anyhow::Result<(String, u32, u32)> {
-    encode_frame_q(img, MAX_W, MAX_H, 85)
+    let o = encode_frame_q(img, MAX_W, MAX_H, 85)?;
+    Ok((o.data, o.w, o.h))
+}
+
+/// 编码产出 + 分段耗时（resize 与 jpeg 分开计时，用于定位「编码过载」主导项）。
+pub struct EncodeOut {
+    pub data: String,
+    pub w: u32,
+    pub h: u32,
+    pub resize_ms: u32,
+    pub jpeg_ms: u32,
 }
 
 /// 把一帧 RGBA 按指定分辨率上限等比缩放 + JPEG(质量 q) + base64（纯函数，便于单测）。
@@ -142,21 +153,27 @@ pub fn encode_frame_q(
     max_w: u32,
     max_h: u32,
     q: u8,
-) -> anyhow::Result<(String, u32, u32)> {
+) -> anyhow::Result<EncodeOut> {
     let (sw, sh) = (img.width(), img.height());
     let (w, h) = scaled_dims(sw, sh, max_w, max_h);
 
     // 缩放（等比，不放大）。尺寸未变时跳过 resize 省一次拷贝。
+    let t_resize = std::time::Instant::now();
     let rgb = if (w, h) == (sw, sh) {
         image::DynamicImage::ImageRgba8(img.clone()).to_rgb8()
     } else {
         let resized = image::imageops::resize(img, w, h, image::imageops::FilterType::Lanczos3);
         image::DynamicImage::ImageRgba8(resized).to_rgb8()
     };
+    let resize_ms = t_resize.elapsed().as_millis() as u32;
 
+    let t_jpeg = std::time::Instant::now();
     let mut buf = std::io::Cursor::new(Vec::new());
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, q).encode_image(&rgb)?;
-    Ok((STANDARD.encode(buf.get_ref()), w, h))
+    let data = STANDARD.encode(buf.get_ref());
+    let jpeg_ms = t_jpeg.elapsed().as_millis() as u32;
+
+    Ok(EncodeOut { data, w, h, resize_ms, jpeg_ms })
 }
 
 /// 降级占位帧（仅 `OHMYDESK_FAKE_CAPTURE=1` 时启用）：真实截屏不可用的环境（如 WSLg 的
@@ -280,13 +297,15 @@ mod tests {
 
         set_quality(protocol::QualityMode::Smooth);
         let sp = params_for(protocol::QualityMode::Smooth);
-        let (_, sw, sh) = encode_frame_q(&img, sp.max_w, sp.max_h, sp.jpeg_q).unwrap();
+        let o = encode_frame_q(&img, sp.max_w, sp.max_h, sp.jpeg_q).unwrap();
+        let (sw, sh) = (o.w, o.h);
         assert_eq!(current_frame_dims(1920, 1080), (sw, sh), "流畅档帧尺寸应一致");
         assert_eq!((sw, sh), (1280, 720));
 
         set_quality(protocol::QualityMode::HighQuality);
         let hp = params_for(protocol::QualityMode::HighQuality);
-        let (_, hw, hh) = encode_frame_q(&img, hp.max_w, hp.max_h, hp.jpeg_q).unwrap();
+        let o = encode_frame_q(&img, hp.max_w, hp.max_h, hp.jpeg_q).unwrap();
+        let (hw, hh) = (o.w, o.h);
         assert_eq!(current_frame_dims(1920, 1080), (hw, hh), "高清档帧尺寸应一致");
         assert_eq!((hw, hh), (1920, 1080));
         // 关键回归：高清档下注入帧尺寸绝不能再是旧静态 1280×720（那会导致 1.5× 偏移）。
@@ -296,13 +315,24 @@ mod tests {
     }
 
     #[test]
+    fn encode_frame_q_返回分段耗时字段() {
+        let img = image::RgbaImage::from_pixel(200, 120, image::Rgba([10, 20, 30, 255]));
+        // max 100x60 < 源 → 触发缩放路径
+        let o = encode_frame_q(&img, 100, 60, 80).unwrap();
+        assert_eq!((o.w, o.h), (100, 60), "等比缩放到上限");
+        assert!(!o.data.is_empty(), "有 base64 输出");
+        // 字段可读、类型为 u32（不断言具体 ms，避免机器差异 flaky）
+        let _total: u32 = o.resize_ms + o.jpeg_ms;
+    }
+
+    #[test]
     fn encode_质量档位_高清更大() {
         // 同图：高清(更大分辨率上限+更高q)的字节数应 ≥ 流畅
         let img = solid(1920, 1080);
-        let (hq, hw, _) = encode_frame_q(&img, 1920, 1080, 88).unwrap();
-        let (sm, sw, _) = encode_frame_q(&img, 1280, 720, 80).unwrap();
-        assert_eq!((hw, sw), (1920, 1280), "分辨率上限生效");
-        assert!(hq.len() >= sm.len(), "高清帧字节应不小于流畅帧");
+        let hq_o = encode_frame_q(&img, 1920, 1080, 88).unwrap();
+        let sm_o = encode_frame_q(&img, 1280, 720, 80).unwrap();
+        assert_eq!((hq_o.w, sm_o.w), (1920, 1280), "分辨率上限生效");
+        assert!(hq_o.data.len() >= sm_o.data.len(), "高清帧字节应不小于流畅帧");
     }
 
     #[test]
