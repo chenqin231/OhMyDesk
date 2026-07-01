@@ -311,6 +311,7 @@ pub fn wire_ui_callbacks(
         ui.on_check_update(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_update_status("正在检查更新…".into());
+                ui.set_update_phase(1);
             }
             crate::update::nudge();
         });
@@ -931,10 +932,11 @@ pub async fn consume_to_ui(
                 });
             }
             // 更新状态文本：始终可见的设备卡状态行（检查中/已是最新/下载中/失败）
-            net::ToUi::UpdateStatus { text } => {
+            net::ToUi::UpdateStatus { text, phase } => {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_update_status(text.into());
+                        ui.set_update_phase(phase as i32);
                     }
                 });
             }
