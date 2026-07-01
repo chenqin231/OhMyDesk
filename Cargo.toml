@@ -16,6 +16,11 @@ lto = true
 codegen-units = 1
 strip = true
 
+# 图像热路径（Lanczos3 缩放 / JPEG 编码）为速度编译，抵消 opt-level="z" 对纯 Rust
+# 图像处理的拖累；client 主 crate 与其余依赖仍 opt="z"，分发体积基本不膨胀。
+[profile.release.package.image]
+opt-level = 3
+
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
