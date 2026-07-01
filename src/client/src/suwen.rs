@@ -73,6 +73,10 @@ mod win {
 
     /// 下载素问安装器到 %TEMP% 临时文件,返回临时路径。
     /// 复用 update::build_agent(必须显式 SChannel,否则 ureq 报 "no TLS backend")+ CapReader(50MB 上限)。
+    ///
+    /// **调用方须持有返回的 `TempPath` 直到 `run_installer` 的 `.status()` 返回**:
+    /// `TempPath` 一旦 drop 即删除临时安装包。正确用法:`let setup = download_setup()?; run_installer(&setup)?;`
+    /// 切勿写成 `run_installer(&download_setup()?)`——临时值会在语句结束即 drop,安装器运行中文件被删。
     pub fn download_setup() -> anyhow::Result<tempfile::TempPath> {
         let agent = crate::update::build_agent(10, 300);
         let resp = agent.get(SETUP_URL).call()?;
@@ -98,7 +102,8 @@ mod win {
     }
 
     /// 轮询等待 daemon.exe 落盘(安装真正完成),超时报错。
-    /// /S 为异步:单看安装器退出不足以保证文件就绪,故双条件(退出成功 + 文件出现)。
+    /// 双保险:安装器 `.status()` 已等到进程退出,但仍轮询确认 daemon.exe 可见,
+    /// 兜底"安装器早退但文件系统写入/可见性延迟"及安装器行为差异,避免过早拉起 GUI。
     pub fn wait_installed() -> anyhow::Result<()> {
         let deadline = Instant::now() + INSTALL_TIMEOUT;
         loop {
