@@ -567,6 +567,8 @@ export component AppWindow inherits Window {
     in property <string> update_url;
     in property <string> update_notes;
     callback copy_url(string);                    // 复制下载链接（不过滤空白）
+    in property <string> update_status;           // 更新状态文本（始终可见状态行；空=占位）
+    callback check_update();                       // 手动检查更新（触发 nudge）
 
     // ── 隐藏诊断菜单 ──
     in property <string> diag_dir;                   // 诊断包目录（Rust 启动时 set）
@@ -778,6 +780,22 @@ export component AppWindow inherits Window {
                                             running: parent.copied;
                                             triggered => { parent.copied = false; }
                                         }
+                                    }
+                                }
+                                // 更新状态行（始终可见）：左显示状态文本（空时占位），右为手动检查按钮
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: root.update_status == "" ? "点右侧按钮检查更新" : root.update_status;
+                                        color: Theme.fg-muted;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                    GhostButton {
+                                        label: "检查更新";
+                                        clicked => { root.check_update(); }
                                     }
                                 }
                             }
