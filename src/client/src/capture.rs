@@ -16,6 +16,7 @@ use xcap::Monitor;
 static QUALITY: AtomicU8 = AtomicU8::new(0);
 
 /// 画质档位对应的采集参数：分辨率上限 + JPEG 质量 + 推帧间隔(ms)。
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QualityParams {
     pub max_w: u32,
     pub max_h: u32,
