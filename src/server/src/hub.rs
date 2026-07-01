@@ -629,6 +629,54 @@ mod tests {
         assert!(a_rx.try_recv().is_err(), "不应回发给发送方");
     }
 
+    /// Bug 回归（被控主动发聊天）：被控端(to_id=ep-victim)→主控端(from_id=admin-x) 方向的
+    /// ChatMessage 必须正确投递给主控。坐证「服务端路由本身正确，漂移 bug 在客户端」——
+    /// 只要被控带的是权威 session_id，route_to_peer→peer_of 就能查到 admin 对端并送达。
+    #[tokio::test]
+    async fn chat_from_controlled_to_admin_master_delivered() {
+        let hub = test_hub();
+        let (admin_tx, mut admin_rx) = mpsc::unbounded_channel::<String>();
+        let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-x".into(), admin_tx);
+        hub.add_client("ep-victim".into(), victim_tx);
+
+        let sid = "sess-ctrl-chat".to_string();
+        hub.sessions.insert(Session {
+            id: sid.clone(),
+            mode: Mode::A, // 管理后台强制远程（force = auto_accept），复现用户现场
+            from_id: "admin-x".into(),
+            to_id: "ep-victim".into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        // 被控端（to_id）主动发聊天，带权威 session_id
+        let env = Envelope {
+            from: "ep-victim".into(),
+            to: None,
+            ts: 200,
+            payload: Message::ChatMessage {
+                session_id: sid.clone(),
+                msg_id: "cm-1".into(),
+                text: "被控发给主控".into(),
+            },
+        };
+        hub.handle(env, 200).await;
+
+        // 主控端（admin）必须收到该 chat
+        let got = admin_rx
+            .try_recv()
+            .expect("主控端应收到被控发来的 ChatMessage");
+        let env: Envelope = serde_json::from_str(&got).unwrap();
+        match env.payload {
+            Message::ChatMessage { text, .. } => assert_eq!(text, "被控发给主控"),
+            other => panic!("应为 ChatMessage,实际 {other:?}"),
+        }
+        // 被控自己不应收到回发（它是发送方）
+        assert!(victim_rx.try_recv().is_err(), "不应回发给发送方被控端");
+    }
+
     /// 懒推流信号:SetCapture 必须按 session 路由给对端(被控端据此启停采集)。
     #[tokio::test]
     async fn set_capture_forwarded_to_peer() {
