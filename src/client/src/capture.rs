@@ -182,11 +182,14 @@ pub fn encode_frame_q(
     let (w, h) = scaled_dims(sw, sh, max_w, max_h);
 
     // 缩放（等比，不放大）。尺寸未变时跳过 resize 省一次拷贝。
+    // 滤波用 Triangle(双线性) 而非 Lanczos3：真机实测 Lanczos3 降采是编码耗时大头(老 Xeon 上
+    // ~200ms/帧，占 ~79%)，且其成本由「读整张输入」决定、降分辨率几乎不省；Triangle 快数倍、
+    // 远控 720p 画质损失可接受，直接砍延迟。详见 specs/2026-07-01-resize-pipeline-perf-design.md。
     let t_resize = std::time::Instant::now();
     let rgb = if (w, h) == (sw, sh) {
         image::DynamicImage::ImageRgba8(img.clone()).to_rgb8()
     } else {
-        let resized = image::imageops::resize(img, w, h, image::imageops::FilterType::Lanczos3);
+        let resized = image::imageops::resize(img, w, h, image::imageops::FilterType::Triangle);
         image::DynamicImage::ImageRgba8(resized).to_rgb8()
     };
     let resize_ms = t_resize.elapsed().as_millis() as u32;

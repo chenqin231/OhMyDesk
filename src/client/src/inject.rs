@@ -27,6 +27,9 @@ pub struct Injector {
     real_h: u32,
     /// 当前按住的非 Shift 修饰键（Ctrl/Alt/Meta）位掩码，从事件流推断，用于组合键注入。
     mods_held: u8,
+    /// 最近一次鼠标移动的坐标映射快照 (帧内x, 帧内y, 帧w, 帧h, 注入rx, 注入ry)，
+    /// 点击(MouseButton down)时打诊断日志用——定位「点击错位」到底错在哪一段。
+    last_click_dbg: (i32, i32, u32, u32, i32, i32),
 }
 
 impl Injector {
@@ -38,26 +41,32 @@ impl Injector {
             real_w,
             real_h,
             mods_held: 0,
+            last_click_dbg: (0, 0, 0, 0, 0, 0),
         })
-    }
-
-    /// 帧内坐标 → 真实屏坐标。帧尺寸优先取「最近实际发出帧」的真实尺寸（含 adaptive 动态降档/
-    /// 低带宽钳制的结果），尚无帧发出时回退当前档位标称尺寸。这样 adaptive 降档后两端「帧多大」
-    /// 一致，不会用标称尺寸还原致点击错位（修复自适应引入的「切高清/过载降档后点击错位」）。
-    fn to_real(&self, x: i32, y: i32) -> (i32, i32) {
-        let (frame_w, frame_h) = crate::capture::last_frame_dims()
-            .unwrap_or_else(|| crate::capture::current_frame_dims(self.real_w, self.real_h));
-        map_frame_to_real(x, y, frame_w, frame_h, self.real_w, self.real_h)
     }
 
     /// 注入一个输入事件。
     pub fn apply(&mut self, ev: &InputEvent) -> anyhow::Result<()> {
         match ev {
             InputEvent::MouseMove { x, y } => {
-                let (rx, ry) = self.to_real(*x, *y);
+                // 帧内坐标 → 真实屏坐标。帧尺寸优先取「最近实际发出帧」的真实尺寸（含 adaptive
+                // 降档结果），尚无帧发出时回退当前档位标称尺寸。记录映射快照供点击诊断日志。
+                let (frame_w, frame_h) = crate::capture::last_frame_dims()
+                    .unwrap_or_else(|| crate::capture::current_frame_dims(self.real_w, self.real_h));
+                let (rx, ry) = map_frame_to_real(*x, *y, frame_w, frame_h, self.real_w, self.real_h);
+                self.last_click_dbg = (*x, *y, frame_w, frame_h, rx, ry);
                 self.enigo.move_mouse(rx, ry, Abs)?;
             }
             InputEvent::MouseButton { button, down } => {
+                // 点击诊断：打出最近一次移动的全链路映射，定位「点击错位」错在哪一段。
+                if *down {
+                    let (ix, iy, fw, fh, rx, ry) = self.last_click_dbg;
+                    tracing::info!(
+                        "点击注入诊断 收到帧内=({ix},{iy}) 帧尺寸={fw}x{fh} 真实屏={}x{} → 注入=({rx},{ry})",
+                        self.real_w,
+                        self.real_h
+                    );
+                }
                 let b = match button {
                     0 => Button::Left,
                     1 => Button::Middle,
