@@ -8,7 +8,7 @@
 use crate::geom::{scaled_dims, MAX_H, MAX_W};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::RgbaImage;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use xcap::Monitor;
 
 /// 当前画质档位（被控端推帧线程每帧读取）：0=流畅优先(默认)，1=高清优先。
@@ -74,6 +74,29 @@ pub fn current_params() -> QualityParams {
 pub fn current_frame_dims(real_w: u32, real_h: u32) -> (u32, u32) {
     let p = current_params();
     crate::geom::scaled_dims(real_w, real_h, p.max_w, p.max_h)
+}
+
+/// 被控端「最近实际发出的一帧」的缩放后尺寸——即 render_mode/adaptive 动态钳制后的**真实**结果。
+/// 注入侧据此还原坐标（「发了多大就按多大还原」），避免 `current_frame_dims`（仅档位标称、
+/// 不含 adaptive 降档）与实际发出尺寸不一致导致点击错位。0 = 尚无帧发出。
+static LAST_FRAME_W: AtomicU32 = AtomicU32::new(0);
+static LAST_FRAME_H: AtomicU32 = AtomicU32::new(0);
+
+/// 推帧线程每发出一帧即记录其真实缩放后尺寸（含 clamp/adaptive 结果）。
+pub fn set_last_frame_dims(w: u32, h: u32) {
+    LAST_FRAME_W.store(w, Ordering::Relaxed);
+    LAST_FRAME_H.store(h, Ordering::Relaxed);
+}
+
+/// 最近实际发出帧的尺寸；尚无帧发出（任一维为 0）时返回 None，调用方回退到 `current_frame_dims`。
+pub fn last_frame_dims() -> Option<(u32, u32)> {
+    let w = LAST_FRAME_W.load(Ordering::Relaxed);
+    let h = LAST_FRAME_H.load(Ordering::Relaxed);
+    if w == 0 || h == 0 {
+        None
+    } else {
+        Some((w, h))
+    }
 }
 
 /// 持有主显示器句柄，复用于每帧截屏。
@@ -219,6 +242,20 @@ mod tests {
     /// 合成纯色 RgbaImage，避免依赖真实显示器测编码/缩放。
     fn solid(w: u32, h: u32) -> RgbaImage {
         RgbaImage::from_pixel(w, h, Rgba([10, 120, 200, 255]))
+    }
+
+    #[test]
+    fn last_frame_dims_记录实际发出尺寸与回退() {
+        // 复位：无帧发出 → None（调用方回退 current_frame_dims）
+        set_last_frame_dims(0, 0);
+        assert_eq!(last_frame_dims(), None, "尚无帧发出返回 None");
+        // 记录后读回**实际发出**尺寸（如 adaptive 降档后的 896×504，与档位标称无关）
+        set_last_frame_dims(896, 504);
+        assert_eq!(last_frame_dims(), Some((896, 504)), "返回最近实际发出尺寸");
+        // 任一维为 0 视为未设
+        set_last_frame_dims(800, 0);
+        assert_eq!(last_frame_dims(), None, "任一维为 0 → None");
+        set_last_frame_dims(0, 0); // 复位避免污染其它测试
     }
 
     #[test]

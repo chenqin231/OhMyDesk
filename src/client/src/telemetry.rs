@@ -516,6 +516,10 @@ pub async fn run_collector(
                 None => break,
             },
             _ = ticker.tick() => {
+                // 手动切档请求重置：重建控制器（清 streak+归零），让手动选择先生效再重新评估。
+                if crate::adaptive::take_reset() {
+                    adaptive = crate::adaptive::AdaptiveController::default();
+                }
                 if win_frames.is_empty() { continue; }
                 let stats = aggregate(&win_frames, &win_egress, 10_000);
                 let lvl = adaptive.observe(&stats);
