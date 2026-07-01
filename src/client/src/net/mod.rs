@@ -27,6 +27,14 @@ use tokio::sync::mpsc;
 use crate::asset;
 
 /// net → UI：下行事件（UI 据此更新提示条/弹窗/贴帧）。
+/// 更新状态阶段：UI 的颜色/脉冲只依赖此量，不匹配中文文案（文案可变、阶段稳定）。
+pub mod update_phase {
+    pub const IDLE: u8 = 0;        // 空闲/已最新
+    pub const CHECKING: u8 = 1;    // 检查中
+    pub const DOWNLOADING: u8 = 2; // 下载中
+    pub const FAILED: u8 = 3;      // 失败/会话延迟
+}
+
 #[derive(Debug, Clone)]
 pub enum ToUi {
     /// 注册成功，携本机 id + 明文密码（展示给用户报给主控方）。
@@ -106,7 +114,7 @@ pub enum ToUi {
     /// 发现新版：UI 弹更新横幅（version/url/notes）。
     UpdateAvailable { version: String, url: String, notes: Option<String> },
     /// 更新流程状态文本（始终可见的状态行：检查中/已是最新/下载中/失败等）。
-    UpdateStatus { text: String },
+    UpdateStatus { text: String, phase: u8 },
 }
 
 /// UI → net：上行动作（用户操作转成出站消息）。
@@ -363,5 +371,27 @@ mod tests {
         let json = serde_json::to_string(&env).unwrap();
         assert!(json.contains("\"type\":\"auth_result\""));
         assert!(json.contains("\"ok\":false"));
+    }
+}
+
+#[cfg(test)]
+mod update_phase_tests {
+    use super::*;
+
+    #[test]
+    fn phase常量取值() {
+        assert_eq!(
+            (update_phase::IDLE, update_phase::CHECKING, update_phase::DOWNLOADING, update_phase::FAILED),
+            (0u8, 1u8, 2u8, 3u8)
+        );
+    }
+
+    #[test]
+    fn update_status_携带_phase() {
+        let m = ToUi::UpdateStatus { text: "检查中".into(), phase: update_phase::CHECKING };
+        match m {
+            ToUi::UpdateStatus { phase, .. } => assert_eq!(phase, 1),
+            _ => panic!("变体不符"),
+        }
     }
 }
