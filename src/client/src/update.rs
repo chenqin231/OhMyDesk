@@ -279,7 +279,7 @@ use tokio::sync::mpsc::UnboundedSender;
 /// SChannel，否则运行时报「no TLS backend is configured」→ HTTPS 全废、自动更新永久失败
 /// （2026-07-01 实测根因：Windows 自更新从上线起从未成功）。非 Windows 用 rustls(`tls`)默认后端。
 #[cfg(windows)]
-fn build_agent(connect_s: u64, read_s: u64) -> ureq::Agent {
+pub(crate) fn build_agent(connect_s: u64, read_s: u64) -> ureq::Agent {
     let b = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(connect_s))
         .timeout_read(Duration::from_secs(read_s));
@@ -289,7 +289,7 @@ fn build_agent(connect_s: u64, read_s: u64) -> ureq::Agent {
     }
 }
 #[cfg(not(windows))]
-fn build_agent(connect_s: u64, read_s: u64) -> ureq::Agent {
+pub(crate) fn build_agent(connect_s: u64, read_s: u64) -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(connect_s))
         .timeout_read(Duration::from_secs(read_s))
