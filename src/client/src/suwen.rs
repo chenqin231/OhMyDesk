@@ -134,16 +134,25 @@ mod win {
 #[cfg(windows)]
 pub fn ensure_and_launch(ui: slint::Weak<crate::AppWindow>) {
     use std::sync::atomic::{AtomicBool, Ordering};
+    // 函数内 static:全进程唯一实例(非每次调用新建),用作防重入门闩。
     static RUNNING: AtomicBool = AtomicBool::new(false);
     if RUNNING.swap(true, Ordering::SeqCst) {
         return; // 已有任务在跑,忽略连点
     }
     std::thread::spawn(move || {
-        match run_flow(&ui) {
-            Ok(()) => set_state(&ui, PHASE_IDLE, String::new()),
-            Err(e) => {
+        // catch_unwind 兜底:release 为 panic=unwind,run_flow 调用链若 panic,
+        // 线程静默退出会让 RUNNING 永停 true + phase 卡在进行中→按钮永久锁死。
+        // 故三种结局(成功/错误/panic)都必须落到终态并在末尾释放门闩。
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_flow(&ui)));
+        match outcome {
+            Ok(Ok(())) => set_state(&ui, PHASE_IDLE, String::new()),
+            Ok(Err(e)) => {
                 tracing::warn!("素问部署失败:{e:#}");
                 set_state(&ui, PHASE_FAILED, format!("失败:{e}"));
+            }
+            Err(_) => {
+                tracing::error!("素问部署线程 panic");
+                set_state(&ui, PHASE_FAILED, "失败,点击重试".into());
             }
         }
         RUNNING.store(false, Ordering::SeqCst);
