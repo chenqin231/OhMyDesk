@@ -571,6 +571,12 @@ export component AppWindow inherits Window {
     in property <int> update_phase;               // 更新阶段：0空闲/最新 1检查中 2下载中 3失败（驱动颜色/转圈）
     callback check_update();                       // 手动检查更新（触发 nudge）
 
+    // ── 被控端「AI助手」:检测/静默安装/拉起素问(仅 Windows)──
+    in property <bool> suwen_supported: false;   // 仅 Windows 为 true,控制按钮可见
+    in property <int> suwen_phase: 0;            // 0空闲 1下载中 2安装中 3启动中 4失败
+    in property <string> suwen_status;           // 进度/失败详情(日志与排障用)
+    callback launch_suwen();                     // 点击:确保素问已装并拉起
+
     // ── 隐藏诊断菜单 ──
     in property <string> diag_dir;                   // 诊断包目录（Rust 启动时 set）
     in-out property <bool> diag_visible: false;      // 诊断面板可见
@@ -1699,6 +1705,45 @@ export component AppWindow inherits Window {
             running: root.controlled_toast_visible;
             triggered => {
                 root.controlled_toast_visible = false;
+            }
+        }
+    }
+
+    // 被控端右下角「AI助手」悬浮按钮:仅 idle 面板 + Windows 显示。
+    // 占满窗口仅为把按钮定位到右下角;TouchArea 只在按钮 Rectangle 内,不遮挡背景。
+    if !root.remote_active && root.suwen_supported: Rectangle {
+        VerticalLayout {
+            alignment: end;
+            HorizontalLayout {
+                alignment: end;
+                padding: 16px;
+                Rectangle {
+                    width: 128px;
+                    height: 40px;
+                    border-radius: 10px;
+                    background: sta.has-hover ? Theme.primary-hover : Theme.primary;
+                    border-width: root.suwen_phase == 4 ? 1px : 0px;
+                    border-color: Theme.amber;
+                    animate background { duration: 120ms; }
+                    Text {
+                        text: root.suwen_phase == 1 ? "下载中…"
+                            : root.suwen_phase == 2 ? "安装中…"
+                            : root.suwen_phase == 3 ? "启动中…"
+                            : root.suwen_phase == 4 ? "失败,点击重试"
+                            : "AI助手";
+                        color: white;
+                        font-size: 13px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    sta := TouchArea {
+                        mouse-cursor: pointer;
+                        // 进行中(1/2/3)禁用防重入;空闲(0)或失败(4)可点
+                        enabled: root.suwen_phase == 0 || root.suwen_phase == 4;
+                        clicked => { root.launch_suwen(); }
+                    }
+                }
             }
         }
     }
