@@ -58,6 +58,72 @@ pub fn is_installed() -> bool {
     find_exe(DAEMON_EXE).is_some()
 }
 
+#[cfg(windows)]
+mod win {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+    use std::path::Path;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000; // 同 exec.rs:38,静默不弹黑框
+    const INSTALL_TIMEOUT: Duration = Duration::from_secs(60);
+    const POLL_INTERVAL: Duration = Duration::from_millis(500);
+    const DOWNLOAD_CAP: u64 = 50 * 1024 * 1024;
+
+    /// 下载素问安装器到 %TEMP% 临时文件,返回临时路径。
+    /// 复用 update::build_agent(必须显式 SChannel,否则 ureq 报 "no TLS backend")+ CapReader(50MB 上限)。
+    pub fn download_setup() -> anyhow::Result<tempfile::TempPath> {
+        let agent = crate::update::build_agent(10, 300);
+        let resp = agent.get(SETUP_URL).call()?;
+        let mut tmp = tempfile::Builder::new()
+            .prefix(".suwen-setup-")
+            .suffix(".exe")
+            .tempfile_in(std::env::temp_dir())?;
+        let mut reader = crate::update::CapReader::new(resp.into_reader(), DOWNLOAD_CAP);
+        std::io::copy(&mut reader, tmp.as_file_mut())?;
+        Ok(tmp.into_temp_path())
+    }
+
+    /// 运行安装器静默安装(/S)。客户端已提权,子进程继承管理员令牌。等待退出并校验退出码。
+    pub fn run_installer(setup: &Path) -> anyhow::Result<()> {
+        let status = Command::new(setup)
+            .arg("/S")
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("安装器退出码非 0:{status}");
+        }
+        Ok(())
+    }
+
+    /// 轮询等待 daemon.exe 落盘(安装真正完成),超时报错。
+    /// /S 为异步:单看安装器退出不足以保证文件就绪,故双条件(退出成功 + 文件出现)。
+    pub fn wait_installed() -> anyhow::Result<()> {
+        let deadline = Instant::now() + INSTALL_TIMEOUT;
+        loop {
+            if is_installed() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!("安装超时:{}s 内未见 {DAEMON_EXE}", INSTALL_TIMEOUT.as_secs());
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// 拉起素问 GUI(不 wait、不加窗口 flag)。工作目录设为安装目录。
+    pub fn launch_gui() -> anyhow::Result<()> {
+        let gui = find_exe(GUI_EXE).ok_or_else(|| anyhow::anyhow!("未找到 {GUI_EXE}"))?;
+        let mut cmd = Command::new(&gui);
+        if let Some(dir) = gui.parent() {
+            cmd.current_dir(dir);
+        }
+        cmd.spawn()?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
