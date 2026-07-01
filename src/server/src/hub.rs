@@ -162,6 +162,47 @@ impl Hub {
         }
     }
 
+    /// 客户端断开时结束其参与的所有活跃会话（修 orphan active 泄漏）。
+    /// 对每条被移除的会话：向对端发 SessionEnd（清「被控/控制」态）+ audit.end_session
+    /// 更新 DB 终态 + 落输入聚合审计 + 落 Disconnect「对端断开」审计。镜像 handle_session_end。
+    pub async fn end_client_sessions(&self, client_id: &str, now: i64) {
+        let ended = self
+            .sessions
+            .remove_sessions_of(client_id, now, protocol::SessionStatus::Ended);
+        for (session, input_summary) in ended {
+            let session_id = &session.id;
+            // 通知对端（会话里 ≠ 断开方的一侧）：据此清除"正在被控/控制"态。
+            let peer = if session.from_id == client_id {
+                &session.to_id
+            } else {
+                &session.from_id
+            };
+            let end_env = Envelope {
+                from: "server".into(),
+                to: Some(peer.clone()),
+                ts: now,
+                payload: Message::SessionEnd {
+                    session_id: session_id.clone(),
+                },
+            };
+            if let Ok(json) = serde_json::to_string(&end_env) {
+                self.send_to(peer, &json);
+            }
+            // 落输入聚合审计（M-SRV4）
+            self.audit
+                .log(session_id, &session.from_id, AuditType::Input, &input_summary)
+                .await;
+            // 更新 DB 会话终态
+            self.audit
+                .end_session(session_id, now, protocol::SessionStatus::Ended)
+                .await;
+            // 落断开审计（对端断开）
+            self.audit
+                .log(session_id, &session.from_id, AuditType::Disconnect, "对端断开")
+                .await;
+        }
+    }
+
     /// 处理一条入站信封；now 为秒级 Unix 时间戳
     pub async fn handle(&self, env: Envelope, now: i64) {
         match &env.payload {
@@ -588,6 +629,54 @@ mod tests {
         assert!(a_rx.try_recv().is_err(), "不应回发给发送方");
     }
 
+    /// Bug 回归（被控主动发聊天）：被控端(to_id=ep-victim)→主控端(from_id=admin-x) 方向的
+    /// ChatMessage 必须正确投递给主控。坐证「服务端路由本身正确，漂移 bug 在客户端」——
+    /// 只要被控带的是权威 session_id，route_to_peer→peer_of 就能查到 admin 对端并送达。
+    #[tokio::test]
+    async fn chat_from_controlled_to_admin_master_delivered() {
+        let hub = test_hub();
+        let (admin_tx, mut admin_rx) = mpsc::unbounded_channel::<String>();
+        let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-x".into(), admin_tx);
+        hub.add_client("ep-victim".into(), victim_tx);
+
+        let sid = "sess-ctrl-chat".to_string();
+        hub.sessions.insert(Session {
+            id: sid.clone(),
+            mode: Mode::A, // 管理后台强制远程（force = auto_accept），复现用户现场
+            from_id: "admin-x".into(),
+            to_id: "ep-victim".into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        // 被控端（to_id）主动发聊天，带权威 session_id
+        let env = Envelope {
+            from: "ep-victim".into(),
+            to: None,
+            ts: 200,
+            payload: Message::ChatMessage {
+                session_id: sid.clone(),
+                msg_id: "cm-1".into(),
+                text: "被控发给主控".into(),
+            },
+        };
+        hub.handle(env, 200).await;
+
+        // 主控端（admin）必须收到该 chat
+        let got = admin_rx
+            .try_recv()
+            .expect("主控端应收到被控发来的 ChatMessage");
+        let env: Envelope = serde_json::from_str(&got).unwrap();
+        match env.payload {
+            Message::ChatMessage { text, .. } => assert_eq!(text, "被控发给主控"),
+            other => panic!("应为 ChatMessage,实际 {other:?}"),
+        }
+        // 被控自己不应收到回发（它是发送方）
+        assert!(victim_rx.try_recv().is_err(), "不应回发给发送方被控端");
+    }
+
     /// 懒推流信号:SetCapture 必须按 session 路由给对端(被控端据此启停采集)。
     #[tokio::test]
     async fn set_capture_forwarded_to_peer() {
@@ -625,6 +714,48 @@ mod tests {
             env.payload,
             Message::SetCapture { active: false, .. }
         ));
+    }
+
+    /// 泄漏根治回归：客户端断开时，须结束其参与的所有活跃会话——
+    /// 向对端发 SessionEnd + 从 active_sessions 移除（修 orphan active）。
+    #[tokio::test]
+    async fn end_client_sessions_notifies_peer_and_removes() {
+        let hub = test_hub();
+        let (a_tx, mut a_rx) = mpsc::unbounded_channel::<String>();
+        let (b_tx, mut b_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("ep-a".into(), a_tx);
+        hub.add_client("ep-b".into(), b_tx);
+
+        let sid = "sess-leak".to_string();
+        hub.sessions.insert(Session {
+            id: sid.clone(),
+            mode: Mode::B,
+            from_id: "ep-a".into(),
+            to_id: "ep-b".into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        // ep-a 断开：结束其所有会话
+        hub.end_client_sessions("ep-a", 300).await;
+
+        // 对端 ep-b 收到 SessionEnd
+        let got = b_rx
+            .try_recv()
+            .expect("对端应收到 SessionEnd 结束通知");
+        let env: Envelope = serde_json::from_str(&got).unwrap();
+        match env.payload {
+            Message::SessionEnd { session_id } => assert_eq!(session_id, sid),
+            other => panic!("对端收到的应为 SessionEnd，实际 {other:?}"),
+        }
+        // 断开方自己不应收到回发
+        assert!(a_rx.try_recv().is_err(), "结束通知不应回发给断开方自身");
+        // 会话已从内存移除（不再 orphan active）
+        assert!(
+            hub.sessions.active_sessions().is_empty(),
+            "断开后不应残留活跃会话"
+        );
     }
 
     #[test]

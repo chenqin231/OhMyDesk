@@ -244,7 +244,8 @@ pub(super) async fn handle_downlink(
             }
             CLIPBOARD_TX.send(ClipboardMsg::Stop);
             crate::transfer::clear_pull_targets(); // 清理本会话残留的取回目标登记
-            let _ = to_ui.send(ToUi::SessionEnded);
+            // 携结束的 session_id 上抛，UI 侧据此门控清理被控会话副本（对齐上方 controlled 的按 id 清理）。
+            let _ = to_ui.send(ToUi::SessionEnded { session_id });
         }
 
         // ── 主控端：收被控回执的命令执行结果 → 投 UI 渲染 ─────────────────────

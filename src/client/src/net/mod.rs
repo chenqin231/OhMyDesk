@@ -57,8 +57,9 @@ pub enum ToUi {
         h: u32,
         seq: u64,
     },
-    /// 会话结束（任一端断开）。
-    SessionEnded,
+    /// 会话结束（任一端断开）。带结束的 session_id，供 UI 侧门控清理被控会话副本
+    /// （只清匹配的会话，避免重控/多会话/迟到 SessionEnd 下错误清空 `ctrl_session`）。
+    SessionEnded { session_id: String },
     /// 连接断开（UI 可提示"重连中…"）。
     Disconnected,
     /// 主控端收被控回执的命令执行结果（远程命令标签渲染）。
