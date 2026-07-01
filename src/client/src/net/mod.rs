@@ -105,6 +105,8 @@ pub enum ToUi {
     },
     /// 发现新版：UI 弹更新横幅（version/url/notes）。
     UpdateAvailable { version: String, url: String, notes: Option<String> },
+    /// 更新流程状态文本（始终可见的状态行：检查中/已是最新/下载中/失败等）。
+    UpdateStatus { text: String },
 }
 
 /// UI → net：上行动作（用户操作转成出站消息）。

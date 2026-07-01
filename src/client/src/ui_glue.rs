@@ -305,6 +305,16 @@ pub fn wire_ui_callbacks(
             }
         });
     }
+    // 手动检查更新：先置「检查中」状态再唤醒守护立即做一次检查（nudge）
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_check_update(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_update_status("正在检查更新…".into());
+            }
+            crate::update::nudge();
+        });
+    }
     // 刷新临时密码（重发 Register，server upsert 覆盖；新密码经 Registered 回推展示）
     {
         let tx = from_ui_tx.clone();
@@ -917,6 +927,14 @@ pub async fn consume_to_ui(
                         ui.set_update_url(url.into());
                         ui.set_update_notes(notes.unwrap_or_default().into());
                         let _ = ui.show(); // best-effort 置前，避免最小化看不见
+                    }
+                });
+            }
+            // 更新状态文本：始终可见的设备卡状态行（检查中/已是最新/下载中/失败）
+            net::ToUi::UpdateStatus { text } => {
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_update_status(text.into());
                     }
                 });
             }
