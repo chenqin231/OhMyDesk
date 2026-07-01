@@ -316,6 +316,14 @@ pub fn wire_ui_callbacks(
             crate::update::nudge();
         });
     }
+    // AI助手:检测/静默安装/拉起素问。仅 Windows 显示按钮(其余平台 supported=false 隐藏)。
+    {
+        ui.set_suwen_supported(cfg!(windows));
+        let ui_weak = ui.as_weak();
+        ui.on_launch_suwen(move || {
+            crate::suwen::ensure_and_launch(ui_weak.clone());
+        });
+    }
     // 刷新临时密码（重发 Register，server upsert 覆盖；新密码经 Registered 回推展示）
     {
         let tx = from_ui_tx.clone();
