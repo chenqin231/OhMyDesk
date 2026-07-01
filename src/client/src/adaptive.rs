@@ -9,6 +9,16 @@ pub const MAX_LEVEL: u8 = 3;
 const OVERLOAD_TO_DEGRADE: u8 = 2; // 连续 2 窗过载 → 降一档
 const HEALTHY_TO_RECOVER: u8 = 3;  // 连续 3 窗健康 → 回升一档（比降档慢=更安全）
 
+// 过载/健康判定阈值（口径与 telemetry::classify 一致；若那边改，这里同步）。
+const ENC_OVERLOAD_P95_MS: u32 = 200; // 编码 p95 超此判过载
+const ENC_HEALTHY_P95_MS: u32 = 120;  // 编码 p95 低于此才算健康（留 80ms 裕度防抖）
+const STARVE_FPS: f32 = 1.0;          // 投递饥饿/健康的有效 fps 分界
+const STARVE_DIRTY_P95: f32 = 0.1;    // 投递饥饿的脏区分界
+
+// 自适应降档的分辨率地板，避免降到不可用
+const FLOOR_W: u32 = 320;
+const FLOOR_H: u32 = 180;
+
 static LEVEL: AtomicU8 = AtomicU8::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -22,11 +32,13 @@ pub fn enabled() -> bool { ENABLED.load(Ordering::Relaxed) }
 
 /// 过载：与 telemetry::classify 的「编码过载/投递饥饿」口径一致。
 pub fn is_overload(s: &WindowStats) -> bool {
-    s.enc_p95_ms > 200 || (s.effective_fps < 1.0 && s.dirty_p95 > 0.1)
+    s.enc_p95_ms > ENC_OVERLOAD_P95_MS || (s.effective_fps < STARVE_FPS && s.dirty_p95 > STARVE_DIRTY_P95)
 }
-/// 健康：留裕度（enc_p95<120 且 fps≥1）防止阈值边界抖动。
+/// 健康：留裕度（enc_p95<ENC_HEALTHY_P95_MS 且 fps≥STARVE_FPS）防止阈值边界抖动。
+/// 注：idle/frameskip 下静止画面少发帧 → fps 可能 <1 → 既非过载也非健康(中间态)，
+/// 恢复被冻结属预期（无画面变化时不需回升；一旦有活动、降档后编码更快→fps 回升即自然恢复）。
 pub fn is_healthy(s: &WindowStats) -> bool {
-    s.enc_p95_ms < 120 && s.effective_fps >= 1.0
+    s.enc_p95_ms < ENC_HEALTHY_P95_MS && s.effective_fps >= STARVE_FPS
 }
 
 /// 迟滞状态机（纯逻辑，单测友好）。
@@ -71,8 +83,8 @@ pub fn clamp(p: QualityParams, level: u8) -> QualityParams {
         _ => (0.55, 12, 2.0),
     };
     QualityParams {
-        max_w: ((p.max_w as f32) * res_ratio) as u32,
-        max_h: ((p.max_h as f32) * res_ratio) as u32,
+        max_w: (((p.max_w as f32) * res_ratio) as u32).max(FLOOR_W).min(p.max_w),
+        max_h: (((p.max_h as f32) * res_ratio) as u32).max(FLOOR_H).min(p.max_h),
         jpeg_q: p.jpeg_q.saturating_sub(q_down),
         interval_ms: ((p.interval_ms as f32) * iv_mul) as u64,
     }

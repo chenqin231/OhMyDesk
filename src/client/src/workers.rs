@@ -269,7 +269,13 @@ pub async fn consume_capture(
                 std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
                 let mode = crate::render_mode::current_mode();
                 let qp = crate::render_mode::clamp_params(capture::current_params(), mode);
-                let qp = crate::adaptive::clamp(qp, crate::adaptive::level());
+                // adaptive 仅作用于 frameskip 新路径：LegacyFullFrame/FullFrameWithTelemetry 是整帧基准，
+                // 且 telemetry 关时 collector 不 observe→level 无法恢复，故不叠加，防状态泄漏。
+                let qp = if crate::render_mode::frameskip_on() {
+                    crate::adaptive::clamp(qp, crate::adaptive::level())
+                } else {
+                    qp
+                };
                 let now = now_ms();
                 let input_driven = last_input_after(last_cap_ms);
                 // 空闲降采（spec §3.5）：连续静止且无近期输入时放宽截帧间隔。
