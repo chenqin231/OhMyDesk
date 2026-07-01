@@ -383,6 +383,8 @@ pub async fn consume_capture(
                             dirty_ratio: d.dirty_ratio,
                             keyframe_forced: false,
                             encode_ms: 0,
+                            resize_ms: 0,
+                            jpeg_ms: 0,
                             encoded_bytes: 0,
                             w: rw,
                             h: rh,
@@ -394,8 +396,10 @@ pub async fn consume_capture(
                 // 发送：整帧编码（与旧路径同款 encode_frame_q）。
                 let t_enc = now_ms();
                 match capture::encode_frame_q(&raw, qp.max_w, qp.max_h, qp.jpeg_q) {
-                    Ok((data, w, h)) => {
+                    Ok(o) => {
                         let encode_ms = now_ms().saturating_sub(t_enc) as u32;
+                        let (rms, jms) = (o.resize_ms, o.jpeg_ms);
+                        let (data, w, h) = (o.data, o.w, o.h);
                         let encoded_bytes = data.len(); // base64 长度=上网字节(JSON 内即此串)
                         seq += 1;
                         if tele_on {
@@ -407,6 +411,8 @@ pub async fn consume_capture(
                                 dirty_ratio: d.dirty_ratio,
                                 keyframe_forced: d.keyframe_forced,
                                 encode_ms,
+                                resize_ms: rms,
+                                jpeg_ms: jms,
                                 encoded_bytes,
                                 w,
                                 h,
