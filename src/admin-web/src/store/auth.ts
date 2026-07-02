@@ -24,6 +24,25 @@ function apiUrl(path: string): string {
   return `${base}${path}`;
 }
 
+// 带 Bearer token 的 JSON 请求头（用户管理各写操作复用，避免重复拼接）
+function authJsonHeaders(token: string | null): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+// 管理端用户记录：字段与 server users.rs UserRecord 序列化一一对应
+// （password_hash 后端 skip_serializing，不下发）。
+export type AdminUser = {
+  id: string;
+  username: string;
+  role: Role;
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+};
+
 type AuthState = {
   token: string | null;
   user: string | null;
@@ -41,6 +60,20 @@ type AuthState = {
   ) => Promise<void>;
   // 用 token 拉当前用户；token 失效则清空
   loadMe: () => Promise<void>;
+  // ── 用户管理（需 manage_users 权限）──
+  // 拉取全部管理端账号
+  listUsers: () => Promise<AdminUser[]>;
+  // 新建账号（role 不含 superadmin，由 bootstrap 唯一）
+  createUser: (input: {
+    username: string;
+    password: string;
+    role: Role;
+    enabled: boolean;
+  }) => Promise<void>;
+  // 改角色 / 停启用（superadmin 由后端守卫拦截）
+  updateUser: (id: string, input: { role?: Role; enabled?: boolean }) => Promise<void>;
+  // 重置指定账号密码
+  resetUserPassword: (id: string, password: string) => Promise<void>;
 };
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -123,6 +156,57 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       permissions: Permission[];
     };
     set({ user: data.user, role: data.role, permissions: data.permissions });
+  },
+
+  async listUsers() {
+    const token = get().token;
+    const res = await fetch(apiUrl("/api/users"), {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const msg = await readError(res);
+      throw new Error(msg ?? "加载用户列表失败");
+    }
+    return (await res.json()) as AdminUser[];
+  },
+
+  async createUser(input) {
+    const token = get().token;
+    const res = await fetch(apiUrl("/api/users"), {
+      method: "POST",
+      headers: authJsonHeaders(token),
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) {
+      const msg = await readError(res);
+      throw new Error(msg ?? "创建用户失败");
+    }
+  },
+
+  async updateUser(id, input) {
+    const token = get().token;
+    const res = await fetch(apiUrl(`/api/users/${id}`), {
+      method: "PATCH",
+      headers: authJsonHeaders(token),
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) {
+      const msg = await readError(res);
+      throw new Error(msg ?? "更新用户失败");
+    }
+  },
+
+  async resetUserPassword(id, password) {
+    const token = get().token;
+    const res = await fetch(apiUrl(`/api/users/${id}/reset-password`), {
+      method: "POST",
+      headers: authJsonHeaders(token),
+      body: JSON.stringify({ password }),
+    });
+    if (!res.ok) {
+      const msg = await readError(res);
+      throw new Error(msg ?? "重置密码失败");
+    }
   },
 }));
 
