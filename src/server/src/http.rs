@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use axum::{
     async_trait,
-    extract::{ConnectInfo, FromRequestParts, Query, State},
+    extract::{ConnectInfo, FromRequestParts, Path, Query, State},
     http::{request::Parts, HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -22,7 +22,7 @@ use crate::audit::AuditStore;
 use crate::auth::Auth;
 use crate::hub::{now_sec, Hub};
 use crate::login_log::LoginLogStore;
-use crate::users::Role;
+use crate::users::{Permission, Role, UserStore};
 
 /// HTTP layer 的共享状态（M-SRV3 + 鉴权）
 #[derive(Clone)]
@@ -31,6 +31,7 @@ pub struct HttpState {
     pub audit: Arc<AuditStore>,
     pub auth: Arc<Auth>,
     pub login_log: Arc<LoginLogStore>,
+    pub users: Arc<UserStore>,
 }
 
 /// 已认证管理员（提取器）：校验 Authorization: Bearer <jwt>，失败 401。
@@ -38,6 +39,12 @@ pub struct AuthUser {
     pub id: String,
     pub username: String,
     pub role: Role,
+}
+
+impl AuthUser {
+    fn can(&self, permission: Permission) -> bool {
+        self.role.permissions().contains(&permission)
+    }
 }
 
 #[async_trait]
@@ -63,6 +70,32 @@ impl FromRequestParts<HttpState> for AuthUser {
 
 fn unauth(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::UNAUTHORIZED, Json(json!({ "error": msg })))
+}
+
+fn forbidden(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::FORBIDDEN, Json(json!({ "error": msg })))
+}
+
+fn bad_request(msg: impl ToString) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": msg.to_string() })),
+    )
+}
+
+fn not_found(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::NOT_FOUND, Json(json!({ "error": msg })))
+}
+
+fn require(
+    user: &AuthUser,
+    permission: Permission,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if user.can(permission) {
+        Ok(())
+    } else {
+        Err(forbidden("权限不足"))
+    }
 }
 
 fn permissions(role: Role) -> Vec<&'static str> {
@@ -145,6 +178,7 @@ CREATE TABLE users (
                 Arc::clone(&users),
             )),
             login_log: Arc::new(LoginLogStore::new(None)),
+            users: Arc::clone(&users),
         };
         (state, users)
     }
@@ -152,6 +186,26 @@ CREATE TABLE users (
     async fn response_json(response: axum::response::Response) -> serde_json::Value {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    fn auth_user(id: impl Into<String>, username: impl Into<String>, role: Role) -> AuthUser {
+        AuthUser {
+            id: id.into(),
+            username: username.into(),
+            role,
+        }
+    }
+
+    fn admin_user() -> AuthUser {
+        auth_user("admin-id", "admin", Role::Admin)
+    }
+
+    fn operator_user() -> AuthUser {
+        auth_user("operator-id", "operator", Role::Operator)
+    }
+
+    fn auditor_user() -> AuthUser {
+        auth_user("auditor-id", "auditor", Role::Auditor)
     }
 
     #[test]
@@ -225,6 +279,302 @@ CREATE TABLE users (
             json!(["view_audit", "view_login_logs"])
         );
     }
+
+    #[tokio::test]
+    async fn operator_cannot_view_audit_sessions_or_login_logs() {
+        let (state, _users) = test_state().await;
+
+        let sessions = list_sessions(State(state.clone()), operator_user())
+            .await
+            .into_response();
+        let login_logs = query_login_logs(
+            State(state),
+            operator_user(),
+            Query(LoginLogQuery {
+                limit: None,
+                offset: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(sessions.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response_json(sessions).await,
+            json!({ "error": "权限不足" })
+        );
+        assert_eq!(login_logs.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response_json(login_logs).await,
+            json!({ "error": "权限不足" })
+        );
+    }
+
+    #[tokio::test]
+    async fn auditor_cannot_list_endpoints() {
+        let (state, _users) = test_state().await;
+
+        let response = list_endpoints(State(state), auditor_user())
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response_json(response).await,
+            json!({ "error": "权限不足" })
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_can_list_users_without_password_hash() {
+        let (state, users) = test_state().await;
+        users
+            .create("operator", "secret", Role::Operator)
+            .await
+            .unwrap();
+
+        let response = list_users(State(state), admin_user()).await.into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["username"], "operator");
+        assert_eq!(body[0]["role"], "operator");
+        assert!(body[0].get("password_hash").is_none());
+    }
+
+    #[tokio::test]
+    async fn superadmin_can_list_users_without_password_hash() {
+        let (state, users) = test_state().await;
+        users
+            .create("auditor", "secret", Role::Auditor)
+            .await
+            .unwrap();
+
+        let response = list_users(
+            State(state),
+            auth_user("superadmin-id", "superadmin", Role::Superadmin),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body[0]["username"], "auditor");
+        assert!(body[0].get("password_hash").is_none());
+    }
+
+    #[tokio::test]
+    async fn operator_cannot_list_users() {
+        let (state, _users) = test_state().await;
+
+        let response = list_users(State(state), operator_user())
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response_json(response).await,
+            json!({ "error": "权限不足" })
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_can_create_operator_and_disabled_user() {
+        let (state, _users) = test_state().await;
+
+        let enabled = create_user(
+            State(state.clone()),
+            admin_user(),
+            Json(CreateUserReq {
+                username: "operator".to_string(),
+                password: "secret".to_string(),
+                role: Role::Operator,
+                enabled: None,
+            }),
+        )
+        .await
+        .into_response();
+        let disabled = create_user(
+            State(state),
+            admin_user(),
+            Json(CreateUserReq {
+                username: "disabled".to_string(),
+                password: "secret".to_string(),
+                role: Role::Operator,
+                enabled: Some(false),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(enabled.status(), StatusCode::OK);
+        let body = response_json(enabled).await;
+        assert_eq!(body["username"], "operator");
+        assert_eq!(body["role"], "operator");
+        assert_eq!(body["enabled"], true);
+        assert!(body.get("password_hash").is_none());
+
+        assert_eq!(disabled.status(), StatusCode::OK);
+        let body = response_json(disabled).await;
+        assert_eq!(body["username"], "disabled");
+        assert_eq!(body["role"], "operator");
+        assert_eq!(body["enabled"], false);
+        assert!(body.get("password_hash").is_none());
+    }
+
+    #[tokio::test]
+    async fn admin_can_patch_regular_user_role_and_enabled() {
+        let (state, users) = test_state().await;
+        let user = users
+            .create("operator", "secret", Role::Operator)
+            .await
+            .unwrap();
+
+        let response = update_user(
+            State(state),
+            axum::extract::Path(user.id),
+            admin_user(),
+            Json(UpdateUserReq {
+                role: Some(Role::Auditor),
+                enabled: Some(false),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["username"], "operator");
+        assert_eq!(body["role"], "auditor");
+        assert_eq!(body["enabled"], false);
+        assert!(body.get("password_hash").is_none());
+    }
+
+    #[tokio::test]
+    async fn admin_patch_missing_user_returns_404() {
+        let (state, _users) = test_state().await;
+
+        let response = update_user(
+            State(state),
+            axum::extract::Path("missing-id".to_string()),
+            admin_user(),
+            Json(UpdateUserReq {
+                role: Some(Role::Auditor),
+                enabled: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response_json(response).await,
+            json!({ "error": "用户不存在" })
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_can_reset_regular_user_password_without_leaking_hash() {
+        let (state, users) = test_state().await;
+        let user = users
+            .create("operator", "old-pass", Role::Operator)
+            .await
+            .unwrap();
+
+        let response = reset_user_password(
+            State(state),
+            axum::extract::Path(user.id.clone()),
+            admin_user(),
+            Json(ResetPasswordReq {
+                password: "new-pass".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["username"], "operator");
+        assert!(body.get("password_hash").is_none());
+        let user = users.get_by_id(&user.id).await.unwrap().unwrap();
+        assert!(bcrypt::verify("new-pass", &user.password_hash).unwrap());
+    }
+
+    #[tokio::test]
+    async fn admin_cannot_create_or_promote_superadmin() {
+        let (state, users) = test_state().await;
+        let user = users
+            .create("operator", "secret", Role::Operator)
+            .await
+            .unwrap();
+
+        let create_response = create_user(
+            State(state.clone()),
+            admin_user(),
+            Json(CreateUserReq {
+                username: "root".to_string(),
+                password: "secret".to_string(),
+                role: Role::Superadmin,
+                enabled: None,
+            }),
+        )
+        .await
+        .into_response();
+        let promote_response = update_user(
+            State(state),
+            axum::extract::Path(user.id),
+            admin_user(),
+            Json(UpdateUserReq {
+                role: Some(Role::Superadmin),
+                enabled: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(create_response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(promote_response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn change_credential_requires_manage_settings_permission() {
+        let (state, users) = test_state().await;
+        let admin = users
+            .create("admin", "old-pass", Role::Admin)
+            .await
+            .unwrap();
+
+        let forbidden = change_credential(
+            State(state.clone()),
+            operator_user(),
+            Json(CredReq {
+                current_pass: "old-pass".to_string(),
+                new_user: None,
+                new_pass: None,
+            }),
+        )
+        .await
+        .into_response();
+        let allowed = change_credential(
+            State(state),
+            auth_user(admin.id, admin.username, admin.role),
+            Json(CredReq {
+                current_pass: "old-pass".to_string(),
+                new_user: None,
+                new_pass: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response_json(forbidden).await,
+            json!({ "error": "权限不足" })
+        );
+        assert_ne!(allowed.status(), StatusCode::FORBIDDEN);
+    }
 }
 
 /// 构建 HTTP 路由，State = HttpState（与 WS router 分别挂 State，最终在 main.rs merge）
@@ -232,6 +582,9 @@ pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/api/login", post(login))
         .route("/api/me", get(me))
+        .route("/api/users", get(list_users).post(create_user))
+        .route("/api/users/:id", patch(update_user))
+        .route("/api/users/:id/reset-password", post(reset_user_password))
         .route("/api/settings/credential", post(change_credential))
         .route("/api/endpoints", get(list_endpoints))
         .route("/api/endpoints/delete", post(delete_endpoints))
@@ -303,6 +656,117 @@ async fn me(State(_s): State<HttpState>, user: AuthUser) -> impl IntoResponse {
     }))
 }
 
+// ── 用户管理 Handler ───────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CreateUserReq {
+    username: String,
+    password: String,
+    role: Role,
+    enabled: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct UpdateUserReq {
+    role: Option<Role>,
+    enabled: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct ResetPasswordReq {
+    password: String,
+}
+
+async fn list_users(State(s): State<HttpState>, user: AuthUser) -> impl IntoResponse {
+    if let Err(err) = require(&user, Permission::ManageUsers) {
+        return err.into_response();
+    }
+
+    match s.users.list().await {
+        Ok(users) => (StatusCode::OK, Json(json!(users))).into_response(),
+        Err(e) => bad_request(e).into_response(),
+    }
+}
+
+async fn create_user(
+    State(s): State<HttpState>,
+    user: AuthUser,
+    Json(req): Json<CreateUserReq>,
+) -> impl IntoResponse {
+    if let Err(err) = require(&user, Permission::ManageUsers) {
+        return err.into_response();
+    }
+
+    let created = match s.users.create(&req.username, &req.password, req.role).await {
+        Ok(user) => user,
+        Err(e) => return bad_request(e).into_response(),
+    };
+    if req.enabled == Some(false) {
+        if let Err(e) = s.users.set_enabled(&created.id, false).await {
+            return bad_request(e).into_response();
+        }
+    }
+
+    match s.users.get_by_id(&created.id).await {
+        Ok(Some(user)) => (StatusCode::OK, Json(json!(user))).into_response(),
+        Ok(None) => not_found("用户不存在").into_response(),
+        Err(e) => bad_request(e).into_response(),
+    }
+}
+
+async fn update_user(
+    State(s): State<HttpState>,
+    Path(id): Path<String>,
+    user: AuthUser,
+    Json(req): Json<UpdateUserReq>,
+) -> impl IntoResponse {
+    if let Err(err) = require(&user, Permission::ManageUsers) {
+        return err.into_response();
+    }
+    match s.users.get_by_id(&id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found("用户不存在").into_response(),
+        Err(e) => return bad_request(e).into_response(),
+    }
+
+    if let Some(role) = req.role {
+        if let Err(e) = s.users.set_role(&id, role).await {
+            return bad_request(e).into_response();
+        }
+    }
+    if let Some(enabled) = req.enabled {
+        if let Err(e) = s.users.set_enabled(&id, enabled).await {
+            return bad_request(e).into_response();
+        }
+    }
+
+    match s.users.get_by_id(&id).await {
+        Ok(Some(user)) => (StatusCode::OK, Json(json!(user))).into_response(),
+        Ok(None) => not_found("用户不存在").into_response(),
+        Err(e) => bad_request(e).into_response(),
+    }
+}
+
+async fn reset_user_password(
+    State(s): State<HttpState>,
+    Path(id): Path<String>,
+    user: AuthUser,
+    Json(req): Json<ResetPasswordReq>,
+) -> impl IntoResponse {
+    if let Err(err) = require(&user, Permission::ManageUsers) {
+        return err.into_response();
+    }
+
+    if let Err(e) = s.users.reset_password(&id, &req.password).await {
+        return bad_request(e).into_response();
+    }
+    match s.users.get_by_id(&id).await {
+        Ok(Some(user)) => (StatusCode::OK, Json(json!(user))).into_response(),
+        Ok(None) => not_found("用户不存在").into_response(),
+        Err(e) => bad_request(e).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct CredReq {
     current_pass: String,
@@ -316,6 +780,10 @@ async fn change_credential(
     user: AuthUser,
     Json(req): Json<CredReq>,
 ) -> impl IntoResponse {
+    if let Err(err) = require(&user, Permission::ManageSettings) {
+        return err.into_response();
+    }
+
     match s
         .auth
         .change_credential(
@@ -342,9 +810,13 @@ async fn change_credential(
 // ── 只读查询 Handler（均需登录）──────────────────────────────────────────────
 
 /// 返回 EndpointView[] 裸数组（P-MCP2）；读内存注册表（M-SRV3）
-async fn list_endpoints(State(s): State<HttpState>, _user: AuthUser) -> impl IntoResponse {
+async fn list_endpoints(State(s): State<HttpState>, user: AuthUser) -> impl IntoResponse {
+    if let Err(err) = require(&user, Permission::ViewAssets) {
+        return err.into_response();
+    }
+
     let views = s.hub.reg.views(now_sec());
-    Json(views)
+    Json(views).into_response()
 }
 
 #[derive(Deserialize)]
@@ -356,17 +828,25 @@ struct DeleteEndpointsReq {
 /// 删完推送最新 endpoint_list 给所有 admin（列表即时刷新）。返回实际删除条数。
 async fn delete_endpoints(
     State(s): State<HttpState>,
-    _user: AuthUser,
+    user: AuthUser,
     Json(req): Json<DeleteEndpointsReq>,
 ) -> impl IntoResponse {
+    if let Err(err) = require(&user, Permission::ViewAssets) {
+        return err.into_response();
+    }
+
     let deleted = req.ids.iter().filter(|id| s.hub.reg.remove(id)).count();
     s.hub.push_list(now_sec()); // 广播刷新后的列表给所有 admin
-    (StatusCode::OK, Json(json!({ "deleted": deleted })))
+    (StatusCode::OK, Json(json!({ "deleted": deleted }))).into_response()
 }
 
-async fn list_sessions(State(s): State<HttpState>, _user: AuthUser) -> impl IntoResponse {
+async fn list_sessions(State(s): State<HttpState>, user: AuthUser) -> impl IntoResponse {
+    if let Err(err) = require(&user, Permission::ViewAudit) {
+        return err.into_response();
+    }
+
     let sessions = s.audit.query_sessions().await;
-    Json(sessions)
+    Json(sessions).into_response()
 }
 
 #[derive(Deserialize)]
@@ -378,14 +858,18 @@ pub struct AuditQuery {
 
 async fn query_audit(
     State(s): State<HttpState>,
-    _user: AuthUser,
+    user: AuthUser,
     Query(q): Query<AuditQuery>,
 ) -> impl IntoResponse {
+    if let Err(err) = require(&user, Permission::ViewAudit) {
+        return err.into_response();
+    }
+
     let logs = s
         .audit
         .query_audit(q.endpoint.as_deref(), q.from, q.to)
         .await;
-    (StatusCode::OK, Json(logs))
+    (StatusCode::OK, Json(logs)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -397,12 +881,16 @@ pub struct LoginLogQuery {
 /// GET /api/login-logs?limit=&offset=（需登录）→ 倒序分页返回登录日志。
 async fn query_login_logs(
     State(s): State<HttpState>,
-    _user: AuthUser,
+    user: AuthUser,
     Query(q): Query<LoginLogQuery>,
 ) -> impl IntoResponse {
+    if let Err(err) = require(&user, Permission::ViewLoginLogs) {
+        return err.into_response();
+    }
+
     let logs = s
         .login_log
         .query(q.limit.unwrap_or(100), q.offset.unwrap_or(0))
         .await;
-    (StatusCode::OK, Json(logs))
+    (StatusCode::OK, Json(logs)).into_response()
 }
