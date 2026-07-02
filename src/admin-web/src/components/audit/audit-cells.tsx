@@ -43,9 +43,8 @@ export function ResultBadge({ result }: { result: AuditRecord["result"] }) {
   );
 }
 
-// 操作人 = 真实 WEB 登录账号，高亮显示；旧数据无身份显示「旧版本记录」，弱化(muted)
-export function InitiatorCell({ name }: { name: string }) {
-  const isLegacy = name === "旧版本记录";
+// 操作人 = 真实 WEB 登录账号，高亮显示；旧数据无身份（isLegacy）显示兜底文案，弱化(muted)
+export function InitiatorCell({ name, isLegacy }: { name: string; isLegacy: boolean }) {
   return (
     <span
       className={cn(

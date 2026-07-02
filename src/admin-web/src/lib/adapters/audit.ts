@@ -3,6 +3,10 @@ import type { AuditLog } from "@/lib/types/AuditLog";
 import type { AuditType } from "@/lib/types/AuditType";
 import type { Session } from "@/lib/types/Session";
 
+// 旧数据（operator_username 为 null）的操作人兜底文案。
+// 新旧判定不靠比对这个字符串——由 AuditRecord.isLegacy 数据字段承载（见 aggregate）。
+export const LEGACY_ACTOR_LABEL = "旧版本记录";
+
 // 时间线条目（不含 O-1 裁决砍掉的 transfer 类型）
 export type TimelineItem = {
   ts: number;              // 转为 number 用于排序和展示
@@ -14,6 +18,7 @@ export type TimelineItem = {
 export type AuditRecord = {
   sessionId: string;
   actor: string;
+  isLegacy: boolean;       // 旧数据（无 operator_username）标记，决定操作人展示样式
   target: string;
   mode: "A" | "B";         // D-6 Mode 小写 → 大写展示
   result: "active" | "success" | "rejected" | "auth_failed";  // D-8 补进行中态
@@ -103,10 +108,14 @@ export function aggregate(logs: AuditLog[], sessions: Session[]): AuditRecord[] 
     const startSec = Number(s.start_at);
     const durSec = endSec !== null ? Math.abs(endSec - startSec) : null;
 
+    // 旧数据判定用数据字段（== 同时匹配 null/undefined），不靠比对兜底文案字符串
+    const isLegacy = s.operator_username == null;
+
     return {
       sessionId: s.id,
-      // 操作人 = 真实 WEB 登录账号；旧数据（operator_username 为 null）显示「旧版本记录」
-      actor: s.operator_username ?? "旧版本记录",
+      // 操作人 = 真实 WEB 登录账号；旧数据无身份，显示兜底文案
+      actor: s.operator_username ?? LEGACY_ACTOR_LABEL,
+      isLegacy,
       target: s.to_id,
       mode: s.mode.toUpperCase() as "A" | "B",  // D-6
       result: deriveResult(s, items),             // D-8

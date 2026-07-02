@@ -24,6 +24,16 @@ function onUnauthorized() {
   }
 }
 
+// 解析后端 { error } 文本，失败返回 null（与 store/auth.ts 同款兜底解析）
+async function readError(res: Response): Promise<string | null> {
+  try {
+    const data = (await res.json()) as { error?: string };
+    return data.error ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // WS 地址同源派生（P-SRV5：admin 由 server 静态托管，单一内网 URL）。
 // 优先 VITE_WS_URL（开发期跨端口连 :8765 用）；否则按当前页面 origin 推导 ws(s)://host/ws。
 // 浏览器 WS 不能设 header，token 以 query 传递（?token=<jwt>）。
@@ -136,7 +146,15 @@ export const realTransport: Transport = {
       },
       body: JSON.stringify({ ids }),
     });
-    if (res.status === 401) onUnauthorized();
+    if (res.status === 401) {
+      onUnauthorized();
+      throw new Error("登录已失效，请重新登录");
+    }
+    // 403(无 manage_assets 权限)/5xx 等：抛可读错误让调用处提示，不再静默吞掉致「点了没反应」
+    if (!res.ok) {
+      const msg = await readError(res);
+      throw new Error(msg ?? "删除终端失败");
+    }
   },
 
   disconnect() {
