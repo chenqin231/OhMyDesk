@@ -1,9 +1,9 @@
-// 鉴权 store：管理 token / 当前用户 / 角色 / 权限，封装登录、登出、改密、拉取当前用户。
+// 鉴权 store：管理 token / 当前用户 / 身份(tier) / 权限，封装登录、登出、改密、拉取当前用户。
 // token 持久化到 localStorage，刷新后保留；其余 store 与 real.ts 通过 getToken() 读取同一份。
-// role/permissions 不持久化，刷新后由 loadMe 从 /api/me 重新拉取（server 为唯一权威）。
+// tier/permissions 不持久化，刷新后由 loadMe 从 /api/me 重新拉取（server 为唯一权威）。
 import { create } from "zustand";
 
-import type { Permission, Role } from "@/lib/permissions";
+import type { Permission, Tier } from "@/lib/permissions";
 
 const TOKEN_KEY = "ohmydesk_token";
 
@@ -33,11 +33,12 @@ function authJsonHeaders(token: string | null): Record<string, string> {
 }
 
 // 管理端用户记录：字段与 server users.rs UserRecord 序列化一一对应
-// （password_hash 后端 skip_serializing，不下发）。
+// （password_hash 后端 skip_serializing，不下发）。tier 为身份二值，permissions 为按账户菜单集。
 export type AdminUser = {
   id: string;
   username: string;
-  role: Role;
+  tier: Tier;
+  permissions: Permission[];
   enabled: boolean;
   created_at: number;
   updated_at: number;
@@ -46,7 +47,7 @@ export type AdminUser = {
 type AuthState = {
   token: string | null;
   user: string | null;
-  role: Role | null;
+  tier: Tier | null;
   permissions: Permission[] | null;
   // loadMe 是否已完成过一次（无论成败）。路由守卫据此区分「加载中」与「已加载」，
   // 避免 /api/me 遇 5xx/网络抖动时 permissions 永停 null 而整屏空白。
@@ -57,28 +58,34 @@ type AuthState = {
   authError: string | null;
   // 登录：成功存 token 并返回；失败抛出可读错误信息
   login: (user: string, pass: string) => Promise<void>;
-  // 登出：清 token + user + role + permissions + 身份加载标志（跳转由调用方负责）
+  // 登出：清 token + user + tier + permissions + 身份加载标志（跳转由调用方负责）
   logout: () => void;
   // 改密/改用户名：成功后返回，调用方负责提示并登出
+  // 注：/api/settings/credential 已被后端删除，自助改密请用 changeOwnPassword；
+  // 本方法暂留仅为 Settings.tsx 编译，将随 Task 7 个人设置改造一并移除。
   changeCredential: (
     currentPass: string,
     newUser: string,
     newPass: string,
   ) => Promise<void>;
+  // 自助改密（人人可用，仅需登录）：POST /api/me/password { old, new }
+  changeOwnPassword: (oldPassword: string, newPassword: string) => Promise<void>;
   // 用 token 拉当前用户；401 清空，5xx/网络异常记 authError，无论成败置 meLoaded=true
   loadMe: () => Promise<void>;
-  // ── 用户管理（需 manage_users 权限）──
+  // ── 用户管理（需 manage_users 权限 = superadmin 独占）──
   // 拉取全部管理端账号
   listUsers: () => Promise<AdminUser[]>;
-  // 新建账号（role 不含 superadmin，由 bootstrap 唯一）
+  // 新建账号（tier 固定 user；权限由菜单集指定，superadmin 由 bootstrap 唯一）
   createUser: (input: {
     username: string;
     password: string;
-    role: Role;
-    enabled: boolean;
+    permissions: Permission[];
   }) => Promise<void>;
-  // 改角色 / 停启用（superadmin 由后端守卫拦截）
-  updateUser: (id: string, input: { role?: Role; enabled?: boolean }) => Promise<void>;
+  // 配菜单集 / 改用户名 / 停启用（superadmin 目标由后端守卫拦截）
+  updateUser: (
+    id: string,
+    input: { permissions?: Permission[]; username?: string; enabled?: boolean },
+  ) => Promise<void>;
   // 重置指定账号密码
   resetUserPassword: (id: string, password: string) => Promise<void>;
 };
@@ -86,7 +93,7 @@ type AuthState = {
 export const useAuthStore = create<AuthState>((set, get) => ({
   token: getToken(),
   user: null,
-  role: null,
+  tier: null,
   permissions: null,
   meLoaded: false,
   meLoading: false,
@@ -108,7 +115,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const data = (await res.json()) as {
       token: string;
       user: string;
-      role: Role;
+      tier: Tier;
       permissions: Permission[];
     };
     setStoredToken(data.token);
@@ -116,7 +123,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({
       token: data.token,
       user: data.user,
-      role: data.role,
+      tier: data.tier,
       permissions: data.permissions,
       meLoaded: true,
       meLoading: false,
@@ -129,7 +136,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({
       token: null,
       user: null,
-      role: null,
+      tier: null,
       permissions: null,
       meLoaded: false,
       meLoading: false,
@@ -160,6 +167,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  async changeOwnPassword(oldPassword, newPassword) {
+    const token = get().token;
+    const res = await fetch(apiUrl("/api/me/password"), {
+      method: "POST",
+      headers: authJsonHeaders(token),
+      body: JSON.stringify({ old: oldPassword, new: newPassword }),
+    });
+    if (res.status === 401) {
+      throw new Error("登录已失效，请重新登录");
+    }
+    if (!res.ok) {
+      const msg = await readError(res);
+      throw new Error(msg ?? "修改密码失败");
+    }
+  },
+
   async loadMe() {
     const { token, meLoading } = get();
     if (!token) {
@@ -184,12 +207,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
       const data = (await res.json()) as {
         user: string;
-        role: Role;
+        tier: Tier;
         permissions: Permission[];
       };
       set({
         user: data.user,
-        role: data.role,
+        tier: data.tier,
         permissions: data.permissions,
         authError: null,
       });
