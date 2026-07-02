@@ -46,3 +46,13 @@ CREATE TABLE IF NOT EXISTS login_log (
   reason     TEXT                        -- 失败原因（成功为 NULL）
 );
 CREATE INDEX IF NOT EXISTS idx_login_log_ts ON login_log(ts);
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('superadmin', 'admin', 'operator', 'auditor')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);

@@ -8,6 +8,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::Row;
 
 pub type Db = sqlx::SqlitePool;
 
@@ -48,7 +49,74 @@ pub async fn connect() -> Option<Db> {
         tracing::warn!("建表失败，审计存储已降级（M-SRV1）: {e}");
         return None;
     }
+    if let Err(e) = ensure_identity_columns(&pool).await {
+        tracing::warn!("补齐审计身份列失败，审计存储已降级（M-SRV1）: {e}");
+        return None;
+    }
 
     tracing::info!("SQLite 就绪，审计存储已启用");
     Some(pool)
+}
+
+async fn ensure_identity_columns(pool: &Db) -> sqlx::Result<()> {
+    add_column_if_missing(
+        pool,
+        "sessions",
+        "operator_user_id",
+        "ALTER TABLE sessions ADD COLUMN operator_user_id TEXT",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "sessions",
+        "operator_username",
+        "ALTER TABLE sessions ADD COLUMN operator_username TEXT",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "sessions",
+        "operator_role",
+        "ALTER TABLE sessions ADD COLUMN operator_role TEXT",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "audit_logs",
+        "actor_user_id",
+        "ALTER TABLE audit_logs ADD COLUMN actor_user_id TEXT",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "audit_logs",
+        "actor_username",
+        "ALTER TABLE audit_logs ADD COLUMN actor_username TEXT",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "audit_logs",
+        "actor_role",
+        "ALTER TABLE audit_logs ADD COLUMN actor_role TEXT",
+    )
+    .await
+}
+
+async fn add_column_if_missing(
+    pool: &Db,
+    table: &str,
+    column: &str,
+    ddl: &str,
+) -> sqlx::Result<()> {
+    let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(pool)
+        .await?;
+    let exists = rows
+        .iter()
+        .any(|row| row.get::<String, _>("name") == column);
+    if !exists {
+        sqlx::query(ddl).execute(pool).await?;
+    }
+    Ok(())
 }

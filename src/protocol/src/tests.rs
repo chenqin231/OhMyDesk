@@ -72,11 +72,47 @@ fn audit_type_field_rename_and_snake() {
         session_id: "s1".into(),
         ts: 0,
         actor_id: "admin".into(),
+        actor_user_id: None,
+        actor_username: None,
+        actor_role: None,
         kind: AuditType::AuthFail,
         text: "密码错误".into(),
     };
     let json = serde_json::to_string(&log).unwrap();
     assert!(json.contains("\"type\":\"auth_fail\""));
+}
+
+#[test]
+fn session_and_audit_identity_fields_serialize() {
+    let session = Session {
+        id: "s-1".into(),
+        mode: Mode::A,
+        from_id: "admin-abc".into(),
+        to_id: "ep-1".into(),
+        start_at: 100,
+        end_at: None,
+        status: SessionStatus::Active,
+        operator_user_id: Some("u-1".into()),
+        operator_username: Some("alice".into()),
+        operator_role: Some("operator".into()),
+    };
+    let json = serde_json::to_value(&session).unwrap();
+    assert_eq!(json["operator_username"], "alice");
+
+    let audit = AuditLog {
+        id: "a-1".into(),
+        session_id: "s-1".into(),
+        ts: 101,
+        actor_id: "admin-abc".into(),
+        actor_user_id: Some("u-1".into()),
+        actor_username: Some("alice".into()),
+        actor_role: Some("operator".into()),
+        kind: AuditType::Connect,
+        text: "建立连接".into(),
+    };
+    let json = serde_json::to_value(&audit).unwrap();
+    assert_eq!(json["actor_username"], "alice");
+    assert_eq!(json["type"], "connect");
 }
 
 #[test]
