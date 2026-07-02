@@ -332,7 +332,9 @@ CREATE TABLE audit_logs (
         let actor = crate::hub::ActorIdentity {
             user_id: "u-1".into(),
             username: "alice".into(),
-            role: "operator".into(),
+            role: "user".into(),
+            permissions: crate::users::PermissionSet::parse("view_assets,use_remote"),
+            is_superadmin: false,
         };
         store
             .log("sess-1", "admin-1", AuditType::Connect, "会话建立", Some(&actor))
@@ -342,7 +344,7 @@ CREATE TABLE audit_logs (
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].actor_user_id.as_deref(), Some("u-1"));
         assert_eq!(logs[0].actor_username.as_deref(), Some("alice"));
-        assert_eq!(logs[0].actor_role.as_deref(), Some("operator"));
+        assert_eq!(logs[0].actor_role.as_deref(), Some("user"));
     }
 
     /// 无 actor（agent 侧操作）→ actor_* 三列留空。

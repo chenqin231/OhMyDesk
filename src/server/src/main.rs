@@ -288,12 +288,16 @@ async fn handle_socket(
             // admin 连上：绑定操作人身份（供远控 RBAC 闸 + 审计归属）+ 立即推一次终端列表。
             if id.starts_with("admin-") {
                 if let Some(u) = &auth_user {
+                    // 远控闸判定来源：账户权限集 + superadmin 隐式全权（不再靠 role 字符串反解旧角色）。
+                    // operator_role 落 tier 字符串（superadmin/user）。
                     hub.bind_actor(
                         &id,
                         ActorIdentity {
                             user_id: u.id.clone(),
                             username: u.username.clone(),
-                            role: u.role.as_str().to_string(),
+                            role: u.tier().to_string(),
+                            permissions: u.permissions.clone(),
+                            is_superadmin: u.is_superadmin(),
                         },
                     );
                 }
