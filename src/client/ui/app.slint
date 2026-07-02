@@ -591,6 +591,7 @@ export component AppWindow inherits Window {
     // 主控画面区键鼠回调（坐标已换算为帧内像素）
     callback on_pointer_move(int /*x*/, int /*y*/);
     callback on_pointer_button(int /*x*/, int /*y*/, int /*btn 0左1中2右*/, bool /*down*/);
+    callback on_pointer_scroll(float /*dx_px*/, float /*dy_px*/);
     callback on_key(string /*code*/, bool /*down*/);
 
     // Slint 把修饰键（Ctrl/Shift/Alt/Meta）的 ev.text 给成特殊控制字符，被控端无法识别为修饰键，
@@ -1112,6 +1113,10 @@ export component AppWindow inherits Window {
                                         : ev.button == PointerEventButton.middle ? 1 : 2,
                                     ev.kind == PointerEventKind.down);
                             }
+                        }
+                        scroll-event(ev) => {
+                            root.on_pointer_scroll(ev.delta-x / 1px, ev.delta-y / 1px);
+                            EventResult.accept
                         }
                     }
 

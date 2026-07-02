@@ -8,7 +8,7 @@
 
 use crate::geom::map_frame_to_real;
 use enigo::{
-    Button,
+    Axis, Button,
     Coordinate::Abs,
     Direction::{Press, Release},
     Enigo, Key, Keyboard, Mouse, Settings,
@@ -105,6 +105,20 @@ impl Injector {
             InputEvent::Text { text } => {
                 self.enigo.text(text)?;
             }
+            InputEvent::Scroll { dx, dy } => {
+                // 符号已逐层核实:winit/Slint delta-y>0=向上 → 协议 dy>0=向上 → enigo 负=向上,
+                // 故 SCROLL_SIGN=-1(enigo length>0=向下)。如某平台实测相反,只翻此常量。
+                const SCROLL_SIGN: i32 = -1;
+                tracing::debug!("被控注入·滚轮 dx={dx} dy={dy}");
+                if *dy != 0 {
+                    self.enigo.scroll(SCROLL_SIGN * *dy, Axis::Vertical)?;
+                }
+                if *dx != 0 {
+                    self.enigo.scroll(SCROLL_SIGN * *dx, Axis::Horizontal)?;
+                }
+            }
+            // 未知/未来变体(本端 protocol 不认识):无法注入,忽略。见 protocol InputEvent::Unknown。
+            InputEvent::Unknown => {}
         }
         Ok(())
     }

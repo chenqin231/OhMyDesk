@@ -292,7 +292,7 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
             continue;
         }
 
-        hub.handle(env, now_sec()).await;
+        hub.handle_raw(env, &text, now_sec()).await;
     }
 
     if let Some(id) = &my_id {
