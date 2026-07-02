@@ -14,7 +14,7 @@ import {
 import { useAuthStore } from "@/store/auth";
 import { useStore } from "@/store";
 
-// 系统设置页：修改管理员用户名 / 密码。成功后强制登出并跳登录。
+// 系统设置页：当前登录用户自助修改用户名 / 密码。成功后强制登出并跳登录。
 export function Settings() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
@@ -69,7 +69,7 @@ export function Settings() {
           <CardHeader>
             <CardTitle>账号与密码</CardTitle>
             <CardDescription>
-              当前管理员：
+              当前用户：
               <span className="font-medium text-foreground">
                 {user ?? "—"}
               </span>
