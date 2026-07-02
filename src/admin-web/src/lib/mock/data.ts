@@ -119,18 +119,29 @@ export function makeEndpoints(nowSec: number): EndpointView[] {
 // 会话列表（~30 条审计事件，覆盖 connect/screenshot/input/disconnect/auth_fail/reject）
 export function makeSessions(nowSec: number): Session[] {
   const d = (hoursAgo: number) => BigInt(nowSec - hoursAgo * 3600);
-  const identity: Pick<Session, "operator_user_id" | "operator_username" | "operator_role"> = {
+  // 真实 WEB 操作人身份（Task 8：审计展示真实登录账号）
+  const op = (
+    userId: string,
+    username: string,
+    role: string,
+  ): Pick<Session, "operator_user_id" | "operator_username" | "operator_role"> => ({
+    operator_user_id: userId,
+    operator_username: username,
+    operator_role: role,
+  });
+  // 旧数据：升级前的历史会话，无 WEB 身份 → 显示「旧版本记录」
+  const legacy: Pick<Session, "operator_user_id" | "operator_username" | "operator_role"> = {
     operator_user_id: null,
     operator_username: null,
     operator_role: null,
   };
   return [
-    { id: "ses-001", mode: "a", from_id: "admin-001", to_id: "ep-001", start_at: d(2), end_at: d(2) - BigInt(204), status: "ended", ...identity },
-    { id: "ses-002", mode: "b", from_id: "ep-003", to_id: "ep-002", start_at: d(4), end_at: d(4) - BigInt(341), status: "rejected", ...identity },
-    { id: "ses-003", mode: "a", from_id: "admin-001", to_id: "ep-004", start_at: d(6), end_at: d(6) - BigInt(535), status: "ended", ...identity },
-    { id: "ses-004", mode: "b", from_id: "ep-002", to_id: "ep-001", start_at: d(8), end_at: null, status: "active", ...identity },
-    { id: "ses-005", mode: "a", from_id: "admin-001", to_id: "ep-003", start_at: d(24), end_at: d(24) - BigInt(728), status: "ended", ...identity },
-    { id: "ses-006", mode: "a", from_id: "admin-001", to_id: "ep-002", start_at: d(26), end_at: d(26) - BigInt(113), status: "rejected", ...identity },
+    { id: "ses-001", mode: "a", from_id: "admin-001", to_id: "ep-001", start_at: d(2), end_at: d(2) - BigInt(204), status: "ended", ...op("u-001", "张伟", "superadmin") },
+    { id: "ses-002", mode: "b", from_id: "ep-003", to_id: "ep-002", start_at: d(4), end_at: d(4) - BigInt(341), status: "rejected", ...legacy },
+    { id: "ses-003", mode: "a", from_id: "admin-001", to_id: "ep-004", start_at: d(6), end_at: d(6) - BigInt(535), status: "ended", ...op("u-002", "李强", "admin") },
+    { id: "ses-004", mode: "b", from_id: "ep-002", to_id: "ep-001", start_at: d(8), end_at: null, status: "active", ...legacy },
+    { id: "ses-005", mode: "a", from_id: "admin-001", to_id: "ep-003", start_at: d(24), end_at: d(24) - BigInt(728), status: "ended", ...op("u-001", "张伟", "superadmin") },
+    { id: "ses-006", mode: "a", from_id: "admin-001", to_id: "ep-002", start_at: d(26), end_at: d(26) - BigInt(113), status: "rejected", ...op("u-003", "王芳", "admin") },
   ];
 }
 

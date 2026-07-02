@@ -105,7 +105,8 @@ export function aggregate(logs: AuditLog[], sessions: Session[]): AuditRecord[] 
 
     return {
       sessionId: s.id,
-      actor: s.from_id,
+      // 操作人 = 真实 WEB 登录账号；旧数据（operator_username 为 null）显示「旧版本记录」
+      actor: s.operator_username ?? "旧版本记录",
       target: s.to_id,
       mode: s.mode.toUpperCase() as "A" | "B",  // D-6
       result: deriveResult(s, items),             // D-8
