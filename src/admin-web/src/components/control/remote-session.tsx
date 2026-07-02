@@ -11,7 +11,7 @@ import {
   containedFrameRect,
   pointerToFrameCoords,
   remoteMouseButtonEvents,
-  remoteScrollEvent,
+  makeRemoteScroll,
   shouldBlockRemoteContextMenu,
 } from "@/components/control/remote-geometry";
 import { CommandPanel, FilePanel, ChatPanel, TabButton } from "@/components/control/remote-tools";
@@ -44,6 +44,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   const remoteQuality = useStore((s) => s.remoteQuality);
   const setRemoteQuality = useStore((s) => s.setRemoteQuality);
   const containerRef = useRef<HTMLDivElement>(null);
+  // 滚轮像素累加器(每会话一个,跨 wheel 事件保留余量)。见 makeRemoteScroll。
+  const scrollAccRef = useRef(makeRemoteScroll());
   // 四标签：远程控制（画面）/ 命令行 / 文件传输 / 会话消息。仅「远程控制」标签转发键鼠到被控端。
   const [tab, setTab] = useState<ToolTab>("remote");
   const chatCount = useStore((s) => s.chatMessages.length);
@@ -137,8 +139,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const evt = remoteScrollEvent(e.deltaX, e.deltaY, e.deltaMode);
-      if ((evt as { dx: number; dy: number }).dx !== 0 || (evt as { dx: number; dy: number }).dy !== 0) sendInput(evt);
+      const evt = scrollAccRef.current(e.deltaX, e.deltaY, e.deltaMode);
+      if (evt) sendInput(evt);
     };
 
     el.addEventListener("mousemove", onMouseMove);

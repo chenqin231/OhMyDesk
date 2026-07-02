@@ -142,7 +142,10 @@ impl Hub {
     /// 路由失败（会话不存在 / from 不属于该会话 / 对端离线）一律 `warn!`，不再静默吞——
     /// 静默丢弃曾让「被控发聊天、主控收不到」极难定位（被控会话 id 漂移，详见
     /// docs/superpowers/specs/2026-07-01-controlled-chat-session-divergence-bug.md）。
-    fn route_to_peer(&self, session_id: &str, env: &Envelope) {
+    /// `raw` = 收到的原始 JSON 文本，原样转发(不重序列化)。这样 server 无需理解 payload
+    /// 内容，未来新增的 InputEvent/Message 变体即便本 server 不认识(反序列化落 Unknown)，
+    /// 也能把原始字节端到端透传给对端，新端仍可还原——协议演进不再破坏旧 server。
+    fn route_to_peer(&self, session_id: &str, env: &Envelope, raw: &str) {
         let Some(peer) = self.sessions.peer_of(session_id, &env.from) else {
             tracing::warn!(
                 "route_to_peer 丢弃: 查无对端(会话不存在或 from 不属于该会话) session={session_id} from={}",
@@ -157,9 +160,7 @@ impl Hub {
             );
             return;
         }
-        if let Ok(json) = serde_json::to_string(env) {
-            self.send_to(&peer, &json);
-        }
+        self.send_to(&peer, raw);
     }
 
     /// 客户端断开时结束其参与的所有活跃会话（修 orphan active 泄漏）。
@@ -204,7 +205,14 @@ impl Hub {
     }
 
     /// 处理一条入站信封；now 为秒级 Unix 时间戳
+    /// 便捷入口(测试/内部)：重序列化 env 作为 raw。生产路径应走 [`handle_raw`] 传原始 text，
+    /// 以保未知变体内容(见 route_to_peer)。已知变体重序列化与原文等价，测试无差异。
     pub async fn handle(&self, env: Envelope, now: i64) {
+        let raw = serde_json::to_string(&env).unwrap_or_default();
+        self.handle_raw(env, &raw, now).await;
+    }
+
+    pub async fn handle_raw(&self, env: Envelope, raw: &str, now: i64) {
         match &env.payload {
             // ── 注册（W0-1：回发 RegisterAck；刷新注册表 + 广播列表）──────────
             Message::Register { info, password } => {
@@ -255,7 +263,7 @@ impl Hub {
             // ── Input：主控→被控，bump 计数(M-SRV4) + 按 session 对端路由 ──────
             Message::Input { session_id, .. } => {
                 self.sessions.bump_input(session_id);
-                self.route_to_peer(session_id, &env);
+                self.route_to_peer(session_id, &env, raw);
             }
 
             // ── 截图请求：仅认证 admin 可发；落审计 + 广播全 agent ────────────
@@ -278,7 +286,7 @@ impl Hub {
                 // 先把结束通知转发给对端：被控端据此清除"正在被远程控制"态并停推帧。
                 // 必须在 handle_session_end 之前——后者 end_session 会移除会话，
                 // route_to_peer 依赖会话仍在册才能查到对端（Bug：断开后被控端横幅常驻）。
-                self.route_to_peer(session_id, &env);
+                self.route_to_peer(session_id, &env, raw);
                 handlers::handle_session_end(self, session_id, now).await;
             }
 
@@ -296,7 +304,7 @@ impl Hub {
             | Message::SetQuality { session_id, .. }
             | Message::SetCapture { session_id, .. }
             | Message::ClipboardSync { session_id, .. } => {
-                self.route_to_peer(session_id, &env);
+                self.route_to_peer(session_id, &env, raw);
             }
 
             // ── ConnectAck/Reject/ScreenshotResp：按 to 定向转发 ──────────────
@@ -321,10 +329,10 @@ impl Hub {
                         &format!("执行命令: {summary}"),
                     )
                     .await;
-                self.route_to_peer(session_id, &env);
+                self.route_to_peer(session_id, &env, raw);
             }
             Message::ExecResult { session_id, .. } => {
-                self.route_to_peer(session_id, &env);
+                self.route_to_peer(session_id, &env, raw);
             }
 
             // ── 文件传输：按 session 对端路由；FileOpen 落 FileTransfer 审计 ────
@@ -347,14 +355,14 @@ impl Hub {
                         &format!("文件{way}: {name} ({size} 字节)"),
                     )
                     .await;
-                self.route_to_peer(session_id, &env);
+                self.route_to_peer(session_id, &env, raw);
             }
             Message::FileChunk { session_id, .. }
             | Message::FilePullRequest { session_id, .. }
             | Message::FileError { session_id, .. }
             | Message::FileDone { session_id, .. }
             | Message::FileListResp { session_id, .. } => {
-                self.route_to_peer(session_id, &env);
+                self.route_to_peer(session_id, &env, raw);
             }
 
             // ── 远端目录浏览请求：按 session 路由；落 FileTransfer 审计 ──────────
@@ -369,7 +377,7 @@ impl Hub {
                         &format!("浏览目录: {path}"),
                     )
                     .await;
-                self.route_to_peer(session_id, &env);
+                self.route_to_peer(session_id, &env, raw);
             }
 
             // ── 会话内即时消息:按 session 对端路由 + 落 Chat 审计(全文)──────────
@@ -379,13 +387,17 @@ impl Hub {
                 self.audit
                     .log(session_id, &env.from, AuditType::Chat, text)
                     .await;
-                self.route_to_peer(session_id, &env);
+                self.route_to_peer(session_id, &env, raw);
             }
 
             // server 单向发出的消息，不处理客户端发来的
             Message::RegisterAck { .. }
             | Message::EndpointList { .. }
             | Message::IncomingControl { .. } => {}
+
+            // 未知/未来 Message 变体：本 server 不认识，无 session_id 可路由，安全忽略。
+            // (端到端演进的新语义应走 InputEvent 变体，经 route_to_peer 原始转发透传。)
+            Message::Unknown => {}
         }
     }
 }
@@ -714,6 +726,49 @@ mod tests {
             env.payload,
             Message::SetCapture { active: false, .. }
         ));
+    }
+
+    /// 前向兼容根治回归：主控发来一个**本 server 不认识的** InputEvent 变体(模拟未来客户端
+    /// 新增的手势),server 反序列化落 InputEvent::Unknown(不再整条失败),并按 session 路由、
+    /// **原始 text 原样转发**——对端(新客户端)仍能收到含全部原始字段的 payload。
+    /// 坐实:协议演进(加 event 变体)不再破坏旧 server,滚轮不通的根因不复发。
+    #[tokio::test]
+    async fn unknown_input_event_relayed_raw_preserving_fields() {
+        let hub = test_hub();
+        let (a_tx, _a_rx) = mpsc::unbounded_channel::<String>();
+        let (b_tx, mut b_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("ep-a".into(), a_tx);
+        hub.add_client("ep-b".into(), b_tx);
+
+        let sid = "sess-unknown".to_string();
+        hub.sessions.insert(Session {
+            id: sid.clone(),
+            mode: Mode::B,
+            from_id: "ep-a".into(),
+            to_id: "ep-b".into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+        });
+
+        // 未来变体:本 server 的 protocol 不含 "future_gesture",event 反序列化应落 Unknown。
+        // payload 为嵌套对象(内部 tag "type" 在 payload 内)。
+        let raw = format!(
+            r#"{{"from":"ep-a","to":null,"ts":200,"payload":{{"type":"input","session_id":"{sid}","event":{{"kind":"future_gesture","magnitude":42}}}}}}"#
+        );
+        // 复现生产路径:先反序列化(此时不再整条失败),再 handle_raw 传原始 text。
+        let env: Envelope = serde_json::from_str(&raw).expect("未知 event 变体不应导致整条失败");
+        assert!(
+            matches!(env.payload, Message::Input { event: protocol::InputEvent::Unknown, .. }),
+            "未知 kind 应落 InputEvent::Unknown"
+        );
+        hub.handle_raw(env, &raw, 200).await;
+
+        let got = b_rx.try_recv().expect("对端应收到被转发的未知 Input");
+        assert!(
+            got.contains("future_gesture") && got.contains("\"magnitude\":42"),
+            "应原样透传原始字段,实际转发={got}"
+        );
     }
 
     /// 泄漏根治回归：客户端断开时，须结束其参与的所有活跃会话——

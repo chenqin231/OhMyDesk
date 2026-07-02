@@ -65,18 +65,30 @@ export function shouldBlockRemoteContextMenu(): boolean {
 }
 
 // 滚轮:把浏览器 wheel delta(受 deltaMode 影响)归一到"格"。与桌面端一致:
-// dy>0 向上、dx>0 向右;步长 40px/格,非零保底 ±1。浏览器 deltaY>0=向下,故取负。
+// dy>0 向上、dx>0 向右;步长 40px/格。浏览器 deltaY>0=向下,故取负。
+//
+// 用**像素累加器**而非"每事件保底 ±1":触摸板/惯性一次手势会连发几十个小 delta,
+// 保底 ±1 会滚几十格(飞很远)。累加 px、满一格才发整数格、余量留存 → 发出的总格数
+// ≈ 物理滚动距离/步长,与事件个数无关。每个会话建一个累加器(useRef 持有)。
 const SCROLL_STEP_PX = 40;
-function toNotch(d: number): number {
-  if (d === 0) return 0;
-  const n = Math.round(d / SCROLL_STEP_PX);
-  return n !== 0 ? n : d > 0 ? 1 : -1;
-}
-export function remoteScrollEvent(deltaX: number, deltaY: number, deltaMode: number): InputEvent {
-  // deltaMode: 0=像素,1=行(×16px),2=页(×~视口高,近似用 800px)。
-  const unit = deltaMode === 1 ? 16 : deltaMode === 2 ? 800 : 1;
-  const dxPx = deltaX * unit;
-  const dyPx = deltaY * unit;
-  // 浏览器 deltaY>0 表示内容向下滚;协议约定 dy>0 向上 → 取负。deltaX>0 向右 → 与协议一致。
-  return { kind: "scroll", dx: toNotch(dxPx), dy: -toNotch(dyPx) };
+export function makeRemoteScroll(): (
+  deltaX: number,
+  deltaY: number,
+  deltaMode: number,
+) => InputEvent | null {
+  let accX = 0;
+  let accY = 0;
+  return (deltaX, deltaY, deltaMode) => {
+    // deltaMode: 0=像素,1=行(×16px),2=页(×~视口高,近似用 800px)。
+    const unit = deltaMode === 1 ? 16 : deltaMode === 2 ? 800 : 1;
+    accX += deltaX * unit;
+    accY += deltaY * unit;
+    const nx = Math.trunc(accX / SCROLL_STEP_PX); // 满格数(向零取整,保号)
+    const ny = Math.trunc(accY / SCROLL_STEP_PX);
+    accX -= nx * SCROLL_STEP_PX; // 余量留到下次,不丢距离
+    accY -= ny * SCROLL_STEP_PX;
+    if (nx === 0 && ny === 0) return null;
+    // 浏览器 deltaY>0=内容向下;协议约定 dy>0 向上 → 取负。deltaX>0 向右 → 与协议一致。
+    return { kind: "scroll", dx: nx, dy: -ny };
+  };
 }

@@ -271,18 +271,26 @@ pub fn wire_ui_callbacks(
     {
         let tx = from_ui_tx.clone();
         let sess = cur_session.clone();
+        // 像素累加器:触摸板/惯性一次手势产生几十个小 delta,若每个都保底 ±1 会滚几十格(飞很远)。
+        // 改为累加 px、满一格步长才发整数格、余量留到下次——发出的总格数 ≈ 物理滚动距离/步长,
+        // 与事件个数无关。竖直/水平各自累加。
+        let acc_x = std::cell::Cell::new(0.0f32);
+        let acc_y = std::cell::Cell::new(0.0f32);
         ui.on_on_pointer_scroll(move |dx_px, dy_px| {
-            // px→"格":除步长四舍五入,非零但舍入为 0 时保底 ±1(小滚动也动)。
             const SCROLL_STEP_PX: f32 = 40.0;
-            let to_notch = |d: f32| -> i32 {
-                if d == 0.0 { return 0; }
-                let n = (d / SCROLL_STEP_PX).round() as i32;
-                if n != 0 { n } else if d > 0.0 { 1 } else { -1 }
+            let take_notch = |acc: &std::cell::Cell<f32>, d: f32| -> i32 {
+                let sum = acc.get() + d;
+                let n = (sum / SCROLL_STEP_PX).trunc() as i32; // 满格数(向零取整)
+                acc.set(sum - (n as f32) * SCROLL_STEP_PX); // 余量留到下次,不丢距离
+                n
             };
-            let dx = to_notch(dx_px);
-            let dy = to_notch(dy_px);
-            if dx == 0 && dy == 0 { return; }
+            let dx = take_notch(&acc_x, dx_px);
+            let dy = take_notch(&acc_y, dy_px);
+            if dx == 0 && dy == 0 {
+                return;
+            }
             if let Some(sid) = sess.lock().unwrap().clone() {
+                tracing::debug!("主控采集·滚轮 notch=({dx},{dy})");
                 let _ = tx.send(net::FromUi::Input {
                     session_id: sid,
                     event: protocol::InputEvent::Scroll { dx, dy },
