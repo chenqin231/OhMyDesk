@@ -215,7 +215,7 @@ export function AuditLog() {
               >
                 <TableCell className="font-mono text-xs text-muted-foreground">{r.startText}</TableCell>
                 <TableCell>
-                  <InitiatorCell name={r.actor} />
+                  <InitiatorCell name={r.actor} isLegacy={r.isLegacy} />
                 </TableCell>
                 <TableCell>
                   <TargetCell id={r.target} user={r.target} />

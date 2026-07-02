@@ -35,6 +35,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useStore } from "@/store";
+import { useAuthStore } from "@/store/auth";
+import { hasPermission } from "@/lib/permissions";
 import { endpointToRow, type TerminalRow } from "@/lib/adapters/endpoint";
 import type { OsKind } from "@/lib/types/OsKind";
 import { ArchBadge, MemoryBar, OsCell, StatusBadge } from "@/components/assets/terminal-cells";
@@ -62,6 +64,9 @@ export function TerminalAssets() {
   const endpoints = useStore((s) => s.endpoints);
   const startRemote = useStore((s) => s.startRemote);
   const deleteEndpoints = useStore((s) => s.deleteEndpoints);
+  // 删除终端后端闸 ManageAssets，operator 仅 view_assets → 隐藏删除 UI，避免点了 403 静默无反应
+  const permissions = useAuthStore((s) => s.permissions);
+  const canManage = hasPermission(permissions, "manage_assets");
   const navigate = useNavigate();
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
@@ -69,6 +74,7 @@ export function TerminalAssets() {
   const [selected, setSelected] = useState<TerminalRow | null>(null);
   const [open, setOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [forceTarget, setForceTarget] = useState<{ id: string; name: string } | null>(null);
 
   const nowSec = Math.floor(Date.now() / 1000);
@@ -133,12 +139,18 @@ export function TerminalAssets() {
   async function handleDelete(ids: string[]) {
     if (!ids.length) return;
     if (!window.confirm(`确定删除选中的 ${ids.length} 台终端记录？仅清理资产列表，不影响会话/审计历史。`)) return;
-    await deleteEndpoints(ids);
-    setSelectedIds((prev) => {
-      const n = new Set(prev);
-      ids.forEach((id) => n.delete(id));
-      return n;
-    });
+    setDeleteError(null);
+    try {
+      await deleteEndpoints(ids);
+      setSelectedIds((prev) => {
+        const n = new Set(prev);
+        ids.forEach((id) => n.delete(id));
+        return n;
+      });
+    } catch (err) {
+      // 删除失败（如 403 无权限 / 5xx）不再静默：明确提示，保留选择供重试
+      setDeleteError(err instanceof Error ? err.message : "删除终端失败");
+    }
   }
 
   return (
@@ -185,8 +197,15 @@ export function TerminalAssets() {
         </div>
       </div>
 
-      {/* 批量操作栏：选中 ≥1 台时出现 */}
-      {selectedIds.size > 0 && (
+      {/* 删除失败提示（403 无权限 / 5xx 等）——不再静默吞掉 */}
+      {deleteError && (
+        <p className="text-sm text-destructive" role="alert">
+          {deleteError}
+        </p>
+      )}
+
+      {/* 批量操作栏：有管理权限且选中 ≥1 台时出现 */}
+      {canManage && selectedIds.size > 0 && (
         <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/40 px-4 py-2">
           <span className="text-sm text-foreground">
             已选 <span className="font-mono font-semibold">{selectedIds.size}</span> 台终端
@@ -211,15 +230,17 @@ export function TerminalAssets() {
         <Table>
           <TableHeader>
             <TableRow className="border-border hover:bg-transparent">
-              <TableHead className="w-10">
-                <input
-                  type="checkbox"
-                  className="size-4 cursor-pointer accent-primary align-middle"
-                  aria-label="全选"
-                  checked={allSelected}
-                  onChange={toggleAll}
-                />
-              </TableHead>
+              {canManage && (
+                <TableHead className="w-10">
+                  <input
+                    type="checkbox"
+                    className="size-4 cursor-pointer accent-primary align-middle"
+                    aria-label="全选"
+                    checked={allSelected}
+                    onChange={toggleAll}
+                  />
+                </TableHead>
+              )}
               <TableHead className="w-24">状态</TableHead>
               <TableHead>使用人</TableHead>
               <TableHead>IP 地址</TableHead>
@@ -239,15 +260,17 @@ export function TerminalAssets() {
                 onClick={() => openDetail(t)}
                 className="cursor-pointer border-border"
               >
-                <TableCell onClick={(e) => e.stopPropagation()}>
-                  <input
-                    type="checkbox"
-                    className="size-4 cursor-pointer accent-primary align-middle"
-                    aria-label={`选择 ${t.user}`}
-                    checked={selectedIds.has(t.id)}
-                    onChange={() => toggleOne(t.id)}
-                  />
-                </TableCell>
+                {canManage && (
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      className="size-4 cursor-pointer accent-primary align-middle"
+                      aria-label={`选择 ${t.user}`}
+                      checked={selectedIds.has(t.id)}
+                      onChange={() => toggleOne(t.id)}
+                    />
+                  </TableCell>
+                )}
                 <TableCell>
                   <StatusBadge status={t.status} />
                 </TableCell>
@@ -306,14 +329,18 @@ export function TerminalAssets() {
                         </DropdownMenuItem>
                         <DropdownMenuItem>重置连接密码</DropdownMenuItem>
                         <DropdownMenuItem>采集系统日志</DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => handleDelete([t.id])}
-                        >
-                          <Trash2 className="size-4" />
-                          删除该终端
-                        </DropdownMenuItem>
+                        {canManage && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onClick={() => handleDelete([t.id])}
+                            >
+                              <Trash2 className="size-4" />
+                              删除该终端
+                            </DropdownMenuItem>
+                          </>
+                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
@@ -322,7 +349,7 @@ export function TerminalAssets() {
             ))}
             {rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={11} className="h-32 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={canManage ? 11 : 10} className="h-32 text-center text-sm text-muted-foreground">
                   {endpoints.length === 0 ? "正在加载终端列表…" : "未找到匹配的终端"}
                 </TableCell>
               </TableRow>

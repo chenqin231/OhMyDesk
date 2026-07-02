@@ -4,8 +4,8 @@
 
 export type Role = "superadmin" | "admin" | "operator" | "auditor";
 
-// 与 server users.rs Permission 枚举对齐（含 manage_assets：superadmin/admin 会返回，
-// 但当前前端无资产管理入口使用它，仅为让类型与后端返回完全一致）。
+// 与 server users.rs Permission 枚举对齐。manage_assets 门控资产页删除终端 UI
+//（批量删除 + 单行「删除该终端」，见 terminal-assets.tsx）：operator 仅 view_assets 即隐藏。
 export type Permission =
   | "view_assets"
   | "manage_assets"
