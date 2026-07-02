@@ -7,9 +7,16 @@
 
 use crate::geom::{scaled_dims, MAX_H, MAX_W};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use fast_image_resize::images::{Image, ImageRef};
+use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use image::RgbaImage;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use xcap::Monitor;
+
+thread_local! {
+    // 复用 Resizer 的内部缓冲，避免每帧分配。encode_frame_q 在被控编码线程调用。
+    static RESIZER: std::cell::RefCell<Resizer> = std::cell::RefCell::new(Resizer::new());
+}
 
 /// 当前画质档位（被控端推帧线程每帧读取）：0=流畅优先(默认)，1=高清优先。
 /// 主控端经 SetQuality 协议消息切换，被控端 dispatch 调 [`set_quality`] 更新。
@@ -184,24 +191,27 @@ pub fn encode_frame_q(
     let (sw, sh) = (img.width(), img.height());
     let (w, h) = scaled_dims(sw, sh, max_w, max_h);
 
-    // 缩放（等比，不放大）。尺寸未变时跳过 resize 省一次拷贝。
-    // 滤波用 Triangle(双线性) 而非 Lanczos3：真机实测 Lanczos3 降采是编码耗时大头(老 Xeon 上
-    // ~200ms/帧，占 ~79%)，且其成本由「读整张输入」决定、降分辨率几乎不省；Triangle 快数倍、
-    // 远控 720p 画质损失可接受，直接砍延迟。详见 specs/2026-07-01-resize-pipeline-perf-design.md。
-    // 不再单独 to_rgb8()——jpeg-encoder 直接吃 RGBA，内部做 RGB 转换。
+    // 缩放（等比，不放大）。尺寸未变时跳过。改用 fast_image_resize（纯 Rust SIMD，
+    // dev 实测 6.38× 于 image::imageops(Triangle)，opt-z 下不削 SIMD；老 Xeon 走 SSE4.1）。
+    // Bilinear 对齐原 Triangle 观感；use_alpha(false)：远控帧不透明(alpha=255)，跳过 premultiply。
     let t_resize = std::time::Instant::now();
-    let resized: Option<RgbaImage> = if (w, h) == (sw, sh) {
+    let resized: Option<Vec<u8>> = if (w, h) == (sw, sh) {
         None
     } else {
-        Some(image::imageops::resize(
-            img,
-            w,
-            h,
-            image::imageops::FilterType::Triangle,
-        ))
+        // 源用只读零拷贝视图：ImageRef 直接借 &[u8]，无需 clone。
+        let src = ImageRef::new(sw, sh, img.as_raw(), PixelType::U8x4)
+            .map_err(|e| anyhow::anyhow!("resize 源构造失败: {e}"))?;
+        let mut dst = Image::new(w, h, PixelType::U8x4);
+        let opts = ResizeOptions::new()
+            .resize_alg(ResizeAlg::Convolution(FilterType::Bilinear))
+            .use_alpha(false);
+        RESIZER
+            .with(|r| r.borrow_mut().resize(&src, &mut dst, Some(&opts)))
+            .map_err(|e| anyhow::anyhow!("resize 失败: {e}"))?;
+        Some(dst.into_vec())
     };
     let rgba: &[u8] = match &resized {
-        Some(r) => r.as_raw(),
+        Some(v) => v,
         None => img.as_raw(),
     };
     let resize_ms = t_resize.elapsed().as_millis() as u32;
