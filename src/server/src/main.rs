@@ -5,8 +5,8 @@ mod audit;
 mod auth;
 mod db;
 mod handlers;
-mod hub;
 mod http;
+mod hub;
 mod login_log;
 mod registry;
 mod session;
@@ -31,12 +31,13 @@ use tower_http::services::ServeDir;
 
 use audit::AuditStore;
 use auth::Auth;
-use hub::{now_sec, Hub};
 use http::{router as http_router, HttpState};
+use hub::{now_sec, Hub};
 use login_log::LoginLogStore;
 use registry::Registry;
 use session::SessionStore;
 use settings::SettingsStore;
+use users::UserStore;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -51,6 +52,14 @@ async fn main() -> anyhow::Result<()> {
     // ── DB 降级连接（M-SRV1）───────────────────────────────────────────────
     let db = db::connect().await; // Option<Db>，None 时审计 best-effort 跳过
 
+    let settings = Arc::new(SettingsStore::new(db.clone()));
+    let legacy_credential = settings.load_credential().await;
+    let Some(user_db) = db.clone() else {
+        anyhow::bail!("SQLite 不可用，用户系统无法启动");
+    };
+    let user_store = Arc::new(UserStore::new(user_db));
+    user_store.bootstrap(legacy_credential).await?;
+
     // ── 共享状态构造 ─────────────────────────────────────────────────────────
     // 注册表带 DB 持久化：启动回灌历史终端（修复升级/重启后终端列表为空）。
     let reg = Arc::new(Registry::with_db(db.clone()));
@@ -58,24 +67,15 @@ async fn main() -> anyhow::Result<()> {
     let sessions = Arc::new(SessionStore::new());
     let audit = Arc::new(AuditStore::new(db.clone()));
     let login_log = Arc::new(LoginLogStore::new(db.clone()));
-    let settings = Arc::new(SettingsStore::new(db));
 
-    // ── 鉴权：JWT secret 取环境（缺省随机，重启失效 token）；凭据取持久化或写死默认 ──
+    // ── 鉴权：JWT secret 取环境（缺省随机，重启失效 token）──
     let secret = std::env::var("OHMYDESK_JWT_SECRET")
         .map(String::into_bytes)
         .unwrap_or_else(|_| {
             tracing::warn!("OHMYDESK_JWT_SECRET 未设置，使用随机密钥（重启后已登录失效）");
             format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4()).into_bytes()
         });
-    let (loaded_user, loaded_hash) = match settings.load_credential().await {
-        Some((u, h)) => (Some(u), Some(h)),
-        None => (None, None),
-    };
-    let auth = Arc::new(Auth::new(secret, loaded_user, loaded_hash));
-    tracing::info!(
-        "管理平台登录账号 {}（默认密码见 auth::DEFAULT_PASS，可在系统设置页修改）",
-        auth.current_user()
-    );
+    let auth = Arc::new(Auth::new(secret, Arc::clone(&user_store)));
 
     let hub = Arc::new(Hub::new(
         Arc::clone(&reg),
@@ -87,7 +87,6 @@ async fn main() -> anyhow::Result<()> {
         hub: Arc::clone(&hub),
         audit: Arc::clone(&audit),
         auth: Arc::clone(&auth),
-        settings: Arc::clone(&settings),
         login_log: Arc::clone(&login_log),
     };
 
@@ -98,8 +97,8 @@ async fn main() -> anyhow::Result<()> {
     //   未命中 /ws、/api、/static 的路径（含 / 与 /assets /audit 等前端路由）一律 fallback
     //   回 index.html(200) —— 用 axum 原生 fallback 而非 ServeDir not_found_service
     //   （后者会把状态强戳成 404，破坏 SPA 深链/刷新语义）。
-    let web_dir = std::env::var("OHMYDESK_WEB_DIR")
-        .unwrap_or_else(|_| "src/admin-web/dist".to_string());
+    let web_dir =
+        std::env::var("OHMYDESK_WEB_DIR").unwrap_or_else(|_| "src/admin-web/dist".to_string());
     let static_dir = ServeDir::new(format!("{web_dir}/static"));
     let index_body = std::fs::read_to_string(format!("{web_dir}/index.html")).unwrap_or_default();
 
@@ -107,8 +106,8 @@ async fn main() -> anyhow::Result<()> {
     //   产物与 download.html 放数据卷（OHMYDESK_DOWNLOAD_DIR，默认 {web_dir}/downloads），
     //   与镜像解耦：重建镜像不丢产物，CI 编出的多架构包 scp 到该目录即可热更新。
     //   download.html 每次请求实时读，更新产物列表无需重启容器。
-    let download_dir = std::env::var("OHMYDESK_DOWNLOAD_DIR")
-        .unwrap_or_else(|_| format!("{web_dir}/downloads"));
+    let download_dir =
+        std::env::var("OHMYDESK_DOWNLOAD_DIR").unwrap_or_else(|_| format!("{web_dir}/downloads"));
     let downloads_service = ServeDir::new(download_dir.clone());
     let download_page_path = format!("{download_dir}/download.html");
 
@@ -175,11 +174,10 @@ async fn ws_handler(
 ) -> Response {
     // admin 连接需带有效 token；agent（终端）连接无需。
     let token_present = q.token.is_some();
-    let authed = q
-        .token
-        .as_deref()
-        .and_then(|t| st.auth.validate(t))
-        .is_some();
+    let authed = match q.token.as_deref() {
+        Some(t) => st.auth.validate(t).await.is_some(),
+        None => false,
+    };
     ws.on_upgrade(move |sock| handle_socket(sock, st.hub, authed, token_present))
 }
 
@@ -304,14 +302,11 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
 }
 
 /// `ohmydesk-server set-password <新密码> [--user <用户名>]`
-/// 写入 SQLite settings 表（admin_user / admin_pass_hash）；重启 server 生效。
+/// 更新 users 表中的管理账号密码；同时写入旧 settings 键用于兼容迁移记录。
 async fn run_set_password(args: &[String]) -> anyhow::Result<()> {
-    let new_pass = args
-        .get(2)
-        .filter(|p| !p.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!("用法: ohmydesk-server set-password <新密码> [--user <用户名>]")
-        })?;
+    let new_pass = args.get(2).filter(|p| !p.is_empty()).ok_or_else(|| {
+        anyhow::anyhow!("用法: ohmydesk-server set-password <新密码> [--user <用户名>]")
+    })?;
 
     // 解析可选 --user
     let mut new_user: Option<String> = None;
@@ -326,23 +321,50 @@ async fn run_set_password(args: &[String]) -> anyhow::Result<()> {
     }
 
     let db = db::connect().await;
-    if db.is_none() {
+    let Some(pool) = db.clone() else {
         anyhow::bail!("无法连接数据库，改密未生效；请检查 DATABASE_URL / 数据卷挂载");
-    }
+    };
     let settings = SettingsStore::new(db);
+    let legacy_credential = settings.load_credential().await;
+    let users = UserStore::new(pool);
+    users.bootstrap(legacy_credential).await?;
 
-    // 用户名：--user 指定 > 现有持久化 > 默认 admin
-    let user = match new_user {
-        Some(u) if !u.trim().is_empty() => u.trim().to_string(),
-        _ => settings
-            .load_credential()
-            .await
-            .map(|(u, _)| u)
-            .unwrap_or_else(|| auth::DEFAULT_USER.to_string()),
+    let requested_user = new_user.as_deref().map(str::trim).filter(|u| !u.is_empty());
+    let mut target = if let Some(username) = requested_user {
+        match users.get_by_username(username).await? {
+            Some(user) => user,
+            None => users
+                .get_by_username(auth::DEFAULT_USER)
+                .await?
+                .or(users.get_by_username("superadmin").await?)
+                .ok_or_else(|| anyhow::anyhow!("未找到可更新的管理员账号"))?,
+        }
+    } else {
+        users
+            .get_by_username(auth::DEFAULT_USER)
+            .await?
+            .or(users.get_by_username("superadmin").await?)
+            .ok_or_else(|| anyhow::anyhow!("未找到可更新的管理员账号"))?
     };
 
-    let hash = auth::hash_password(new_pass);
-    settings.save_credential(&user, &hash).await;
-    println!("已更新管理员凭据：user={user}（重启 server 生效）");
+    if let Some(username) = requested_user {
+        if target.username != username {
+            users.set_username(&target.id, username).await?;
+            target = users
+                .get_by_id(&target.id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", target.id))?;
+        }
+    }
+
+    users.reset_password(&target.id, new_pass).await?;
+    let target = users
+        .get_by_id(&target.id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", target.id))?;
+    settings
+        .save_credential(&target.username, &target.password_hash)
+        .await;
+    println!("已更新管理员凭据：user={}", target.username);
     Ok(())
 }

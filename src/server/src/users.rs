@@ -251,6 +251,65 @@ impl UserStore {
         Ok(())
     }
 
+    pub async fn set_username(&self, id: &str, username: &str) -> Result<()> {
+        let username = username.trim();
+        if username.is_empty() {
+            bail!("用户名不能为空");
+        }
+        let result = sqlx::query("UPDATE users SET username = ?, updated_at = ? WHERE id = ?")
+            .bind(username)
+            .bind(now_sec())
+            .bind(id)
+            .execute(&self.db)
+            .await?;
+        if result.rows_affected() == 0 {
+            bail!("用户不存在: {id}");
+        }
+        Ok(())
+    }
+
+    pub async fn change_credential(
+        &self,
+        id: &str,
+        current_pass: &str,
+        new_username: Option<&str>,
+        new_pass: Option<&str>,
+    ) -> Result<UserRecord> {
+        let user = self
+            .get_by_id(id)
+            .await?
+            .ok_or_else(|| anyhow!("用户不存在: {id}"))?;
+        if !bcrypt::verify(current_pass, &user.password_hash).unwrap_or(false) {
+            bail!("当前密码错误");
+        }
+
+        let username = new_username
+            .map(str::trim)
+            .filter(|username| !username.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| user.username.clone());
+        let password_hash = match new_pass {
+            Some(pass) if !pass.is_empty() => crate::auth::hash_password(pass),
+            _ => user.password_hash.clone(),
+        };
+        if password_hash.is_empty() {
+            bail!("密码哈希不能为空");
+        }
+
+        sqlx::query(
+            "UPDATE users SET username = ?, password_hash = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&username)
+        .bind(&password_hash)
+        .bind(now_sec())
+        .bind(id)
+        .execute(&self.db)
+        .await?;
+        self.get_by_id(id)
+            .await?
+            .ok_or_else(|| anyhow!("用户不存在: {id}"))
+    }
+
     async fn create_with_hash(
         &self,
         username: &str,
@@ -479,7 +538,10 @@ CREATE TABLE users (
             .await
             .unwrap();
 
-        assert!(store.set_role(&operator.id, Role::Superadmin).await.is_err());
+        assert!(store
+            .set_role(&operator.id, Role::Superadmin)
+            .await
+            .is_err());
 
         let operator = store.get_by_id(&operator.id).await.unwrap().unwrap();
         assert_eq!(operator.role, Role::Operator);
@@ -507,7 +569,50 @@ CREATE TABLE users (
     async fn reset_password_returns_error_for_missing_user() {
         let store = test_store().await;
 
-        assert!(store.reset_password("missing-user-id", "new-pass").await.is_err());
+        assert!(store
+            .reset_password("missing-user-id", "new-pass")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn set_username_rejects_empty_input_and_updates_trimmed_username() {
+        let store = test_store().await;
+        let user = store
+            .create("alice", "secret", Role::Operator)
+            .await
+            .unwrap();
+
+        assert!(store.set_username(&user.id, "   ").await.is_err());
+        store.set_username(&user.id, "  alice2  ").await.unwrap();
+
+        assert!(store.get_by_username("alice").await.unwrap().is_none());
+        let user = store.get_by_id(&user.id).await.unwrap().unwrap();
+        assert_eq!(user.username, "alice2");
+    }
+
+    #[tokio::test]
+    async fn change_credential_verifies_current_password_and_updates_self() {
+        let store = test_store().await;
+        let user = store
+            .create("alice", "old-pass", Role::Operator)
+            .await
+            .unwrap();
+
+        assert!(store
+            .change_credential(&user.id, "wrong-pass", Some("alice2"), Some("new-pass"))
+            .await
+            .is_err());
+
+        let updated = store
+            .change_credential(&user.id, "old-pass", Some("alice2"), Some("new-pass"))
+            .await
+            .unwrap();
+
+        assert_eq!(updated.username, "alice2");
+        assert_eq!(updated.role, Role::Operator);
+        assert!(bcrypt::verify("new-pass", &updated.password_hash).unwrap());
+        assert!(!bcrypt::verify("old-pass", &updated.password_hash).unwrap());
     }
 
     #[tokio::test]

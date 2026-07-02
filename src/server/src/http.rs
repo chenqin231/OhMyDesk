@@ -13,16 +13,16 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use std::net::SocketAddr;
 use serde::Deserialize;
 use serde_json::json;
+use std::net::SocketAddr;
 use tower_http::cors::CorsLayer;
 
-use crate::auth::Auth;
 use crate::audit::AuditStore;
+use crate::auth::Auth;
 use crate::hub::{now_sec, Hub};
 use crate::login_log::LoginLogStore;
-use crate::settings::SettingsStore;
+use crate::users::Role;
 
 /// HTTP layer 的共享状态（M-SRV3 + 鉴权）
 #[derive(Clone)]
@@ -30,12 +30,15 @@ pub struct HttpState {
     pub hub: Arc<Hub>,
     pub audit: Arc<AuditStore>,
     pub auth: Arc<Auth>,
-    pub settings: Arc<SettingsStore>,
     pub login_log: Arc<LoginLogStore>,
 }
 
 /// 已认证管理员（提取器）：校验 Authorization: Bearer <jwt>，失败 401。
-pub struct AuthUser(#[allow(dead_code)] pub String);
+pub struct AuthUser {
+    pub id: String,
+    pub username: String,
+    pub role: Role,
+}
 
 #[async_trait]
 impl FromRequestParts<HttpState> for AuthUser {
@@ -51,8 +54,8 @@ impl FromRequestParts<HttpState> for AuthUser {
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.strip_prefix("Bearer "))
             .ok_or_else(|| unauth("缺少 token"))?;
-        match state.auth.validate(token) {
-            Some(c) => Ok(AuthUser(c.sub)),
+        match state.auth.validate(token).await {
+            Some(user) => Ok(user),
             None => Err(unauth("token 无效或已过期")),
         }
     }
@@ -60,6 +63,10 @@ impl FromRequestParts<HttpState> for AuthUser {
 
 fn unauth(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::UNAUTHORIZED, Json(json!({ "error": msg })))
+}
+
+fn permissions(role: Role) -> Vec<&'static str> {
+    role.permissions().iter().map(|p| p.as_str()).collect()
 }
 
 /// 提取客户端真实 IP：优先 X-Forwarded-For（取首个）→ X-Real-IP → 直连对端。
@@ -84,7 +91,24 @@ fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::Registry;
+    use crate::session::SessionStore;
+    use crate::users::{Role, UserStore};
+    use axum::body::to_bytes;
     use axum::http::HeaderName;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    const USERS_DDL: &str = r#"
+CREATE TABLE users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('superadmin', 'admin', 'operator', 'auditor')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+)
+"#;
 
     fn hm(pairs: &[(&str, &str)]) -> HeaderMap {
         let mut h = HeaderMap::new();
@@ -95,6 +119,39 @@ mod tests {
             );
         }
         h
+    }
+
+    async fn test_state() -> (HttpState, Arc<UserStore>) {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(USERS_DDL).execute(&pool).await.unwrap();
+        let users = Arc::new(UserStore::new(pool));
+        let reg = Arc::new(Registry::with_db(None));
+        let sessions = Arc::new(SessionStore::new());
+        let audit = Arc::new(AuditStore::new(None));
+        let hub = Arc::new(Hub::new(
+            Arc::clone(&reg),
+            Arc::clone(&sessions),
+            Arc::clone(&audit),
+        ));
+        let state = HttpState {
+            hub,
+            audit,
+            auth: Arc::new(Auth::new(
+                b"test-secret-32-bytes-long-xxxxxx".to_vec(),
+                Arc::clone(&users),
+            )),
+            login_log: Arc::new(LoginLogStore::new(None)),
+        };
+        (state, users)
+    }
+
+    async fn response_json(response: axum::response::Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
     }
 
     #[test]
@@ -111,6 +168,62 @@ mod tests {
         assert_eq!(client_ip(&h, peer), "198.51.100.7");
         let empty = HeaderMap::new();
         assert_eq!(client_ip(&empty, peer), "127.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn login_response_contains_token_user_role_and_permissions() {
+        let (state, users) = test_state().await;
+        users
+            .create("operator", "secret", Role::Operator)
+            .await
+            .unwrap();
+
+        let response = login(
+            State(state),
+            ConnectInfo("127.0.0.1:5000".parse().unwrap()),
+            HeaderMap::new(),
+            Json(LoginReq {
+                user: "operator".to_string(),
+                pass: "secret".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["token"].as_str().unwrap_or_default().len() > 20);
+        assert_eq!(body["user"], "operator");
+        assert_eq!(body["role"], "operator");
+        assert_eq!(
+            body["permissions"],
+            json!(["view_assets", "view_grid", "use_remote"])
+        );
+    }
+
+    #[tokio::test]
+    async fn me_response_uses_authenticated_user_identity() {
+        let (state, users) = test_state().await;
+        let user = users
+            .create("auditor", "secret", Role::Auditor)
+            .await
+            .unwrap();
+        let auth_user = AuthUser {
+            id: user.id,
+            username: user.username,
+            role: user.role,
+        };
+
+        let response = me(State(state), auth_user).await.into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["user"], "auditor");
+        assert_eq!(body["role"], "auditor");
+        assert_eq!(
+            body["permissions"],
+            json!(["view_audit", "view_login_logs"])
+        );
     }
 }
 
@@ -150,23 +263,44 @@ async fn login(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    if s.auth.verify_login(&req.user, &req.pass) {
-        let token = s.auth.issue_token(&req.user, now_sec());
+    if let Some(user) = s.auth.verify_login(&req.user, &req.pass).await {
+        let token = s
+            .auth
+            .issue_token(&user.id, &user.username, user.role, now_sec());
         s.login_log
-            .record(&req.user, Some(&ip), Some(&ua), true, None)
+            .record(&user.username, Some(&ip), Some(&ua), true, None)
             .await;
-        (StatusCode::OK, Json(json!({ "token": token, "user": req.user }))).into_response()
+        (
+            StatusCode::OK,
+            Json(json!({
+                "token": token,
+                "user": user.username,
+                "role": user.role.as_str(),
+                "permissions": permissions(user.role),
+            })),
+        )
+            .into_response()
     } else {
         s.login_log
-            .record(&req.user, Some(&ip), Some(&ua), false, Some("账号或密码错误"))
+            .record(
+                &req.user,
+                Some(&ip),
+                Some(&ua),
+                false,
+                Some("账号或密码错误"),
+            )
             .await;
         unauth("账号或密码错误").into_response()
     }
 }
 
-/// GET /api/me（需登录）→ 回当前用户名（系统设置页回显）。
-async fn me(State(s): State<HttpState>, _user: AuthUser) -> impl IntoResponse {
-    Json(json!({ "user": s.auth.current_user() }))
+/// GET /api/me（需登录）→ 回请求 token 对应的用户身份。
+async fn me(State(_s): State<HttpState>, user: AuthUser) -> impl IntoResponse {
+    Json(json!({
+        "user": user.username,
+        "role": user.role.as_str(),
+        "permissions": permissions(user.role),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -176,21 +310,31 @@ struct CredReq {
     new_pass: Option<String>,
 }
 
-/// POST /api/settings/credential（需登录）→ 验旧密码后改账号密码 + 落库。
+/// POST /api/settings/credential（需登录）→ 当前用户验旧密码后修改自己的账号密码。
 async fn change_credential(
     State(s): State<HttpState>,
-    _user: AuthUser,
+    user: AuthUser,
     Json(req): Json<CredReq>,
 ) -> impl IntoResponse {
-    match s.auth.change_credential(
-        &req.current_pass,
-        req.new_user.as_deref(),
-        req.new_pass.as_deref(),
-    ) {
-        Ok((user, hash)) => {
-            s.settings.save_credential(&user, &hash).await;
-            (StatusCode::OK, Json(json!({ "user": user }))).into_response()
-        }
+    match s
+        .auth
+        .change_credential(
+            &user.id,
+            &req.current_pass,
+            req.new_user.as_deref(),
+            req.new_pass.as_deref(),
+        )
+        .await
+    {
+        Ok(user) => (
+            StatusCode::OK,
+            Json(json!({
+                "user": user.username,
+                "role": user.role.as_str(),
+                "permissions": permissions(user.role),
+            })),
+        )
+            .into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     }
 }
