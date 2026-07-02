@@ -48,9 +48,16 @@ type AuthState = {
   user: string | null;
   role: Role | null;
   permissions: Permission[] | null;
+  // loadMe 是否已完成过一次（无论成败）。路由守卫据此区分「加载中」与「已加载」，
+  // 避免 /api/me 遇 5xx/网络抖动时 permissions 永停 null 而整屏空白。
+  meLoaded: boolean;
+  // loadMe 是否在途：用于首帧/重试的加载态展示与并发去重。
+  meLoading: boolean;
+  // loadMe 失败信息（非 401 的 5xx / 网络异常）。非空时守卫渲染可重试错误态而非空屏。
+  authError: string | null;
   // 登录：成功存 token 并返回；失败抛出可读错误信息
   login: (user: string, pass: string) => Promise<void>;
-  // 登出：清 token + user + role + permissions（跳转由调用方负责）
+  // 登出：清 token + user + role + permissions + 身份加载标志（跳转由调用方负责）
   logout: () => void;
   // 改密/改用户名：成功后返回，调用方负责提示并登出
   changeCredential: (
@@ -58,7 +65,7 @@ type AuthState = {
     newUser: string,
     newPass: string,
   ) => Promise<void>;
-  // 用 token 拉当前用户；token 失效则清空
+  // 用 token 拉当前用户；401 清空，5xx/网络异常记 authError，无论成败置 meLoaded=true
   loadMe: () => Promise<void>;
   // ── 用户管理（需 manage_users 权限）──
   // 拉取全部管理端账号
@@ -81,6 +88,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   role: null,
   permissions: null,
+  meLoaded: false,
+  meLoading: false,
+  authError: null,
 
   async login(user, pass) {
     const res = await fetch(apiUrl("/api/login"), {
@@ -102,17 +112,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       permissions: Permission[];
     };
     setStoredToken(data.token);
+    // 登录直接带回身份：标记已加载、清错误，避免守卫再走一次 loadMe 加载态
     set({
       token: data.token,
       user: data.user,
       role: data.role,
       permissions: data.permissions,
+      meLoaded: true,
+      meLoading: false,
+      authError: null,
     });
   },
 
   logout() {
     setStoredToken(null);
-    set({ token: null, user: null, role: null, permissions: null });
+    set({
+      token: null,
+      user: null,
+      role: null,
+      permissions: null,
+      meLoaded: false,
+      meLoading: false,
+      authError: null,
+    });
   },
 
   async changeCredential(currentPass, newUser, newPass) {
@@ -139,23 +161,49 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   async loadMe() {
-    const token = get().token;
-    if (!token) return;
-    const res = await fetch(apiUrl("/api/me"), {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.status === 401) {
-      // token 失效：清空，路由守卫会把页面带回 /login
-      get().logout();
+    const { token, meLoading } = get();
+    if (!token) {
+      set({ meLoaded: true, meLoading: false });
       return;
     }
-    if (!res.ok) return;
-    const data = (await res.json()) as {
-      user: string;
-      role: Role;
-      permissions: Permission[];
-    };
-    set({ user: data.user, role: data.role, permissions: data.permissions });
+    if (meLoading) return; // 已有在途请求，避免并发重复拉取
+    set({ meLoading: true, authError: null });
+    try {
+      const res = await fetch(apiUrl("/api/me"), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        // token 失效：清空（logout 会一并重置 meLoaded 等），守卫据此回 /login
+        get().logout();
+        return;
+      }
+      if (!res.ok) {
+        // 5xx 等：保留 token，记错误，守卫据此渲染可重试态而非空屏
+        set({ authError: `加载账户信息失败（${res.status}），请重试` });
+        return;
+      }
+      const data = (await res.json()) as {
+        user: string;
+        role: Role;
+        permissions: Permission[];
+      };
+      set({
+        user: data.user,
+        role: data.role,
+        permissions: data.permissions,
+        authError: null,
+      });
+    } catch (err) {
+      // 网络异常/断网：同样不空屏，交由守卫展示重试
+      set({
+        authError:
+          err instanceof Error
+            ? `网络异常：${err.message}`
+            : "网络异常，无法加载账户信息",
+      });
+    } finally {
+      set({ meLoading: false, meLoaded: true });
+    }
   },
 
   async listUsers() {
