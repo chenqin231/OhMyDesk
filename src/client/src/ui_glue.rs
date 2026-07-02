@@ -271,6 +271,36 @@ pub fn wire_ui_callbacks(
     {
         let tx = from_ui_tx.clone();
         let sess = cur_session.clone();
+        // 像素累加器:触摸板/惯性一次手势产生几十个小 delta,若每个都保底 ±1 会滚几十格(飞很远)。
+        // 改为累加 px、满一格步长才发整数格、余量留到下次——发出的总格数 ≈ 物理滚动距离/步长,
+        // 与事件个数无关。竖直/水平各自累加。
+        let acc_x = std::cell::Cell::new(0.0f32);
+        let acc_y = std::cell::Cell::new(0.0f32);
+        ui.on_on_pointer_scroll(move |dx_px, dy_px| {
+            const SCROLL_STEP_PX: f32 = 40.0;
+            let take_notch = |acc: &std::cell::Cell<f32>, d: f32| -> i32 {
+                let sum = acc.get() + d;
+                let n = (sum / SCROLL_STEP_PX).trunc() as i32; // 满格数(向零取整)
+                acc.set(sum - (n as f32) * SCROLL_STEP_PX); // 余量留到下次,不丢距离
+                n
+            };
+            let dx = take_notch(&acc_x, dx_px);
+            let dy = take_notch(&acc_y, dy_px);
+            if dx == 0 && dy == 0 {
+                return;
+            }
+            if let Some(sid) = sess.lock().unwrap().clone() {
+                tracing::debug!("主控采集·滚轮 notch=({dx},{dy})");
+                let _ = tx.send(net::FromUi::Input {
+                    session_id: sid,
+                    event: protocol::InputEvent::Scroll { dx, dy },
+                });
+            }
+        });
+    }
+    {
+        let tx = from_ui_tx.clone();
+        let sess = cur_session.clone();
         ui.on_on_key(move |code, down| {
             let sid = sess.lock().unwrap().clone();
             tracing::info!(
@@ -709,6 +739,10 @@ pub async fn consume_to_ui(
                 if frame_belongs_to_ended(&ended_session.lock().unwrap(), &session_id) {
                     continue;
                 }
+                // 首帧标志:仅连上远程收到的第一帧才自动贴合窗口尺寸(见下方 set_size)。
+                // 之后 adaptive 过载降档会让分辨率不停变，若每次都 set_size，窗口会在用户
+                // 拖动/操作时被强行改尺寸+重定位 → 表现为「窗口随机变大小和位置」「最大化下字体割裂」。
+                let is_first_frame = last_frame_dims.is_none();
                 let dims_changed = last_frame_dims != Some((w, h));
                 if dims_changed {
                     tracing::info!(
@@ -746,17 +780,29 @@ pub async fn consume_to_ui(
                             // 强制下采样导致发虚。仅尺寸变化时调整。
                             // DPI 感知：set_size 用逻辑像素，除以主控缩放系数，使窗口的「物理」尺寸≈帧尺寸
                             // （高 DPI 主控上才不会把窗口放大到溢出屏幕）。上限取常见屏物理 1920×1080。
-                            if dims_changed {
-                                let sf = ui.window().scale_factor().max(1.0);
+                            //
+                            // 【仅首帧贴合，且非最大化/全屏】只在连上远程的第一帧把窗口调到接近被控
+                            // 分辨率。之后 adaptive 过载降档让分辨率频繁跳变（1920↔1632↔1344↔1056…），
+                            // 若每次都 set_size，会与窗口管理器/用户拖动抢状态 → 窗口随机变大小和位置、
+                            // 最大化下渲染表面与布局 desync 致字体割裂。首帧后一律不再动窗口，画面靠
+                            // frame_scale 在窗口内自适应缩放。
+                            let win = ui.window();
+                            if is_first_frame && !win.is_maximized() && !win.is_fullscreen() {
+                                let sf = win.scale_factor().max(1.0);
                                 let win_w = (w.min(1920) as f32) / sf;
                                 let win_h = (h.min(1080) as f32) / sf;
-                                ui.window().set_size(slint::LogicalSize::new(win_w, win_h));
+                                win.set_size(slint::LogicalSize::new(win_w, win_h));
                             }
                         }
                     });
                 }
             }
             net::ToUi::SessionEnded { session_id } => {
+                // 重置首帧标志：窗口贴合是「每会话一次」而非「每进程一次」。否则重连新会话时
+                // last_frame_dims 仍是上次的 Some(..)，is_first_frame 恒 false → 新会话首帧不再
+                // 贴合窗口，卡在上次尺寸。置 None 让下次连接的首帧重新贴合（不重新引入 set_size 风暴：
+                // 会话内首帧后 last_frame_dims 即非 None，其余帧仍不触发）。
+                last_frame_dims = None;
                 // 记下结束的会话 id，丢弃其迟到帧（与本地断开同样防「复活」）。
                 activity.end_pending_connect();
                 let prev = cur_session.lock().unwrap().take();

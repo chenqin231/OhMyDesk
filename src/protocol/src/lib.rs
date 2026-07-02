@@ -341,6 +341,13 @@ pub enum Message {
         entries: Vec<FileEntry>,
         error: Option<String>,
     },
+    /// 未知/未来变体兜底：旧端遇不认识的 `type` 落到此，不再整条 Envelope 反序列化失败。
+    /// server 靠原始 text 转发保内容（route_to_peer），新端仍能还原（协议演进不破坏旧端）。
+    /// `skip_serializing`：Unknown 只应被反序列化+原样透传，绝不重序列化（否则会丢原字段
+    /// 变成 `{"type":"unknown"}`）；标记后误序列化即报错暴露，而非静默损坏。
+    #[serde(other, skip_serializing)]
+    #[ts(skip)]
+    Unknown,
 }
 
 /// 远端目录中的一个条目（文件或子目录）。
@@ -360,6 +367,13 @@ pub enum InputEvent {
     MouseButton { button: u8, down: bool },
     Key { code: String, down: bool },
     Text { text: String },
+    /// 鼠标滚轮。dx/dy 单位为滚轮"格"(notches,非像素);dy>0 向上、dx>0 向右。
+    Scroll { dx: i32, dy: i32 },
+    /// 未知/未来变体兜底：旧端遇不认识的 `kind` 落到此，不再整条失败(见 Message::Unknown)。
+    /// `skip_serializing` 理由同 Message::Unknown：只反序列化+原样透传，误序列化即报错暴露。
+    #[serde(other, skip_serializing)]
+    #[ts(skip)]
+    Unknown,
 }
 
 /// 文件传输方向：push=控制方推给被控方，pull=被控方回流给控制方。
