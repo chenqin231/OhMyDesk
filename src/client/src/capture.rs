@@ -185,19 +185,35 @@ pub fn encode_frame_q(
     // 滤波用 Triangle(双线性) 而非 Lanczos3：真机实测 Lanczos3 降采是编码耗时大头(老 Xeon 上
     // ~200ms/帧，占 ~79%)，且其成本由「读整张输入」决定、降分辨率几乎不省；Triangle 快数倍、
     // 远控 720p 画质损失可接受，直接砍延迟。详见 specs/2026-07-01-resize-pipeline-perf-design.md。
+    // 不再单独 to_rgb8()——jpeg-encoder 直接吃 RGBA，内部做 RGB 转换。
     let t_resize = std::time::Instant::now();
-    let rgb = if (w, h) == (sw, sh) {
-        image::DynamicImage::ImageRgba8(img.clone()).to_rgb8()
+    let resized: Option<RgbaImage> = if (w, h) == (sw, sh) {
+        None
     } else {
-        let resized = image::imageops::resize(img, w, h, image::imageops::FilterType::Triangle);
-        image::DynamicImage::ImageRgba8(resized).to_rgb8()
+        Some(image::imageops::resize(
+            img,
+            w,
+            h,
+            image::imageops::FilterType::Triangle,
+        ))
+    };
+    let rgba: &[u8] = match &resized {
+        Some(r) => r.as_raw(),
+        None => img.as_raw(),
     };
     let resize_ms = t_resize.elapsed().as_millis() as u32;
 
+    // JPEG：jpeg-encoder 纯 Rust 标量（Ivy Bridge 实测 4.19× 于 image 标量，
+    // 见 specs/2026-07-02-simd-jpeg-encode-design.md）。直接消费 RGBA：JPEG 不含 alpha，
+    // jpeg-encoder 丢弃第 4 通道。默认采样 q<90 → 4:2:0，与主控 image 解码兼容。
     let t_jpeg = std::time::Instant::now();
-    let mut buf = std::io::Cursor::new(Vec::new());
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, q).encode_image(&rgb)?;
-    let data = STANDARD.encode(buf.get_ref());
+    let mut buf: Vec<u8> = Vec::new();
+    // 屏幕分辨率远小于 u16::MAX；显式化该假设，未来异形大屏若越界能在 debug 下即时暴露。
+    debug_assert!(w <= u16::MAX as u32 && h <= u16::MAX as u32, "分辨率超 u16 上限");
+    jpeg_encoder::Encoder::new(&mut buf, q)
+        .encode(rgba, w as u16, h as u16, jpeg_encoder::ColorType::Rgba)
+        .map_err(|e| anyhow::anyhow!("jpeg 编码失败: {e}"))?;
+    let data = STANDARD.encode(&buf);
     let jpeg_ms = t_jpeg.elapsed().as_millis() as u32;
 
     Ok(EncodeOut { data, w, h, resize_ms, jpeg_ms })
