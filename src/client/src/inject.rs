@@ -105,6 +105,8 @@ impl Injector {
             InputEvent::Text { text } => {
                 self.enigo.text(text)?;
             }
+            // S2 实现滚轮注入；当前占位让编译通过。
+            InputEvent::Scroll { .. } => {}
         }
         Ok(())
     }

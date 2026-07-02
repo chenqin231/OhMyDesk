@@ -360,6 +360,8 @@ pub enum InputEvent {
     MouseButton { button: u8, down: bool },
     Key { code: String, down: bool },
     Text { text: String },
+    /// 鼠标滚轮。dx/dy 单位为滚轮"格"(notches,非像素);dy>0 向上、dx>0 向右。
+    Scroll { dx: i32, dy: i32 },
 }
 
 /// 文件传输方向：push=控制方推给被控方，pull=被控方回流给控制方。
