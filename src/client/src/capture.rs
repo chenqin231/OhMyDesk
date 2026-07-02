@@ -388,6 +388,30 @@ mod tests {
     }
 
     #[test]
+    fn encode_frame_q_产出可解回原尺寸_高清q88() {
+        let img = solid(1280, 720);
+        let out = encode_frame_q(&img, 1920, 1080, 88).unwrap();
+        assert_eq!((out.w, out.h), (1280, 720), "不放大，尺寸原样");
+        let bytes = STANDARD
+            .decode(out.data.as_bytes())
+            .expect("产出应为合法 base64");
+        let decoded = image::load_from_memory(&bytes).expect("产出应为可解码 JPEG");
+        assert_eq!((decoded.width(), decoded.height()), (1280, 720), "解回同尺寸");
+    }
+
+    #[test]
+    fn encode_frame_q_大屏缩放后可解回上限尺寸() {
+        let img = solid(3840, 2160);
+        let out = encode_frame_q(&img, 1920, 1080, 88).unwrap();
+        assert_eq!((out.w, out.h), (1920, 1080), "4K 等比缩到 1080p 上限");
+        let bytes = STANDARD
+            .decode(out.data.as_bytes())
+            .unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (1920, 1080), "解回同尺寸");
+    }
+
+    #[test]
     #[ignore] // 手动：cargo test -p client --release encode_bench_1280x720 -- --ignored --nocapture
     fn encode_bench_1280x720() {
         let img = image::RgbaImage::from_fn(1280, 720, |x, y| {
