@@ -14,21 +14,22 @@ import {
 import { useAuthStore } from "@/store/auth";
 import { useStore } from "@/store";
 
-// 系统设置页：当前登录用户自助修改用户名 / 密码。成功后强制登出并跳登录。
+// 个人设置页：任意已登录用户自助修改自己的密码（旧密码 + 新密码 + 确认）。
+// 仅需登录，不依赖任何功能菜单权限。成功后强制登出并跳登录，用新密码重新登录。
 export function Settings() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const loadMe = useAuthStore((s) => s.loadMe);
-  const changeCredential = useAuthStore((s) => s.changeCredential);
+  const changeOwnPassword = useAuthStore((s) => s.changeOwnPassword);
   const logout = useAuthStore((s) => s.logout);
 
   const endpoints = useStore((s) => s.endpoints);
   const online = endpoints.filter((ep) => ep.online).length;
   const total = endpoints.length;
 
-  const [currentPass, setCurrentPass] = useState("");
-  const [newUser, setNewUser] = useState("");
+  const [oldPass, setOldPass] = useState("");
   const [newPass, setNewPass] = useState("");
+  const [confirmPass, setConfirmPass] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -42,77 +43,63 @@ export function Settings() {
     e.preventDefault();
     setError(null);
     setSuccess(null);
-    if (!newUser.trim() && !newPass) {
-      setError("请至少填写新用户名或新密码");
+    if (!oldPass || !newPass) {
+      setError("请填写旧密码与新密码");
+      return;
+    }
+    if (newPass !== confirmPass) {
+      setError("两次输入的新密码不一致");
       return;
     }
     setLoading(true);
     try {
-      await changeCredential(currentPass, newUser.trim(), newPass);
-      setSuccess("已更新，请重新登录");
-      // 凭据已变更，强制登出回登录页
+      await changeOwnPassword(oldPass, newPass);
+      setSuccess("密码已修改，请用新密码重新登录");
+      // 密码已变更，强制登出回登录页
       setTimeout(() => {
         logout();
         navigate("/login", { replace: true });
       }, 1200);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "更新失败");
+      setError(err instanceof Error ? err.message : "修改密码失败");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <AppShell title="系统设置" online={online} total={total}>
+    <AppShell title="个人设置" online={online} total={total}>
       <div className="mx-auto max-w-lg">
         <Card>
           <CardHeader>
-            <CardTitle>账号与密码</CardTitle>
+            <CardTitle>修改密码</CardTitle>
             <CardDescription>
               当前用户：
               <span className="font-medium text-foreground">
                 {user ?? "—"}
               </span>
-              。修改后需使用新凭据重新登录。
+              。修改后需使用新密码重新登录。
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form className="grid gap-4" onSubmit={handleSubmit}>
               <div className="grid gap-1.5">
-                <label htmlFor="cur-pass" className="text-sm font-medium">
-                  当前密码
+                <label htmlFor="old-pass" className="text-sm font-medium">
+                  旧密码
                 </label>
                 <Input
-                  id="cur-pass"
+                  id="old-pass"
                   type="password"
                   autoComplete="current-password"
-                  value={currentPass}
-                  onChange={(e) => setCurrentPass(e.target.value)}
+                  value={oldPass}
+                  onChange={(e) => setOldPass(e.target.value)}
                   placeholder="请输入当前密码"
                   required
                 />
               </div>
               <div className="grid gap-1.5">
-                <label htmlFor="new-user" className="text-sm font-medium">
-                  新用户名
-                  <span className="ml-1 text-xs text-muted-foreground">
-                    （可选，留空不改）
-                  </span>
-                </label>
-                <Input
-                  id="new-user"
-                  autoComplete="username"
-                  value={newUser}
-                  onChange={(e) => setNewUser(e.target.value)}
-                  placeholder={user ?? "新用户名"}
-                />
-              </div>
-              <div className="grid gap-1.5">
                 <label htmlFor="new-pass" className="text-sm font-medium">
                   新密码
-                  <span className="ml-1 text-xs text-muted-foreground">
-                    （可选，留空不改）
-                  </span>
                 </label>
                 <Input
                   id="new-pass"
@@ -121,6 +108,21 @@ export function Settings() {
                   value={newPass}
                   onChange={(e) => setNewPass(e.target.value)}
                   placeholder="请输入新密码"
+                  required
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label htmlFor="confirm-pass" className="text-sm font-medium">
+                  确认新密码
+                </label>
+                <Input
+                  id="confirm-pass"
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmPass}
+                  onChange={(e) => setConfirmPass(e.target.value)}
+                  placeholder="请再次输入新密码"
+                  required
                 />
               </div>
               {error && (
@@ -134,7 +136,7 @@ export function Settings() {
                 </p>
               )}
               <Button type="submit" disabled={loading || !!success}>
-                {loading ? "提交中…" : "保存修改"}
+                {loading ? "提交中…" : "修改密码"}
               </Button>
             </form>
           </CardContent>

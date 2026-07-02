@@ -47,11 +47,16 @@ CREATE TABLE IF NOT EXISTS login_log (
 );
 CREATE INDEX IF NOT EXISTS idx_login_log_ts ON login_log(ts);
 
+-- 管理账户：tier 二值角色 + 按账户菜单权限集（替代旧 4 固定角色）。
+-- 旧库由 db.rs::migrate_users_to_per_account_permissions 幂等迁移（role→tier + backfill permissions）。
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('superadmin', 'admin', 'operator', 'auditor')),
+  -- tier：superadmin（隐式全权、独占账户管理）/ user（按 permissions 授菜单）
+  role TEXT NOT NULL CHECK(role IN ('superadmin', 'user')),
+  -- 按账户菜单权限键集（逗号分隔，如 'view_assets,use_remote'）；superadmin 留空表示隐式全权
+  permissions TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL

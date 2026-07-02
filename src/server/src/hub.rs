@@ -14,6 +14,7 @@ use crate::audit::AuditStore;
 use crate::handlers;
 use crate::registry::Registry;
 use crate::session::SessionStore;
+use crate::users::PermissionSet;
 
 /// 帧 lane 客户端：watch 发送端 + 入队计数（enqueued）。sent 由对应连接出站泵持有。
 pub struct FrameClient {
@@ -27,17 +28,28 @@ pub fn frame_lane_drop(enqueued: u64, sent: u64) -> u64 {
 }
 
 /// WEB 管理端已认证人员身份：由 WS token 绑定到该 admin 连接，用于远控 RBAC 闸 + 审计归属。
-/// role 存字符串（`Role::as_str()`），落审计/会话时直接写库；需判权限时 `parse::<Role>()`。
+/// role 存 tier 字符串（`superadmin`/`user`），落审计/会话时直接写库。
+/// 远控闸判定的权限来源为账户权限集 `permissions`（+ superadmin 隐式全权 `is_superadmin`），
+/// 不再靠 role 字符串反解旧固定角色。
 #[derive(Debug, Clone)]
 pub struct ActorIdentity {
     pub user_id: String,
     pub username: String,
+    /// 审计/会话 operator_role 落库的 tier 字符串（`superadmin`/`user`）。
     pub role: String,
+    /// 该账户的菜单权限集（远控闸判定 use_remote 的真源；superadmin 为隐式全集）。
+    pub permissions: PermissionSet,
+    /// 是否 superadmin（隐式全权，远控闸直接放行）。
+    pub is_superadmin: bool,
 }
 
 impl ActorIdentity {
     /// 从会话已存的 operator_* 字段重建身份，供会话生命周期审计（AuthResult/结束/断开）归属。
     /// 三列齐备才算有身份（agent 侧或匿名会话为 None）。
+    ///
+    /// 会话仅落 operator_* 三列（user_id/username/role），不存权限集——因本重建体**只用于审计归属**，
+    /// 从不参与远控闸判定（闸只用 `actor_of` 拿到的连接绑定体，见 ConnectRequest）。故 `permissions`
+    /// 置空、`is_superadmin` 由 role 字符串派生即可，对审计写入无影响。
     pub(crate) fn from_session(s: &protocol::Session) -> Option<ActorIdentity> {
         match (
             s.operator_user_id.as_ref(),
@@ -47,7 +59,9 @@ impl ActorIdentity {
             (Some(user_id), Some(username), Some(role)) => Some(ActorIdentity {
                 user_id: user_id.clone(),
                 username: username.clone(),
+                is_superadmin: role == "superadmin",
                 role: role.clone(),
+                permissions: PermissionSet::default(),
             }),
             _ => None,
         }
@@ -283,16 +297,16 @@ impl Hub {
                 force,
             } => {
                 let actor = self.actor_of(&env.from);
-                // RBAC 闸：admin 来源发起远控须持有 UseRemote 权限。
-                // 无身份 / 角色不可解析 / 无 UseRemote → warn 并拒绝（不建会话），
-                // 挡住 auditor 等无远控权限的账号越权发起（HTTP 已挡，WS 直连再挡一道）。
+                // RBAC 闸：admin 来源发起远控须持有 UseRemote 权限（或为 superadmin 隐式全权）。
+                // 无身份 / 账户权限集无 UseRemote 且非 superadmin → warn 并拒绝（不建会话），
+                // 挡住无远控权限的账号越权发起（HTTP 已挡，WS 直连再挡一道）。
+                // 权限来源已从旧固定角色映射改为账户权限集（`actor.permissions`），superadmin 直接放行。
                 if env.from.starts_with("admin-") {
                     let allowed = actor
                         .as_ref()
-                        .and_then(|a| a.role.parse::<crate::users::Role>().ok())
-                        .map(|role| {
-                            role.permissions()
-                                .contains(&crate::users::Permission::UseRemote)
+                        .map(|a| {
+                            a.permissions.contains(crate::users::Permission::UseRemote)
+                                || a.is_superadmin
                         })
                         .unwrap_or(false);
                     if !allowed {
@@ -955,9 +969,10 @@ mod tests {
         );
     }
 
-    /// RBAC 闸回归：绑定 auditor（无 UseRemote）→ 远控发起被拒。
+    /// RBAC 闸：绑定的账户权限集不含 use_remote(仅 view_audit)→ 远控发起被拒(不建会话)。
+    /// 权限来源已从旧 role 映射改为账户权限集，故此处直接给 permissions 而非靠 role 字符串 parse。
     #[tokio::test]
-    async fn connect_request_denied_for_role_without_use_remote() {
+    async fn connect_request_denied_when_actor_permissions_lack_use_remote() {
         let hub = test_hub();
         let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
         hub.add_client("ep-victim".into(), victim_tx);
@@ -966,7 +981,9 @@ mod tests {
             ActorIdentity {
                 user_id: "u-aud".into(),
                 username: "auditor1".into(),
-                role: "auditor".into(),
+                role: "user".into(),
+                permissions: crate::users::PermissionSet::parse("view_audit"),
+                is_superadmin: false,
             },
         );
 
@@ -985,14 +1002,14 @@ mod tests {
 
         assert!(
             victim_rx.try_recv().is_err(),
-            "auditor 无 UseRemote，被控端不应收到 IncomingControl"
+            "账户权限集无 use_remote，被控端不应收到 IncomingControl"
         );
         assert!(hub.sessions.active_sessions().is_empty(), "被拒不应建会话");
     }
 
-    /// RBAC 闸 + 归属回归：绑定 operator（有 UseRemote）→ 允许远控，且操作人身份写入会话。
+    /// RBAC 闸 + 归属：绑定的账户权限集含 use_remote → 允许远控，且操作人身份(tier=user)写入会话。
     #[tokio::test]
-    async fn connect_request_allowed_for_operator_and_stamps_operator_identity() {
+    async fn connect_request_allowed_when_actor_permissions_include_use_remote() {
         let hub = test_hub();
         let (admin_tx, _admin_rx) = mpsc::unbounded_channel::<String>();
         let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
@@ -1003,7 +1020,9 @@ mod tests {
             ActorIdentity {
                 user_id: "u-op".into(),
                 username: "operator1".into(),
-                role: "operator".into(),
+                role: "user".into(),
+                permissions: crate::users::PermissionSet::parse("view_assets,view_grid,use_remote"),
+                is_superadmin: false,
             },
         );
 
@@ -1023,20 +1042,68 @@ mod tests {
         // 被控端收到 IncomingControl（force 免同意 auto_accept=true）
         let got = victim_rx
             .try_recv()
-            .expect("operator 有 UseRemote，被控端应收到 IncomingControl");
+            .expect("含 use_remote，被控端应收到 IncomingControl");
         let got_env: Envelope = serde_json::from_str(&got).unwrap();
         assert!(
             matches!(got_env.payload, Message::IncomingControl { auto_accept: true, .. }),
             "force 直连应 auto_accept=true"
         );
 
-        // 会话写入操作人身份（operator_*）
+        // 会话写入操作人身份（operator_*，tier 写 user）
         let sessions = hub.sessions.active_sessions();
         assert_eq!(sessions.len(), 1, "应建 1 条会话");
         let s = &sessions[0];
         assert_eq!(s.operator_user_id.as_deref(), Some("u-op"));
         assert_eq!(s.operator_username.as_deref(), Some("operator1"));
-        assert_eq!(s.operator_role.as_deref(), Some("operator"));
+        assert_eq!(s.operator_role.as_deref(), Some("user"));
+    }
+
+    /// RBAC 闸：superadmin(隐式全权)→ 放行远控。
+    /// 刻意用空权限集 + is_superadmin=true 构造，单独锁定「superadmin 隐式放行不依赖权限集」这一契约
+    ///（生产路径中 superadmin 的 permissions 实为 superadmin_all()，两条判定分支任一成立即放行）。
+    #[tokio::test]
+    async fn connect_request_allowed_for_superadmin() {
+        let hub = test_hub();
+        let (admin_tx, _admin_rx) = mpsc::unbounded_channel::<String>();
+        let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-x".into(), admin_tx);
+        hub.add_client("ep-victim".into(), victim_tx);
+        hub.bind_actor(
+            "admin-x",
+            ActorIdentity {
+                user_id: "u-sa".into(),
+                username: "superadmin".into(),
+                role: "superadmin".into(),
+                permissions: crate::users::PermissionSet::default(),
+                is_superadmin: true,
+            },
+        );
+
+        let env = Envelope {
+            from: "admin-x".into(),
+            to: None,
+            ts: 200,
+            payload: Message::ConnectRequest {
+                mode: Mode::A,
+                target: "ep-victim".into(),
+                password: None,
+                force: true,
+            },
+        };
+        hub.handle(env, 200).await;
+
+        let got = victim_rx
+            .try_recv()
+            .expect("superadmin 隐式全权，被控端应收到 IncomingControl");
+        let got_env: Envelope = serde_json::from_str(&got).unwrap();
+        assert!(matches!(
+            got_env.payload,
+            Message::IncomingControl { auto_accept: true, .. }
+        ));
+
+        let sessions = hub.sessions.active_sessions();
+        assert_eq!(sessions.len(), 1, "应建 1 条会话");
+        assert_eq!(sessions[0].operator_role.as_deref(), Some("superadmin"));
     }
 
     #[test]
