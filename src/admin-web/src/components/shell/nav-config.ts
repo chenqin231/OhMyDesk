@@ -33,5 +33,5 @@ export const navItems: readonly NavItem[] = [
 export const systemNavItems: readonly NavItem[] = [
   { key: "login-logs", title: "登录日志", href: "/login-logs", icon: History, permission: "view_login_logs" },
   { key: "users", title: "用户管理", href: "/users", icon: Users, permission: "manage_users" },
-  { key: "settings", title: "系统设置", href: "/settings", icon: Settings },
+  { key: "settings", title: "个人设置", href: "/settings", icon: Settings },
 ] as const;
