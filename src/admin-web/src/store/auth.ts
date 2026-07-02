@@ -60,14 +60,6 @@ type AuthState = {
   login: (user: string, pass: string) => Promise<void>;
   // 登出：清 token + user + tier + permissions + 身份加载标志（跳转由调用方负责）
   logout: () => void;
-  // 改密/改用户名：成功后返回，调用方负责提示并登出
-  // 注：/api/settings/credential 已被后端删除，自助改密请用 changeOwnPassword；
-  // 本方法暂留仅为 Settings.tsx 编译，将随 Task 7 个人设置改造一并移除。
-  changeCredential: (
-    currentPass: string,
-    newUser: string,
-    newPass: string,
-  ) => Promise<void>;
   // 自助改密（人人可用，仅需登录）：POST /api/me/password { old, new }
   changeOwnPassword: (oldPassword: string, newPassword: string) => Promise<void>;
   // 用 token 拉当前用户；401 清空，5xx/网络异常记 authError，无论成败置 meLoaded=true
@@ -142,29 +134,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       meLoading: false,
       authError: null,
     });
-  },
-
-  async changeCredential(currentPass, newUser, newPass) {
-    const token = get().token;
-    const res = await fetch(apiUrl("/api/settings/credential"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({
-        current_pass: currentPass,
-        new_user: newUser,
-        new_pass: newPass,
-      }),
-    });
-    if (res.status === 401) {
-      throw new Error("登录已失效，请重新登录");
-    }
-    if (!res.ok) {
-      const msg = await readError(res);
-      throw new Error(msg ?? "更新失败");
-    }
   },
 
   async changeOwnPassword(oldPassword, newPassword) {
