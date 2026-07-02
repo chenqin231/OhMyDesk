@@ -1,6 +1,8 @@
 // 鉴权链路探针：登录拿 token → WS token 闸（无效 1008 / 有效收列表）→ 模式A 仅 admin。
 const HTTP = "http://127.0.0.1:8765";
 const WS = "ws://127.0.0.1:8765/ws";
+const ADMIN_USER = process.env.PROBE_USER || "superadmin";
+const ADMIN_PASS = process.env.PROBE_PASS || "infogo123";
 const log = [];
 const ok = (m) => log.push("✅ " + m);
 const info = (m) => log.push("· " + m);
@@ -28,7 +30,7 @@ async function main() {
 
   // ── 1) 登录拿 token ──────────────────────────────────────────────
   const r = await fetch(`${HTTP}/api/login`, { method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ user: "admin", pass: "OhMyDesk@2026" }) });
+    body: JSON.stringify({ user: ADMIN_USER, pass: ADMIN_PASS }) });
   if (r.status !== 200) fail(`登录失败 HTTP ${r.status}`);
   const { token } = await r.json();
   ok("默认账号登录拿到 token");

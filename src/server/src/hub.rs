@@ -26,6 +26,34 @@ pub fn frame_lane_drop(enqueued: u64, sent: u64) -> u64 {
     enqueued.saturating_sub(sent)
 }
 
+/// WEB 管理端已认证人员身份：由 WS token 绑定到该 admin 连接，用于远控 RBAC 闸 + 审计归属。
+/// role 存字符串（`Role::as_str()`），落审计/会话时直接写库；需判权限时 `parse::<Role>()`。
+#[derive(Debug, Clone)]
+pub struct ActorIdentity {
+    pub user_id: String,
+    pub username: String,
+    pub role: String,
+}
+
+impl ActorIdentity {
+    /// 从会话已存的 operator_* 字段重建身份，供会话生命周期审计（AuthResult/结束/断开）归属。
+    /// 三列齐备才算有身份（agent 侧或匿名会话为 None）。
+    pub(crate) fn from_session(s: &protocol::Session) -> Option<ActorIdentity> {
+        match (
+            s.operator_user_id.as_ref(),
+            s.operator_username.as_ref(),
+            s.operator_role.as_ref(),
+        ) {
+            (Some(user_id), Some(username), Some(role)) => Some(ActorIdentity {
+                user_id: user_id.clone(),
+                username: username.clone(),
+                role: role.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
+
 pub struct Hub {
     pub reg: Arc<Registry>,
     pub sessions: Arc<SessionStore>,
@@ -34,6 +62,8 @@ pub struct Hub {
     clients: DashMap<String, mpsc::UnboundedSender<String>>,
     /// 帧专用 lane（drop-stale）：endpoint_id/admin_id → 帧 watch + enqueued 计数（与 clients 并存）。
     frame_clients: DashMap<String, FrameClient>,
+    /// admin 连接 id → 已认证人员身份（WS token 绑定）。仅 admin 连接登记，agent 不登记。
+    actors: DashMap<String, ActorIdentity>,
 }
 
 impl Hub {
@@ -44,7 +74,23 @@ impl Hub {
             audit,
             clients: DashMap::new(),
             frame_clients: DashMap::new(),
+            actors: DashMap::new(),
         }
+    }
+
+    /// 绑定 admin 连接的人员身份（WS 升级时按 token 解析出的 AuthUser 调用）。
+    pub fn bind_actor(&self, conn_id: &str, actor: ActorIdentity) {
+        self.actors.insert(conn_id.to_string(), actor);
+    }
+
+    /// 解绑（连接断开时调用）。
+    pub fn remove_actor(&self, conn_id: &str) {
+        self.actors.remove(conn_id);
+    }
+
+    /// 查连接绑定的人员身份（远控 RBAC 闸 + 直发型操作审计归属）。
+    fn actor_of(&self, conn_id: &str) -> Option<ActorIdentity> {
+        self.actors.get(conn_id).map(|a| a.clone())
     }
 
     pub fn add_client(&self, id: String, tx: mpsc::UnboundedSender<String>) {
@@ -189,9 +235,11 @@ impl Hub {
             if let Ok(json) = serde_json::to_string(&end_env) {
                 self.send_to(peer, &json);
             }
+            // 审计归属：从会话已存 operator_* 重建操作人身份。
+            let actor = ActorIdentity::from_session(&session);
             // 落输入聚合审计（M-SRV4）
             self.audit
-                .log(session_id, &session.from_id, AuditType::Input, &input_summary)
+                .log(session_id, &session.from_id, AuditType::Input, &input_summary, actor.as_ref())
                 .await;
             // 更新 DB 会话终态
             self.audit
@@ -199,7 +247,7 @@ impl Hub {
                 .await;
             // 落断开审计（对端断开）
             self.audit
-                .log(session_id, &session.from_id, AuditType::Disconnect, "对端断开")
+                .log(session_id, &session.from_id, AuditType::Disconnect, "对端断开", actor.as_ref())
                 .await;
         }
     }
@@ -234,6 +282,27 @@ impl Hub {
                 password,
                 force,
             } => {
+                let actor = self.actor_of(&env.from);
+                // RBAC 闸：admin 来源发起远控须持有 UseRemote 权限。
+                // 无身份 / 角色不可解析 / 无 UseRemote → warn 并拒绝（不建会话），
+                // 挡住 auditor 等无远控权限的账号越权发起（HTTP 已挡，WS 直连再挡一道）。
+                if env.from.starts_with("admin-") {
+                    let allowed = actor
+                        .as_ref()
+                        .and_then(|a| a.role.parse::<crate::users::Role>().ok())
+                        .map(|role| {
+                            role.permissions()
+                                .contains(&crate::users::Permission::UseRemote)
+                        })
+                        .unwrap_or(false);
+                    if !allowed {
+                        tracing::warn!(
+                            "拒绝无 UseRemote 权限的 admin 远控发起: from={}",
+                            env.from
+                        );
+                        return;
+                    }
+                }
                 handlers::handle_connect_request(
                     self,
                     &env.from,
@@ -242,6 +311,7 @@ impl Hub {
                     password.as_deref(),
                     *force,
                     now,
+                    actor.as_ref(),
                 )
                 .await;
             }
@@ -274,7 +344,13 @@ impl Hub {
                 }
                 tracing::debug!("截图广播 req_id={req_id}");
                 self.audit
-                    .log(req_id, &env.from, AuditType::Screenshot, "批量截图指令")
+                    .log(
+                        req_id,
+                        &env.from,
+                        AuditType::Screenshot,
+                        "批量截图指令",
+                        self.actor_of(&env.from).as_ref(),
+                    )
                     .await;
                 if let Ok(json) = serde_json::to_string(&env) {
                     self.broadcast_agents(&json);
@@ -327,6 +403,7 @@ impl Hub {
                         &env.from,
                         AuditType::Command,
                         &format!("执行命令: {summary}"),
+                        self.actor_of(&env.from).as_ref(),
                     )
                     .await;
                 self.route_to_peer(session_id, &env, raw);
@@ -353,6 +430,7 @@ impl Hub {
                         &env.from,
                         AuditType::FileTransfer,
                         &format!("文件{way}: {name} ({size} 字节)"),
+                        self.actor_of(&env.from).as_ref(),
                     )
                     .await;
                 self.route_to_peer(session_id, &env, raw);
@@ -375,6 +453,7 @@ impl Hub {
                         &env.from,
                         AuditType::FileTransfer,
                         &format!("浏览目录: {path}"),
+                        self.actor_of(&env.from).as_ref(),
                     )
                     .await;
                 self.route_to_peer(session_id, &env, raw);
@@ -385,7 +464,13 @@ impl Hub {
                 session_id, text, ..
             } => {
                 self.audit
-                    .log(session_id, &env.from, AuditType::Chat, text)
+                    .log(
+                        session_id,
+                        &env.from,
+                        AuditType::Chat,
+                        text,
+                        self.actor_of(&env.from).as_ref(),
+                    )
                     .await;
                 self.route_to_peer(session_id, &env, raw);
             }
@@ -443,6 +528,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         // 主控（admin）发起 SessionEnd
@@ -491,6 +579,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         // 主控发 CancelRequest（带 target=被控）
@@ -537,6 +628,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         let env = Envelope {
@@ -578,6 +672,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         let env = Envelope {
@@ -618,6 +715,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         let env = Envelope {
@@ -661,6 +761,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         // 被控端（to_id）主动发聊天，带权威 session_id
@@ -707,6 +810,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         let env = Envelope {
@@ -749,6 +855,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         // 未来变体:本 server 的 protocol 不含 "future_gesture",event 反序列化应落 Unknown。
@@ -790,6 +899,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         // ep-a 断开：结束其所有会话
@@ -811,6 +923,120 @@ mod tests {
             hub.sessions.active_sessions().is_empty(),
             "断开后不应残留活跃会话"
         );
+    }
+
+    /// RBAC 闸回归：admin 连接未绑定身份 → 远控发起被拒（不建会话、被控端收不到 IncomingControl）。
+    #[tokio::test]
+    async fn connect_request_denied_when_admin_unbound() {
+        let hub = test_hub();
+        let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("ep-victim".into(), victim_tx);
+
+        let env = Envelope {
+            from: "admin-x".into(),
+            to: None,
+            ts: 200,
+            payload: Message::ConnectRequest {
+                mode: Mode::A,
+                target: "ep-victim".into(),
+                password: None,
+                force: true,
+            },
+        };
+        hub.handle(env, 200).await;
+
+        assert!(
+            victim_rx.try_recv().is_err(),
+            "无身份 admin 发起应被拒，被控端不应收到 IncomingControl"
+        );
+        assert!(
+            hub.sessions.active_sessions().is_empty(),
+            "被拒不应建会话"
+        );
+    }
+
+    /// RBAC 闸回归：绑定 auditor（无 UseRemote）→ 远控发起被拒。
+    #[tokio::test]
+    async fn connect_request_denied_for_role_without_use_remote() {
+        let hub = test_hub();
+        let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("ep-victim".into(), victim_tx);
+        hub.bind_actor(
+            "admin-x",
+            ActorIdentity {
+                user_id: "u-aud".into(),
+                username: "auditor1".into(),
+                role: "auditor".into(),
+            },
+        );
+
+        let env = Envelope {
+            from: "admin-x".into(),
+            to: None,
+            ts: 200,
+            payload: Message::ConnectRequest {
+                mode: Mode::A,
+                target: "ep-victim".into(),
+                password: None,
+                force: true,
+            },
+        };
+        hub.handle(env, 200).await;
+
+        assert!(
+            victim_rx.try_recv().is_err(),
+            "auditor 无 UseRemote，被控端不应收到 IncomingControl"
+        );
+        assert!(hub.sessions.active_sessions().is_empty(), "被拒不应建会话");
+    }
+
+    /// RBAC 闸 + 归属回归：绑定 operator（有 UseRemote）→ 允许远控，且操作人身份写入会话。
+    #[tokio::test]
+    async fn connect_request_allowed_for_operator_and_stamps_operator_identity() {
+        let hub = test_hub();
+        let (admin_tx, _admin_rx) = mpsc::unbounded_channel::<String>();
+        let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-x".into(), admin_tx);
+        hub.add_client("ep-victim".into(), victim_tx);
+        hub.bind_actor(
+            "admin-x",
+            ActorIdentity {
+                user_id: "u-op".into(),
+                username: "operator1".into(),
+                role: "operator".into(),
+            },
+        );
+
+        let env = Envelope {
+            from: "admin-x".into(),
+            to: None,
+            ts: 200,
+            payload: Message::ConnectRequest {
+                mode: Mode::A,
+                target: "ep-victim".into(),
+                password: None,
+                force: true,
+            },
+        };
+        hub.handle(env, 200).await;
+
+        // 被控端收到 IncomingControl（force 免同意 auto_accept=true）
+        let got = victim_rx
+            .try_recv()
+            .expect("operator 有 UseRemote，被控端应收到 IncomingControl");
+        let got_env: Envelope = serde_json::from_str(&got).unwrap();
+        assert!(
+            matches!(got_env.payload, Message::IncomingControl { auto_accept: true, .. }),
+            "force 直连应 auto_accept=true"
+        );
+
+        // 会话写入操作人身份（operator_*）
+        let sessions = hub.sessions.active_sessions();
+        assert_eq!(sessions.len(), 1, "应建 1 条会话");
+        let s = &sessions[0];
+        assert_eq!(s.operator_user_id.as_deref(), Some("u-op"));
+        assert_eq!(s.operator_username.as_deref(), Some("operator1"));
+        assert_eq!(s.operator_role.as_deref(), Some("operator"));
     }
 
     #[test]
@@ -841,6 +1067,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         // ep-a 连发两帧（seq 0,1）→ frame lane 只保留最新

@@ -5,8 +5,8 @@
 const HOST = process.env.E2E_HOST || "127.0.0.1:8765";
 const BASE = `http://${HOST}`;
 const WS = `ws://${HOST}/ws`;
-const ADMIN_USER = process.env.E2E_USER || "admin";
-const ADMIN_PASS = process.env.E2E_PASS || "OhMyDesk@2026";
+const ADMIN_USER = process.env.E2E_USER || "superadmin";
+const ADMIN_PASS = process.env.E2E_PASS || "infogo123";
 
 let passed = 0;
 function assert(cond, msg) {

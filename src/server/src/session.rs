@@ -70,6 +70,14 @@ impl SessionStore {
             .map(|s| s.meta.from_id.clone())
     }
 
+    /// 返回会话已绑定的操作人身份（从 operator_* 字段重建），供会话内审计归属
+    /// （AuthResult / 取消申请等在会话仍在册时取用）。三列不齐或无会话时 None。
+    pub fn operator_of(&self, session_id: &str) -> Option<crate::hub::ActorIdentity> {
+        self.sessions
+            .get(session_id)
+            .and_then(|s| crate::hub::ActorIdentity::from_session(&s.meta))
+    }
+
     /// 对某会话的输入计数器 +1（M-SRV4）
     pub fn bump_input(&self, session_id: &str) {
         if let Some(mut s) = self.sessions.get_mut(session_id) {
@@ -187,6 +195,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         };
         store.insert(sess);
         for _ in 0..10 {
@@ -215,6 +226,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         };
         store.insert(sess);
         assert_eq!(store.initiator_of("s-002"), Some("admin-1".into()));
@@ -232,6 +246,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
         assert_eq!(store.outbound_session("ep-a", "ep-b"), Some("s-out".into()));
         assert_eq!(store.outbound_session("ep-a", "ep-x"), None, "target 不符不应命中");
@@ -253,6 +270,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
         // client 作 to
         store.insert(Session {
@@ -263,6 +283,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
         // 无关会话
         store.insert(Session {
@@ -273,6 +296,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         let mut removed = store.remove_sessions_of("ep-x", 500, SessionStatus::Ended);
@@ -305,6 +331,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         };
         store.insert(sess);
         store.end_session("s-003", 100, SessionStatus::Ended);

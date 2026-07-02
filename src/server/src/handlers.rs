@@ -8,6 +8,20 @@ use crate::hub::Hub;
 
 const SELF_REMOTE_REJECT_REASON: &str = "您不能远程自己！";
 
+/// 把绑定的人员身份拆成会话 operator_* 三列（无身份则三列皆 None）。
+fn actor_fields(
+    actor: Option<&crate::hub::ActorIdentity>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    match actor {
+        Some(a) => (
+            Some(a.user_id.clone()),
+            Some(a.username.clone()),
+            Some(a.role.clone()),
+        ),
+        None => (None, None, None),
+    }
+}
+
 fn send_reject(hub: &Hub, to: &str, session_id: String, reason: &str, now: i64) {
     let reject_env = Envelope {
         from: "server".into(),
@@ -63,11 +77,12 @@ pub async fn handle_connect_request(
     password: Option<&str>,
     force: bool,
     now: i64,
+    actor: Option<&crate::hub::ActorIdentity>,
 ) {
     if from_id == target {
         let session_id = Uuid::new_v4().to_string();
         hub.audit
-            .log(&session_id, from_id, AuditType::Reject, SELF_REMOTE_REJECT_REASON)
+            .log(&session_id, from_id, AuditType::Reject, SELF_REMOTE_REJECT_REASON, actor)
             .await;
         send_reject(hub, from_id, session_id, SELF_REMOTE_REJECT_REASON, now);
         return;
@@ -87,12 +102,15 @@ pub async fn handle_connect_request(
         ConnectDecision::RejectBadPassword => {
             let session_id = Uuid::new_v4().to_string();
             hub.audit
-                .log(&session_id, from_id, AuditType::AuthFail, "密码错误")
+                .log(&session_id, from_id, AuditType::AuthFail, "密码错误", actor)
                 .await;
             send_reject(hub, from_id, session_id, "密码错误", now);
         }
         ConnectDecision::AutoAccept => {
             let session_id = Uuid::new_v4().to_string();
+            // 写入操作人身份：operator_* 从绑定的 actor 填充，作为会话身份唯一来源
+            //（DB 落库 + 会话生命周期审计归属均据此，见 ActorIdentity::from_session）。
+            let (operator_user_id, operator_username, operator_role) = actor_fields(actor);
             let session = Session {
                 id: session_id.clone(),
                 mode: *mode,
@@ -101,6 +119,9 @@ pub async fn handle_connect_request(
                 start_at: now,
                 end_at: None,
                 status: SessionStatus::Active,
+                operator_user_id,
+                operator_username,
+                operator_role,
             };
             hub.audit.insert_session(&session).await;
             hub.sessions.insert(session);
@@ -117,13 +138,14 @@ pub async fn handle_connect_request(
             }
             let how = if force { "强制远程(免同意)" } else { "密码连接(免同意)" };
             hub.audit
-                .log(&session_id, from_id, AuditType::Connect, how)
+                .log(&session_id, from_id, AuditType::Connect, how, actor)
                 .await;
 
             send_incoming(hub, target, session_id, from_id, *mode, true, now);
         }
         ConnectDecision::Consent => {
             let session_id = Uuid::new_v4().to_string();
+            let (operator_user_id, operator_username, operator_role) = actor_fields(actor);
             let session = Session {
                 id: session_id.clone(),
                 mode: *mode,
@@ -132,6 +154,9 @@ pub async fn handle_connect_request(
                 start_at: now,
                 end_at: None,
                 status: SessionStatus::Active,
+                operator_user_id,
+                operator_username,
+                operator_role,
             };
             hub.audit.insert_session(&session).await;
             hub.sessions.insert(session);
@@ -166,6 +191,8 @@ pub async fn handle_cancel_request(hub: &Hub, from_id: &str, target: &str, now: 
         tracing::debug!("CancelRequest 无对应挂起会话: from={from_id} target={target}");
         return;
     };
+    // 审计归属：会话仍在册，取其绑定的操作人身份（须在 end_session 移除前取）。
+    let actor = hub.sessions.operator_of(&session_id);
     // 通知被控端撤销弹窗：被控端 SessionEnd 处理会关弹窗 + 复位被控态。
     let env = Envelope {
         from: "server".into(),
@@ -181,7 +208,7 @@ pub async fn handle_cancel_request(hub: &Hub, from_id: &str, target: &str, now: 
     hub.sessions
         .end_session(&session_id, now, SessionStatus::Ended);
     hub.audit
-        .log(&session_id, from_id, AuditType::Disconnect, "主控取消申请")
+        .log(&session_id, from_id, AuditType::Disconnect, "主控取消申请", actor.as_ref())
         .await;
 }
 
@@ -199,6 +226,8 @@ pub async fn handle_auth_result(
         tracing::warn!("AuthResult 收到但无对应活跃会话: {session_id}");
         return;
     };
+    // 审计归属：会话此刻仍在册，先取操作人身份（Reject 分支会 end_session 移除会话）。
+    let actor = hub.sessions.operator_of(session_id);
 
     if ok {
         tracing::info!("会话建立 session_id={session_id} from={from_id}");
@@ -215,7 +244,7 @@ pub async fn handle_auth_result(
             hub.send_to(&from_id, &json);
         }
         hub.audit
-            .log(session_id, &from_id, AuditType::Connect, "会话建立")
+            .log(session_id, &from_id, AuditType::Connect, "会话建立", actor.as_ref())
             .await;
     } else {
         let reason_text = reason.unwrap_or("被拒绝");
@@ -235,7 +264,7 @@ pub async fn handle_auth_result(
         hub.sessions
             .end_session(session_id, now, SessionStatus::Rejected);
         hub.audit
-            .log(session_id, &from_id, AuditType::Reject, reason_text)
+            .log(session_id, &from_id, AuditType::Reject, reason_text, actor.as_ref())
             .await;
     }
 }
@@ -246,6 +275,8 @@ pub async fn handle_session_end(hub: &Hub, session_id: &str, now: i64) {
         hub.sessions
             .end_session(session_id, now, SessionStatus::Ended)
     {
+        // 审计归属：会话已被移除，从返回的 session.operator_* 重建操作人身份。
+        let actor = crate::hub::ActorIdentity::from_session(&session);
         // 落输入聚合审计（M-SRV4）
         hub.audit
             .log(
@@ -253,6 +284,7 @@ pub async fn handle_session_end(hub: &Hub, session_id: &str, now: i64) {
                 &session.from_id,
                 AuditType::Input,
                 &input_summary,
+                actor.as_ref(),
             )
             .await;
         // 更新 DB 会话终态
@@ -266,6 +298,7 @@ pub async fn handle_session_end(hub: &Hub, session_id: &str, now: i64) {
                 &session.from_id,
                 AuditType::Disconnect,
                 "会话结束",
+                actor.as_ref(),
             )
             .await;
     } else {
@@ -330,7 +363,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         hub.add_client("ep-self".into(), tx);
 
-        handle_connect_request(&hub, "ep-self", &Mode::B, "ep-self", Some("123456"), false, 100).await;
+        handle_connect_request(&hub, "ep-self", &Mode::B, "ep-self", Some("123456"), false, 100, None).await;
 
         let sent = rx.recv().await.expect("自连应向发起方返回拒绝消息");
         let env: Envelope = serde_json::from_str(&sent).unwrap();

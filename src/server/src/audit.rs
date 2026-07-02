@@ -33,7 +33,16 @@ impl AuditStore {
     // ── 公开接口 ─────────────────────────────────────────────────────────────
 
     /// 写一条 audit_log（B-DB1：列名 event_type；C-1：枚举含 input）
-    pub async fn log(&self, session_id: &str, actor_id: &str, kind: AuditType, text: &str) {
+    /// `actor_id` = 发起该操作的连接 id（admin-/endpoint id）；`actor` = 该连接绑定的 WEB
+    /// 人员身份（Task5），有则写入 actor_user_id/username/role 三列，无则留空（agent 侧操作）。
+    pub async fn log(
+        &self,
+        session_id: &str,
+        actor_id: &str,
+        kind: AuditType,
+        text: &str,
+        actor: Option<&crate::hub::ActorIdentity>,
+    ) {
         let Some(db) = &self.db else {
             tracing::warn!("审计降级（M-SRV1），跳过写入: kind={kind:?} text={text}");
             return;
@@ -42,13 +51,16 @@ impl AuditStore {
         let id = Self::new_id();
         let ts = Self::now_sec();
         if let Err(e) = sqlx::query(
-            "INSERT INTO audit_logs (id, session_id, ts, actor_id, event_type, text) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO audit_logs (id, session_id, ts, actor_id, actor_user_id, actor_username, actor_role, event_type, text) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(session_id)
         .bind(ts)
         .bind(actor_id)
+        .bind(actor.map(|a| a.user_id.clone()))
+        .bind(actor.map(|a| a.username.clone()))
+        .bind(actor.map(|a| a.role.clone()))
         .bind(kind_str)
         .bind(text)
         .execute(db)
@@ -66,8 +78,8 @@ impl AuditStore {
         };
         let mode_str = mode_str(session.mode);
         if let Err(e) = sqlx::query(
-            "INSERT INTO sessions (id, mode, from_id, to_id, start_at, end_at, status) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, mode, from_id, to_id, start_at, end_at, status, operator_user_id, operator_username, operator_role) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&session.id)
         .bind(mode_str)
@@ -76,6 +88,9 @@ impl AuditStore {
         .bind(session.start_at)
         .bind(session.end_at)
         .bind(status_str(session.status))
+        .bind(&session.operator_user_id)
+        .bind(&session.operator_username)
+        .bind(&session.operator_role)
         .execute(db)
         .await
         {
@@ -114,7 +129,7 @@ impl AuditStore {
         };
         // 动态构造带可选过滤的 SQL（不用 ORM，保持简单）
         let mut sql = String::from(
-            "SELECT id, session_id, ts, actor_id, event_type, text FROM audit_logs WHERE 1=1",
+            "SELECT id, session_id, ts, actor_id, actor_user_id, actor_username, actor_role, event_type, text FROM audit_logs WHERE 1=1",
         );
         if endpoint.is_some() {
             sql.push_str(" AND actor_id = ?");
@@ -153,7 +168,7 @@ impl AuditStore {
             return vec![];
         };
         match sqlx::query_as::<_, SessionRow>(
-            "SELECT id, mode, from_id, to_id, start_at, end_at, status FROM sessions ORDER BY start_at DESC LIMIT 200",
+            "SELECT id, mode, from_id, to_id, start_at, end_at, status, operator_user_id, operator_username, operator_role FROM sessions ORDER BY start_at DESC LIMIT 200",
         )
         .fetch_all(db)
         .await
@@ -207,6 +222,9 @@ struct AuditLogRow {
     session_id: String,
     ts: i64,
     actor_id: String,
+    actor_user_id: Option<String>,
+    actor_username: Option<String>,
+    actor_role: Option<String>,
     event_type: String,
     text: String,
 }
@@ -229,6 +247,9 @@ impl From<AuditLogRow> for AuditLog {
             session_id: r.session_id,
             ts: r.ts,
             actor_id: r.actor_id,
+            actor_user_id: r.actor_user_id,
+            actor_username: r.actor_username,
+            actor_role: r.actor_role,
             kind,
             text: r.text,
         }
@@ -244,6 +265,9 @@ struct SessionRow {
     start_at: i64,
     end_at: Option<i64>,
     status: String,
+    operator_user_id: Option<String>,
+    operator_username: Option<String>,
+    operator_role: Option<String>,
 }
 
 fn session_from_row(r: SessionRow) -> Option<Session> {
@@ -266,12 +290,75 @@ fn session_from_row(r: SessionRow) -> Option<Session> {
         start_at: r.start_at,
         end_at: r.end_at,
         status,
+        operator_user_id: r.operator_user_id,
+        operator_username: r.operator_username,
+        operator_role: r.operator_role,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    const AUDIT_DDL: &str = r#"
+CREATE TABLE audit_logs (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_user_id TEXT,
+  actor_username TEXT,
+  actor_role TEXT,
+  event_type TEXT NOT NULL,
+  text TEXT NOT NULL
+)
+"#;
+
+    async fn audit_store() -> AuditStore {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(AUDIT_DDL).execute(&pool).await.unwrap();
+        AuditStore::new(Some(pool))
+    }
+
+    /// 归属回归：带 actor 落审计 → actor_user_id/username/role 三列写入，可回查。
+    #[tokio::test]
+    async fn log_with_actor_persists_actor_identity_columns() {
+        let store = audit_store().await;
+        let actor = crate::hub::ActorIdentity {
+            user_id: "u-1".into(),
+            username: "alice".into(),
+            role: "operator".into(),
+        };
+        store
+            .log("sess-1", "admin-1", AuditType::Connect, "会话建立", Some(&actor))
+            .await;
+
+        let logs = store.query_audit(None, None, None).await;
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].actor_user_id.as_deref(), Some("u-1"));
+        assert_eq!(logs[0].actor_username.as_deref(), Some("alice"));
+        assert_eq!(logs[0].actor_role.as_deref(), Some("operator"));
+    }
+
+    /// 无 actor（agent 侧操作）→ actor_* 三列留空。
+    #[tokio::test]
+    async fn log_without_actor_leaves_identity_columns_null() {
+        let store = audit_store().await;
+        store
+            .log("sess-2", "ep-9", AuditType::Chat, "hi", None)
+            .await;
+
+        let logs = store.query_audit(None, None, None).await;
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].actor_user_id.is_none());
+        assert!(logs[0].actor_username.is_none());
+        assert!(logs[0].actor_role.is_none());
+    }
 
     #[test]
     fn chat_audit_type_str_and_back() {
@@ -283,6 +370,9 @@ mod tests {
             session_id: "s1".into(),
             ts: 0,
             actor_id: "ep-1".into(),
+            actor_user_id: None,
+            actor_username: None,
+            actor_role: None,
             event_type: "chat".into(),
             text: "你好".into(),
         };

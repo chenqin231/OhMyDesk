@@ -1,6 +1,8 @@
 // Wave 2 综合集成探针：I2 远控回归 + I3 批量截图 + M4 审计落库
 // 两被控 agent（ep-a 信创麒麟龙芯 / ep-b 非信创）+ 一 admin 主控。
 const BASE = "ws://127.0.0.1:8765/ws";
+const ADMIN_USER = process.env.PROBE_USER || "superadmin";
+const ADMIN_PASS = process.env.PROBE_PASS || "infogo123";
 const log = [];
 const ok = (m) => log.push("✅ " + m);
 const info = (m) => log.push("· " + m);
@@ -51,7 +53,7 @@ let admin;
 async function startAdmin() {
   const r = await fetch("http://127.0.0.1:8765/api/login", { method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ user: "admin", pass: "OhMyDesk@2026" }) });
+    body: JSON.stringify({ user: ADMIN_USER, pass: ADMIN_PASS }) });
   const { token } = await r.json();
   info("admin 登录拿到 token");
   admin = new WebSocket(`${BASE}?token=${encodeURIComponent(token)}`);
