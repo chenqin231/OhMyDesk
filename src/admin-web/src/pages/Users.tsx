@@ -21,13 +21,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Table,
   TableBody,
   TableCell,
@@ -35,15 +28,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { roleLabel, type Role } from "@/lib/permissions";
+import { tierLabel } from "@/lib/permissions";
 import { useAuthStore, type AdminUser } from "@/store/auth";
 import { useStore } from "@/store";
 
-// 可分配角色：不含 superadmin —— 超级管理员由 server bootstrap 内置且唯一。
-const ASSIGNABLE_ROLES: Role[] = ["admin", "operator", "auditor"];
-
-// 用户管理页：新增账号 + 列表改角色 / 停启用 / 重置密码（需 manage_users 权限，
+// 用户管理页：新增账号 + 列表停启用 / 重置密码（需 manage_users 权限 = superadmin 独占，
 // 由路由守卫拦截）。superadmin 行在 UI 上锁定，与 server 守卫呼应。
+// 注：菜单勾选器 + 改用户名为 Task 6，本文件当前为过渡态——新建账号暂授空菜单集，
+// 待 Task 6 补齐 <MenuPermissionEditor>。
 export function Users() {
   const listUsers = useAuthStore((s) => s.listUsers);
   const createUser = useAuthStore((s) => s.createUser);
@@ -62,7 +54,6 @@ export function Users() {
   // 新增表单
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [newRole, setNewRole] = useState<Role>("operator");
   const [creating, setCreating] = useState(false);
 
   // 行级操作进行中的用户 id：禁用该行按钮，避免重复提交
@@ -99,37 +90,20 @@ export function Users() {
     }
     setCreating(true);
     try {
+      // 过渡态：暂授空菜单集，Task 6 加勾选器后按选择创建
       await createUser({
         username: newUsername.trim(),
         password: newPassword,
-        role: newRole,
-        enabled: true,
+        permissions: [],
       });
       setNewUsername("");
       setNewPassword("");
-      setNewRole("operator");
       setSuccess("已创建账号");
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建用户失败");
     } finally {
       setCreating(false);
-    }
-  }
-
-  async function handleRoleChange(u: AdminUser, role: Role) {
-    if (role === u.role) return;
-    setError(null);
-    setSuccess(null);
-    setBusyId(u.id);
-    try {
-      await updateUser(u.id, { role });
-      setSuccess(`已将 ${u.username} 的角色改为${roleLabel(role)}`);
-      await reload();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "更新用户失败");
-    } finally {
-      setBusyId(null);
     }
   }
 
@@ -194,12 +168,12 @@ export function Users() {
           <CardHeader>
             <CardTitle>新增账号</CardTitle>
             <CardDescription>
-              超级管理员由系统内置且唯一，此处仅可创建管理员 / 操作员 / 审计员。
+              超级管理员由系统内置且唯一，此处创建普通账户；菜单权限稍后在列表分配。
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form
-              className="grid gap-4 sm:grid-cols-[1fr_1fr_auto_auto] sm:items-end"
+              className="grid gap-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end"
               onSubmit={handleCreate}
             >
               <div className="grid gap-1.5">
@@ -227,24 +201,6 @@ export function Users() {
                   placeholder="初始密码"
                 />
               </div>
-              <div className="grid gap-1.5">
-                <span className="text-sm font-medium">角色</span>
-                <Select
-                  value={newRole}
-                  onValueChange={(v) => setNewRole(v as Role)}
-                >
-                  <SelectTrigger className="w-32">
-                    <SelectValue>{roleLabel(newRole)}</SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ASSIGNABLE_ROLES.map((r) => (
-                      <SelectItem key={r} value={r}>
-                        {roleLabel(r)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
               <Button type="submit" disabled={creating}>
                 <UserPlus className="size-4" />
                 {creating ? "创建中…" : "新增"}
@@ -258,7 +214,7 @@ export function Users() {
           <CardHeader>
             <CardTitle>账号列表</CardTitle>
             <CardDescription>
-              调整角色即时生效；停用后该账号无法登录。
+              停用后该账号无法登录；菜单权限分配将在后续版本开放。
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -267,14 +223,14 @@ export function Users() {
                 <TableHeader>
                   <TableRow className="border-border hover:bg-transparent">
                     <TableHead>用户名</TableHead>
-                    <TableHead className="w-40">角色</TableHead>
+                    <TableHead className="w-40">身份</TableHead>
                     <TableHead className="w-24">状态</TableHead>
                     <TableHead className="w-64 text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {users.map((u) => {
-                    const isSuperadmin = u.role === "superadmin";
+                    const isSuperadmin = u.tier === "superadmin";
                     const busy = busyId === u.id;
                     return (
                       <TableRow key={u.id} className="border-border">
@@ -282,30 +238,10 @@ export function Users() {
                           {u.username}
                         </TableCell>
                         <TableCell>
-                          {isSuperadmin ? (
-                            <span className="text-sm text-muted-foreground">
-                              超级管理员（锁定）
-                            </span>
-                          ) : (
-                            <Select
-                              value={u.role}
-                              onValueChange={(v) =>
-                                void handleRoleChange(u, v as Role)
-                              }
-                              disabled={busy}
-                            >
-                              <SelectTrigger className="w-32">
-                                <SelectValue>{roleLabel(u.role)}</SelectValue>
-                              </SelectTrigger>
-                              <SelectContent>
-                                {ASSIGNABLE_ROLES.map((r) => (
-                                  <SelectItem key={r} value={r}>
-                                    {roleLabel(r)}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          )}
+                          <span className="text-sm text-muted-foreground">
+                            {tierLabel(u.tier)}
+                            {isSuperadmin ? "（锁定）" : ""}
+                          </span>
                         </TableCell>
                         <TableCell>
                           {u.enabled ? (
