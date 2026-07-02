@@ -1,5 +1,4 @@
 //! 管理端用户、固定角色与权限仓储。
-#![allow(dead_code)]
 
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,6 +9,7 @@ use sqlx::Row;
 
 use crate::db::Db;
 
+#[allow(dead_code)]
 const ALL_PERMISSIONS: &[Permission] = &[
     Permission::ViewAssets,
     Permission::ViewGrid,
@@ -19,13 +19,16 @@ const ALL_PERMISSIONS: &[Permission] = &[
     Permission::ManageUsers,
     Permission::ManageSettings,
 ];
+#[allow(dead_code)]
 const OPERATOR_PERMISSIONS: &[Permission] = &[
     Permission::ViewAssets,
     Permission::ViewGrid,
     Permission::UseRemote,
 ];
+#[allow(dead_code)]
 const AUDITOR_PERMISSIONS: &[Permission] = &[Permission::ViewAudit, Permission::ViewLoginLogs];
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -35,6 +38,7 @@ pub enum Role {
     Auditor,
 }
 
+#[allow(dead_code)]
 impl Role {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -68,6 +72,7 @@ impl FromStr for Role {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
@@ -80,6 +85,7 @@ pub enum Permission {
     ManageSettings,
 }
 
+#[allow(dead_code)]
 impl Permission {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -94,6 +100,7 @@ impl Permission {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRecord {
     pub id: String,
@@ -106,45 +113,45 @@ pub struct UserRecord {
     pub updated_at: i64,
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct UserStore {
     db: Db,
 }
 
+#[allow(dead_code)]
 impl UserStore {
     pub fn new(db: Db) -> Self {
         Self { db }
     }
 
     pub async fn bootstrap(&self, legacy: Option<(String, String)>) -> Result<()> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-            .fetch_one(&self.db)
+        if self.get_by_username("superadmin").await?.is_none() {
+            self.create_with_hash(
+                "superadmin",
+                &crate::auth::hash_password("infogo123"),
+                Role::Superadmin,
+            )
             .await?;
-        if count > 0 {
-            return Ok(());
         }
 
-        self.create_with_hash(
-            "superadmin",
-            &crate::auth::hash_password("infogo123"),
-            Role::Superadmin,
-        )
-        .await?;
-
         if let Some((legacy_user, legacy_hash)) = legacy {
-            let legacy_user = legacy_user.trim();
-            let username = if legacy_user.is_empty() || legacy_user == "superadmin" {
-                "admin"
-            } else {
-                legacy_user
-            };
-            self.create_with_hash(username, &legacy_hash, Role::Admin)
-                .await?;
+            let legacy_hash = legacy_hash.trim();
+            if !legacy_hash.is_empty() {
+                let username = legacy_admin_username(&legacy_user);
+                if self.get_by_username(&username).await?.is_none() {
+                    self.create_with_hash(&username, legacy_hash, Role::Admin)
+                        .await?;
+                }
+            }
         }
         Ok(())
     }
 
     pub async fn create(&self, username: &str, password: &str, role: Role) -> Result<UserRecord> {
+        if role == Role::Superadmin {
+            bail!("不能通过普通路径创建超级管理员");
+        }
         if password.is_empty() {
             bail!("密码不能为空");
         }
@@ -212,6 +219,9 @@ impl UserStore {
         if user.role == Role::Superadmin {
             bail!("不能修改超级管理员角色");
         }
+        if role == Role::Superadmin {
+            bail!("不能将普通用户晋升为超级管理员");
+        }
         sqlx::query("UPDATE users SET role = ?, updated_at = ? WHERE id = ?")
             .bind(role.as_str())
             .bind(now_sec())
@@ -226,12 +236,18 @@ impl UserStore {
             bail!("密码不能为空");
         }
         let password_hash = crate::auth::hash_password(password);
-        sqlx::query("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?")
+        if password_hash.is_empty() {
+            bail!("密码哈希不能为空");
+        }
+        let result = sqlx::query("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?")
             .bind(password_hash)
             .bind(now_sec())
             .bind(id)
             .execute(&self.db)
             .await?;
+        if result.rows_affected() == 0 {
+            bail!("用户不存在: {id}");
+        }
         Ok(())
     }
 
@@ -276,6 +292,7 @@ impl UserStore {
     }
 }
 
+#[allow(dead_code)]
 fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<UserRecord> {
     Ok(UserRecord {
         id: row.get("id"),
@@ -288,11 +305,22 @@ fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<UserRecord> {
     })
 }
 
+#[allow(dead_code)]
 fn now_sec() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[allow(dead_code)]
+fn legacy_admin_username(legacy_user: &str) -> String {
+    let legacy_user = legacy_user.trim();
+    if legacy_user.is_empty() || legacy_user == "superadmin" {
+        "admin".to_string()
+    } else {
+        legacy_user.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -326,6 +354,10 @@ CREATE TABLE users (
         role.permissions().contains(&permission)
     }
 
+    fn all_permissions() -> Vec<Permission> {
+        ALL_PERMISSIONS.to_vec()
+    }
+
     #[test]
     fn operator_and_auditor_have_fixed_permissions() {
         assert!(has(Role::Operator, Permission::UseRemote));
@@ -340,12 +372,29 @@ CREATE TABLE users (
     }
 
     #[test]
+    fn admin_and_superadmin_have_all_permissions() {
+        assert_eq!(Role::Admin.permissions(), all_permissions().as_slice());
+        assert_eq!(Role::Superadmin.permissions(), all_permissions().as_slice());
+    }
+
+    #[test]
     fn known_roles_parse_and_unknown_role_returns_error() {
         assert_eq!("superadmin".parse::<Role>().unwrap(), Role::Superadmin);
         assert_eq!("admin".parse::<Role>().unwrap(), Role::Admin);
         assert_eq!("operator".parse::<Role>().unwrap(), Role::Operator);
         assert_eq!("auditor".parse::<Role>().unwrap(), Role::Auditor);
         assert!("unknown".parse::<Role>().is_err());
+    }
+
+    #[tokio::test]
+    async fn create_rejects_superadmin_role() {
+        let store = test_store().await;
+
+        assert!(store
+            .create("root", "secret", Role::Superadmin)
+            .await
+            .is_err());
+        assert!(store.get_by_username("root").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -423,6 +472,20 @@ CREATE TABLE users (
     }
 
     #[tokio::test]
+    async fn set_role_rejects_promoting_regular_user_to_superadmin() {
+        let store = test_store().await;
+        let operator = store
+            .create("operator", "secret", Role::Operator)
+            .await
+            .unwrap();
+
+        assert!(store.set_role(&operator.id, Role::Superadmin).await.is_err());
+
+        let operator = store.get_by_id(&operator.id).await.unwrap().unwrap();
+        assert_eq!(operator.role, Role::Operator);
+    }
+
+    #[tokio::test]
     async fn reset_password_rejects_empty_password_and_updates_hash() {
         let store = test_store().await;
         let user = store
@@ -438,6 +501,13 @@ CREATE TABLE users (
         assert_ne!(user.password_hash, old_hash);
         assert!(bcrypt::verify("new-pass", &user.password_hash).unwrap());
         assert!(!bcrypt::verify("old-pass", &user.password_hash).unwrap());
+    }
+
+    #[tokio::test]
+    async fn reset_password_returns_error_for_missing_user() {
+        let store = test_store().await;
+
+        assert!(store.reset_password("missing-user-id", "new-pass").await.is_err());
     }
 
     #[tokio::test]
@@ -477,6 +547,41 @@ CREATE TABLE users (
     }
 
     #[tokio::test]
+    async fn bootstrap_when_regular_user_exists_still_creates_superadmin() {
+        let store = test_store().await;
+        store
+            .create("existing", "secret", Role::Operator)
+            .await
+            .unwrap();
+
+        store.bootstrap(None).await.unwrap();
+
+        let superadmin = store.get_by_username("superadmin").await.unwrap().unwrap();
+        assert_eq!(superadmin.role, Role::Superadmin);
+        assert!(bcrypt::verify("infogo123", &superadmin.password_hash).unwrap());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_when_only_superadmin_exists_still_creates_legacy_admin() {
+        let store = test_store().await;
+        let legacy_hash = bcrypt::hash("legacy-pass", bcrypt::DEFAULT_COST).unwrap();
+        store.bootstrap(None).await.unwrap();
+
+        store
+            .bootstrap(Some(("legacy_admin".to_string(), legacy_hash)))
+            .await
+            .unwrap();
+
+        let legacy = store
+            .get_by_username("legacy_admin")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(legacy.role, Role::Admin);
+        assert!(bcrypt::verify("legacy-pass", &legacy.password_hash).unwrap());
+    }
+
+    #[tokio::test]
     async fn bootstrap_renames_blank_or_superadmin_legacy_user_to_admin() {
         for legacy_user in ["", "superadmin"] {
             let store = test_store().await;
@@ -492,17 +597,26 @@ CREATE TABLE users (
     }
 
     #[tokio::test]
-    async fn bootstrap_does_not_create_duplicates_when_users_table_is_not_empty() {
+    async fn bootstrap_does_not_create_duplicates_when_called_repeatedly() {
         let store = test_store().await;
+        let legacy_hash = bcrypt::hash("legacy-pass", bcrypt::DEFAULT_COST).unwrap();
+
         store
-            .create("existing", "secret", Role::Operator)
+            .bootstrap(Some(("legacy_admin".to_string(), legacy_hash.clone())))
+            .await
+            .unwrap();
+        store
+            .bootstrap(Some(("legacy_admin".to_string(), legacy_hash)))
             .await
             .unwrap();
 
-        store.bootstrap(None).await.unwrap();
-
         let users = store.list().await.unwrap();
-        assert_eq!(users.len(), 1);
-        assert_eq!(users[0].username, "existing");
+        assert_eq!(users.len(), 2);
+        assert!(store.get_by_username("superadmin").await.unwrap().is_some());
+        assert!(store
+            .get_by_username("legacy_admin")
+            .await
+            .unwrap()
+            .is_some());
     }
 }
