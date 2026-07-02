@@ -92,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
         audit: Arc::clone(&audit),
         auth: Arc::clone(&auth),
         login_log: Arc::clone(&login_log),
+        users: Arc::clone(&user_store),
     };
 
     // ── 静态托管 admin-web/dist（P-SRV5：单一内网 URL 同时供 UI + API + WS）──────
