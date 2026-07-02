@@ -101,6 +101,9 @@ pub async fn handle_connect_request(
                 start_at: now,
                 end_at: None,
                 status: SessionStatus::Active,
+                operator_user_id: None,
+                operator_username: None,
+                operator_role: None,
             };
             hub.audit.insert_session(&session).await;
             hub.sessions.insert(session);
@@ -132,6 +135,9 @@ pub async fn handle_connect_request(
                 start_at: now,
                 end_at: None,
                 status: SessionStatus::Active,
+                operator_user_id: None,
+                operator_username: None,
+                operator_role: None,
             };
             hub.audit.insert_session(&session).await;
             hub.sessions.insert(session);

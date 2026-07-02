@@ -187,6 +187,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         };
         store.insert(sess);
         for _ in 0..10 {
@@ -215,6 +218,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         };
         store.insert(sess);
         assert_eq!(store.initiator_of("s-002"), Some("admin-1".into()));
@@ -232,6 +238,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
         assert_eq!(store.outbound_session("ep-a", "ep-b"), Some("s-out".into()));
         assert_eq!(store.outbound_session("ep-a", "ep-x"), None, "target 不符不应命中");
@@ -253,6 +262,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
         // client 作 to
         store.insert(Session {
@@ -263,6 +275,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
         // 无关会话
         store.insert(Session {
@@ -273,6 +288,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         let mut removed = store.remove_sessions_of("ep-x", 500, SessionStatus::Ended);
@@ -305,6 +323,9 @@ mod tests {
             start_at: 0,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         };
         store.insert(sess);
         store.end_session("s-003", 100, SessionStatus::Ended);

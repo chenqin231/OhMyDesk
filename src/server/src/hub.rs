@@ -431,6 +431,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         // 主控（admin）发起 SessionEnd
@@ -479,6 +482,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         // 主控发 CancelRequest（带 target=被控）
@@ -525,6 +531,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         let env = Envelope {
@@ -566,6 +575,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         let env = Envelope {
@@ -606,6 +618,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         let env = Envelope {
@@ -649,6 +664,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         // 被控端（to_id）主动发聊天，带权威 session_id
@@ -695,6 +713,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         let env = Envelope {
@@ -735,6 +756,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         // ep-a 断开：结束其所有会话
@@ -786,6 +810,9 @@ mod tests {
             start_at: 100,
             end_at: None,
             status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
         });
 
         // ep-a 连发两帧（seq 0,1）→ frame lane 只保留最新

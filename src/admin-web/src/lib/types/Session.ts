@@ -2,4 +2,4 @@
 import type { Mode } from "./Mode";
 import type { SessionStatus } from "./SessionStatus";
 
-export type Session = { id: string, mode: Mode, from_id: string, to_id: string, start_at: bigint, end_at: bigint | null, status: SessionStatus, };
+export type Session = { id: string, mode: Mode, from_id: string, to_id: string, start_at: bigint, end_at: bigint | null, status: SessionStatus, operator_user_id: string | null, operator_username: string | null, operator_role: string | null, };
