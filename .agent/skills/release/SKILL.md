@@ -12,6 +12,7 @@ description: Use when releasing OhMyDesk to production (生产发版) — mergin
 - **生产脚本先本地干跑**：任何要 `sudo`/原子切换线上文件的脚本（尤其 `publish-update.sh`），**先在本地把签名/校验链跑通**再上生产。本 SOP 的脚本就是这样捉出 2 个致命 bug 的。
 - **download.html 已与仓库分叉**：只用 `sudo sed -i` 改特定行，**绝不**用仓库版本整文件覆盖。
 - **不破坏向后兼容**：服务器先发时，新服务端必须接住仍在线的旧客户端。
+- **协议加变体=破坏性变更**：给 `InputEvent`/`Message` 加新变体，旧端 serde（无 `#[serde(other)]`）会**整条 Envelope 反序列化失败丢弃**（0.4.9 滚轮不通即此因）。含新协议变体的发版**必须先部署服务器**（Track A 先行），且两端需同版本才能执行新语义。已在 0.4.9 根治：server `route_to_peer` 原始 text 转发 + `Message/InputEvent` 加 `#[serde(other,skip_serializing)] Unknown` 兜底。详见 [[protocol-evolution-breaks-old-endpoints]]。
 
 ## 两条独立轨道
 | 轨道 | 触发条件 | 机制 | 是否走 CI |
@@ -172,6 +173,7 @@ rsign verify -P "$(tail -1 ~/.ohmydesk/update-pub.key)" -x /tmp/L.sig /tmp/L.jso
 | 漏传 macOS 版本化名 | manifest 提示链 404 | 额外传 `*-macos-arm64-<ver>.tar.gz` |
 | UPDATE_PUBKEY 误填 | 自更新静默 fail-closed | `内置公钥_可解析` 单测兜底；发版前确认公钥=私钥配对 |
 | 丢生产私钥 | 永远签不了更新（客户端只认这把公钥） | 异地备份；轮换公钥需发一次客户端更新 |
+| 加协议变体没先发服务器 | 旧 server 反序列化整条失败 → 新变体消息全丢（0.4.9 滚轮"不生效"根因，客户端代码全对却不通） | 含新 `InputEvent`/`Message` 变体先跑 Track A；靠 `#[serde(other)] Unknown` + server 原始转发兜底；见 [[protocol-evolution-breaks-old-endpoints]] |
 | `/downloads/`、`download.html` root:root | 写入 permission denied | scp 到 `/tmp` 再 `sudo cp/mv` + `chown root:root` |
 
 ## 回滚
