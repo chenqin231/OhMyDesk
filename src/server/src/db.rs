@@ -120,3 +120,64 @@ async fn add_column_if_missing(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[tokio::test]
+    async fn ensure_identity_columns_migrates_old_schema_idempotently() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                mode TEXT,
+                from_id TEXT,
+                to_id TEXT,
+                start_at INTEGER,
+                end_at INTEGER,
+                status TEXT
+            );
+            CREATE TABLE audit_logs (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                ts INTEGER,
+                actor_id TEXT,
+                event_type TEXT,
+                text TEXT
+            );",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        ensure_identity_columns(&pool).await.unwrap();
+
+        let session_columns = table_columns(&pool, "sessions").await;
+        assert!(session_columns.contains("operator_user_id"));
+        assert!(session_columns.contains("operator_username"));
+        assert!(session_columns.contains("operator_role"));
+
+        let audit_columns = table_columns(&pool, "audit_logs").await;
+        assert!(audit_columns.contains("actor_user_id"));
+        assert!(audit_columns.contains("actor_username"));
+        assert!(audit_columns.contains("actor_role"));
+
+        ensure_identity_columns(&pool).await.unwrap();
+    }
+
+    async fn table_columns(pool: &Db, table: &str) -> HashSet<String> {
+        sqlx::query(&format!("PRAGMA table_info({table})"))
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get("name"))
+            .collect()
+    }
+}
