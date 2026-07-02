@@ -5,9 +5,10 @@
 
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use axum::{
     async_trait,
-    extract::{ConnectInfo, FromRequestParts, Path, Query, State},
+    extract::{rejection::JsonRejection, ConnectInfo, FromRequestParts, Path, Query, State},
     http::{request::Parts, HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, patch, post},
@@ -129,7 +130,9 @@ mod tests {
     use crate::users::{Role, UserStore};
     use axum::body::to_bytes;
     use axum::http::HeaderName;
+    use protocol::EndpointInfo;
     use sqlx::sqlite::SqlitePoolOptions;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const USERS_DDL: &str = r#"
 CREATE TABLE users (
@@ -186,6 +189,67 @@ CREATE TABLE users (
     async fn response_json(response: axum::response::Response) -> serde_json::Value {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    async fn raw_request(
+        addr: SocketAddr,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: &str,
+    ) -> (StatusCode, String) {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let auth_header = token
+            .map(|token| format!("Authorization: Bearer {token}\r\n"))
+            .unwrap_or_default();
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{auth_header}\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8(response).unwrap();
+        let (head, body) = response.split_once("\r\n\r\n").unwrap();
+        let status = head
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        (StatusCode::from_u16(status).unwrap(), body.to_string())
+    }
+
+    async fn spawn_test_server(state: HttpState) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router(state).into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        (addr, handle)
+    }
+
+    async fn login_token(addr: SocketAddr, user: &str, pass: &str) -> String {
+        let (status, body) = raw_request(
+            addr,
+            "POST",
+            "/api/login",
+            None,
+            &json!({ "user": user, "pass": pass }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        body["token"].as_str().unwrap().to_string()
     }
 
     fn auth_user(id: impl Into<String>, username: impl Into<String>, role: Role) -> AuthUser {
@@ -294,6 +358,74 @@ CREATE TABLE users (
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response_json(response).await, json!([]));
+    }
+
+    #[tokio::test]
+    async fn operator_cannot_delete_endpoints() {
+        let (state, _users) = test_state().await;
+        state
+            .hub
+            .reg
+            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec());
+
+        let response = delete_endpoints(
+            State(state.clone()),
+            operator_user(),
+            Json(DeleteEndpointsReq {
+                ids: vec!["ep-001".to_string()],
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response_json(response).await,
+            json!({ "error": "权限不足" })
+        );
+        assert_eq!(state.hub.reg.views(now_sec()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn admin_and_superadmin_can_delete_endpoints() {
+        let (state, _users) = test_state().await;
+        state
+            .hub
+            .reg
+            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec());
+
+        let admin_response = delete_endpoints(
+            State(state.clone()),
+            admin_user(),
+            Json(DeleteEndpointsReq {
+                ids: vec!["ep-001".to_string()],
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(admin_response.status(), StatusCode::OK);
+        assert_eq!(response_json(admin_response).await, json!({ "deleted": 1 }));
+
+        state
+            .hub
+            .reg
+            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec());
+        let superadmin_response = delete_endpoints(
+            State(state),
+            superadmin_user(),
+            Json(DeleteEndpointsReq {
+                ids: vec!["ep-001".to_string()],
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(superadmin_response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(superadmin_response).await,
+            json!({ "deleted": 1 })
+        );
     }
 
     #[tokio::test]
@@ -437,12 +569,12 @@ CREATE TABLE users (
         let response = create_user(
             State(state),
             superadmin_user(),
-            Json(CreateUserReq {
+            Ok(Json(CreateUserReq {
                 username: "operator".to_string(),
                 password: "secret".to_string(),
                 role: Role::Operator,
                 enabled: Some(false),
-            }),
+            })),
         )
         .await
         .into_response();
@@ -471,10 +603,10 @@ CREATE TABLE users (
             State(state),
             axum::extract::Path(user.id.clone()),
             superadmin_user(),
-            Json(UpdateUserReq {
+            Ok(Json(UpdateUserReq {
                 role: Some(Role::Auditor),
                 enabled: Some(false),
-            }),
+            })),
         )
         .await
         .into_response();
@@ -503,9 +635,9 @@ CREATE TABLE users (
             State(state),
             axum::extract::Path(user.id.clone()),
             superadmin_user(),
-            Json(ResetPasswordReq {
+            Ok(Json(ResetPasswordReq {
                 password: "new-pass".to_string(),
-            }),
+            })),
         )
         .await
         .into_response();
@@ -541,24 +673,24 @@ CREATE TABLE users (
         let enabled = create_user(
             State(state.clone()),
             admin_user(),
-            Json(CreateUserReq {
+            Ok(Json(CreateUserReq {
                 username: "operator".to_string(),
                 password: "secret".to_string(),
                 role: Role::Operator,
                 enabled: None,
-            }),
+            })),
         )
         .await
         .into_response();
         let disabled = create_user(
             State(state),
             admin_user(),
-            Json(CreateUserReq {
+            Ok(Json(CreateUserReq {
                 username: "disabled".to_string(),
                 password: "secret".to_string(),
                 role: Role::Operator,
                 enabled: Some(false),
-            }),
+            })),
         )
         .await
         .into_response();
@@ -590,10 +722,10 @@ CREATE TABLE users (
             State(state),
             axum::extract::Path(user.id),
             admin_user(),
-            Json(UpdateUserReq {
+            Ok(Json(UpdateUserReq {
                 role: Some(Role::Auditor),
                 enabled: Some(false),
-            }),
+            })),
         )
         .await
         .into_response();
@@ -614,10 +746,10 @@ CREATE TABLE users (
             State(state),
             axum::extract::Path("missing-id".to_string()),
             admin_user(),
-            Json(UpdateUserReq {
+            Ok(Json(UpdateUserReq {
                 role: Some(Role::Auditor),
                 enabled: None,
-            }),
+            })),
         )
         .await
         .into_response();
@@ -641,9 +773,9 @@ CREATE TABLE users (
             State(state),
             axum::extract::Path(user.id.clone()),
             admin_user(),
-            Json(ResetPasswordReq {
+            Ok(Json(ResetPasswordReq {
                 password: "new-pass".to_string(),
-            }),
+            })),
         )
         .await
         .into_response();
@@ -667,12 +799,12 @@ CREATE TABLE users (
         let create_response = create_user(
             State(state.clone()),
             admin_user(),
-            Json(CreateUserReq {
+            Ok(Json(CreateUserReq {
                 username: "root".to_string(),
                 password: "secret".to_string(),
                 role: Role::Superadmin,
                 enabled: None,
-            }),
+            })),
         )
         .await
         .into_response();
@@ -680,16 +812,38 @@ CREATE TABLE users (
             State(state),
             axum::extract::Path(user.id),
             admin_user(),
-            Json(UpdateUserReq {
+            Ok(Json(UpdateUserReq {
                 role: Some(Role::Superadmin),
                 enabled: None,
-            }),
+            })),
         )
         .await
         .into_response();
 
         assert_eq!(create_response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(promote_response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_user_invalid_role_returns_400_json_from_router() {
+        let (state, users) = test_state().await;
+        users.bootstrap(None).await.unwrap();
+        let (addr, server) = spawn_test_server(state).await;
+        let token = login_token(addr, "superadmin", "infogo123").await;
+
+        let (status, body) = raw_request(
+            addr,
+            "POST",
+            "/api/users",
+            Some(&token),
+            r#"{"username":"bad-role","password":"secret","role":"root","enabled":true}"#,
+        )
+        .await;
+
+        server.abort();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = serde_json::from_str(&body).expect("响应体应为 JSON");
+        assert!(body.get("error").is_some());
     }
 
     #[tokio::test]
@@ -846,11 +1000,15 @@ async fn list_users(State(s): State<HttpState>, user: AuthUser) -> impl IntoResp
 async fn create_user(
     State(s): State<HttpState>,
     user: AuthUser,
-    Json(req): Json<CreateUserReq>,
+    req: Result<Json<CreateUserReq>, JsonRejection>,
 ) -> impl IntoResponse {
     if let Err(err) = require(&user, Permission::ManageUsers) {
         return err.into_response();
     }
+    let Json(req) = match req {
+        Ok(req) => req,
+        Err(_) => return bad_request(anyhow!("请求体格式错误")).into_response(),
+    };
 
     let created = match s.users.create(&req.username, &req.password, req.role).await {
         Ok(user) => user,
@@ -873,11 +1031,15 @@ async fn update_user(
     State(s): State<HttpState>,
     Path(id): Path<String>,
     user: AuthUser,
-    Json(req): Json<UpdateUserReq>,
+    req: Result<Json<UpdateUserReq>, JsonRejection>,
 ) -> impl IntoResponse {
     if let Err(err) = require(&user, Permission::ManageUsers) {
         return err.into_response();
     }
+    let Json(req) = match req {
+        Ok(req) => req,
+        Err(_) => return bad_request(anyhow!("请求体格式错误")).into_response(),
+    };
     match s.users.get_by_id(&id).await {
         Ok(Some(_)) => {}
         Ok(None) => return not_found("用户不存在").into_response(),
@@ -906,11 +1068,15 @@ async fn reset_user_password(
     State(s): State<HttpState>,
     Path(id): Path<String>,
     user: AuthUser,
-    Json(req): Json<ResetPasswordReq>,
+    req: Result<Json<ResetPasswordReq>, JsonRejection>,
 ) -> impl IntoResponse {
     if let Err(err) = require(&user, Permission::ManageUsers) {
         return err.into_response();
     }
+    let Json(req) = match req {
+        Ok(req) => req,
+        Err(_) => return bad_request(anyhow!("请求体格式错误")).into_response(),
+    };
 
     if let Err(e) = s.users.reset_password(&id, &req.password).await {
         return bad_request(e).into_response();
@@ -986,7 +1152,7 @@ async fn delete_endpoints(
     user: AuthUser,
     Json(req): Json<DeleteEndpointsReq>,
 ) -> impl IntoResponse {
-    if let Err(err) = require(&user, Permission::ViewAssets) {
+    if let Err(err) = require(&user, Permission::ManageAssets) {
         return err.into_response();
     }
 

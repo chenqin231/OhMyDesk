@@ -12,6 +12,7 @@ use crate::db::Db;
 #[allow(dead_code)]
 const ALL_PERMISSIONS: &[Permission] = &[
     Permission::ViewAssets,
+    Permission::ManageAssets,
     Permission::ViewGrid,
     Permission::UseRemote,
     Permission::ViewAudit,
@@ -77,6 +78,7 @@ impl FromStr for Role {
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
     ViewAssets,
+    ManageAssets,
     ViewGrid,
     UseRemote,
     ViewAudit,
@@ -90,6 +92,7 @@ impl Permission {
     pub fn as_str(self) -> &'static str {
         match self {
             Permission::ViewAssets => "view_assets",
+            Permission::ManageAssets => "manage_assets",
             Permission::ViewGrid => "view_grid",
             Permission::UseRemote => "use_remote",
             Permission::ViewAudit => "view_audit",
@@ -453,11 +456,13 @@ CREATE TABLE users (
     fn operator_and_auditor_have_fixed_permissions() {
         assert!(has(Role::Operator, Permission::UseRemote));
         assert!(has(Role::Operator, Permission::ViewGrid));
+        assert!(!has(Role::Operator, Permission::ManageAssets));
         assert!(!has(Role::Operator, Permission::ViewAudit));
         assert!(!has(Role::Operator, Permission::ManageUsers));
 
         assert!(has(Role::Auditor, Permission::ViewAudit));
         assert!(has(Role::Auditor, Permission::ViewLoginLogs));
+        assert!(!has(Role::Auditor, Permission::ManageAssets));
         assert!(!has(Role::Auditor, Permission::UseRemote));
         assert!(!has(Role::Auditor, Permission::ManageSettings));
     }
