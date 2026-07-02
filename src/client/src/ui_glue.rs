@@ -709,6 +709,10 @@ pub async fn consume_to_ui(
                 if frame_belongs_to_ended(&ended_session.lock().unwrap(), &session_id) {
                     continue;
                 }
+                // 首帧标志:仅连上远程收到的第一帧才自动贴合窗口尺寸(见下方 set_size)。
+                // 之后 adaptive 过载降档会让分辨率不停变，若每次都 set_size，窗口会在用户
+                // 拖动/操作时被强行改尺寸+重定位 → 表现为「窗口随机变大小和位置」「最大化下字体割裂」。
+                let is_first_frame = last_frame_dims.is_none();
                 let dims_changed = last_frame_dims != Some((w, h));
                 if dims_changed {
                     tracing::info!(
@@ -746,11 +750,18 @@ pub async fn consume_to_ui(
                             // 强制下采样导致发虚。仅尺寸变化时调整。
                             // DPI 感知：set_size 用逻辑像素，除以主控缩放系数，使窗口的「物理」尺寸≈帧尺寸
                             // （高 DPI 主控上才不会把窗口放大到溢出屏幕）。上限取常见屏物理 1920×1080。
-                            if dims_changed {
-                                let sf = ui.window().scale_factor().max(1.0);
+                            //
+                            // 【仅首帧贴合，且非最大化/全屏】只在连上远程的第一帧把窗口调到接近被控
+                            // 分辨率。之后 adaptive 过载降档让分辨率频繁跳变（1920↔1632↔1344↔1056…），
+                            // 若每次都 set_size，会与窗口管理器/用户拖动抢状态 → 窗口随机变大小和位置、
+                            // 最大化下渲染表面与布局 desync 致字体割裂。首帧后一律不再动窗口，画面靠
+                            // frame_scale 在窗口内自适应缩放。
+                            let win = ui.window();
+                            if is_first_frame && !win.is_maximized() && !win.is_fullscreen() {
+                                let sf = win.scale_factor().max(1.0);
                                 let win_w = (w.min(1920) as f32) / sf;
                                 let win_h = (h.min(1080) as f32) / sf;
-                                ui.window().set_size(slint::LogicalSize::new(win_w, win_h));
+                                win.set_size(slint::LogicalSize::new(win_w, win_h));
                             }
                         }
                     });
