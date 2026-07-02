@@ -14,11 +14,22 @@ import {
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { navItems, systemNavItems } from "@/components/shell/nav-config";
+import { hasPermission, roleLabel } from "@/lib/permissions";
 import { useAuthStore } from "@/store/auth";
 
 export function AppSidebar() {
   const { pathname } = useLocation();
   const user = useAuthStore((s) => s.user);
+  const role = useAuthStore((s) => s.role);
+  const permissions = useAuthStore((s) => s.permissions);
+
+  // 无权限项（如 AI 助手）恒显示；有权限项按登录者权限过滤
+  const visibleNavItems = navItems.filter(
+    (item) => !item.permission || hasPermission(permissions, item.permission),
+  );
+  const visibleSystemItems = systemNavItems.filter(
+    (item) => !item.permission || hasPermission(permissions, item.permission),
+  );
 
   return (
     <Sidebar collapsible="icon">
@@ -48,48 +59,52 @@ export function AppSidebar() {
 
       {/* 主导航 */}
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>管控功能</SidebarGroupLabel>
-          <SidebarMenu>
-            {navItems.map((item) => {
-              const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
-              return (
-                <SidebarMenuItem key={item.key}>
-                  <SidebarMenuButton
-                    isActive={isActive}
-                    tooltip={item.title}
-                    render={<Link to={item.href} />}
-                  >
-                    <item.icon />
-                    <span>{item.title}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              );
-            })}
-          </SidebarMenu>
-        </SidebarGroup>
+        {visibleNavItems.length > 0 && (
+          <SidebarGroup>
+            <SidebarGroupLabel>管控功能</SidebarGroupLabel>
+            <SidebarMenu>
+              {visibleNavItems.map((item) => {
+                const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+                return (
+                  <SidebarMenuItem key={item.key}>
+                    <SidebarMenuButton
+                      isActive={isActive}
+                      tooltip={item.title}
+                      render={<Link to={item.href} />}
+                    >
+                      <item.icon />
+                      <span>{item.title}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </SidebarGroup>
+        )}
 
-        {/* 系统级入口 */}
-        <SidebarGroup>
-          <SidebarGroupLabel>系统</SidebarGroupLabel>
-          <SidebarMenu>
-            {systemNavItems.map((item) => {
-              const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
-              return (
-                <SidebarMenuItem key={item.key}>
-                  <SidebarMenuButton
-                    isActive={isActive}
-                    tooltip={item.title}
-                    render={<Link to={item.href} />}
-                  >
-                    <item.icon />
-                    <span>{item.title}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              );
-            })}
-          </SidebarMenu>
-        </SidebarGroup>
+        {/* 系统级入口：组内全部无权限时整组隐藏 */}
+        {visibleSystemItems.length > 0 && (
+          <SidebarGroup>
+            <SidebarGroupLabel>系统</SidebarGroupLabel>
+            <SidebarMenu>
+              {visibleSystemItems.map((item) => {
+                const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+                return (
+                  <SidebarMenuItem key={item.key}>
+                    <SidebarMenuButton
+                      isActive={isActive}
+                      tooltip={item.title}
+                      render={<Link to={item.href} />}
+                    >
+                      <item.icon />
+                      <span>{item.title}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </SidebarGroup>
+        )}
       </SidebarContent>
 
       {/* 当前管理员 */}
@@ -107,7 +122,7 @@ export function AppSidebar() {
                   {user ?? "管理员"}
                 </span>
                 <span className="truncate text-xs text-muted-foreground">
-                  超级管理员
+                  {roleLabel(role)}
                 </span>
               </div>
               <ChevronsUpDown className="ml-auto size-4 text-muted-foreground" />

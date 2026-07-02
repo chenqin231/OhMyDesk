@@ -12,8 +12,9 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useAuthStore } from "@/store/auth";
+import { defaultPathForPermissions } from "@/lib/permissions";
 
-// 登录页：未登录时唯一可达页。登录成功跳 /assets，401 提示账号或密码错误。
+// 登录页：未登录时唯一可达页。登录成功按权限跳默认页，401 提示账号或密码错误。
 export function Login() {
   const navigate = useNavigate();
   const login = useAuthStore((s) => s.login);
@@ -29,7 +30,9 @@ export function Login() {
     setLoading(true);
     try {
       await login(user.trim(), pass);
-      navigate("/assets", { replace: true });
+      // 登录成功后 store 已写入 permissions，按权限跳到对应默认页
+      const perms = useAuthStore.getState().permissions;
+      navigate(defaultPathForPermissions(perms), { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "登录失败");
     } finally {
