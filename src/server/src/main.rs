@@ -31,8 +31,8 @@ use tower_http::services::ServeDir;
 
 use audit::AuditStore;
 use auth::Auth;
-use http::{router as http_router, HttpState};
-use hub::{now_sec, Hub};
+use http::{router as http_router, AuthUser, HttpState};
+use hub::{now_sec, ActorIdentity, Hub};
 use login_log::LoginLogStore;
 use registry::Registry;
 use session::SessionStore;
@@ -178,15 +178,22 @@ async fn ws_handler(
     State(st): State<WsState>,
 ) -> Response {
     // admin 连接需带有效 token；agent（终端）连接无需。
+    // 解析出已认证人员身份（AuthUser）并透传给 handle_socket，用于绑定 admin 连接的操作人。
     let token_present = q.token.is_some();
-    let authed = match q.token.as_deref() {
-        Some(t) => st.auth.validate(t).await.is_some(),
-        None => false,
+    let auth_user = match q.token.as_deref() {
+        Some(t) => st.auth.validate(t).await,
+        None => None,
     };
-    ws.on_upgrade(move |sock| handle_socket(sock, st.hub, authed, token_present))
+    ws.on_upgrade(move |sock| handle_socket(sock, st.hub, auth_user, token_present))
 }
 
-async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_present: bool) {
+async fn handle_socket(
+    socket: WebSocket,
+    hub: Arc<Hub>,
+    auth_user: Option<AuthUser>,
+    token_present: bool,
+) {
+    let authed = auth_user.is_some();
     let (mut sink, mut stream) = socket.split();
 
     // 带了 token 但校验失败（如已过期）→ 立即以 close code 1008(Policy Violation) 关闭。
@@ -278,8 +285,18 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
             if let Some(ftx) = frame_tx.take() {
                 hub.add_frame_client(id.clone(), ftx, frame_enqueued.clone());
             }
-            // admin 连上立即推一次终端列表
+            // admin 连上：绑定操作人身份（供远控 RBAC 闸 + 审计归属）+ 立即推一次终端列表。
             if id.starts_with("admin-") {
+                if let Some(u) = &auth_user {
+                    hub.bind_actor(
+                        &id,
+                        ActorIdentity {
+                            user_id: u.id.clone(),
+                            username: u.username.clone(),
+                            role: u.role.as_str().to_string(),
+                        },
+                    );
+                }
                 hub.push_list(now_sec());
             }
             tracing::info!("客户端连接: {id}");
@@ -301,6 +318,7 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
         // 会让会话永久留在 status=active，且陈旧会话残留致 route_to_peer 查无对端。
         hub.end_client_sessions(id, now_sec()).await;
         hub.remove_client(id);
+        hub.remove_actor(id);
         tracing::info!("客户端断开: {id}");
     }
     pump.abort();
