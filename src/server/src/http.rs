@@ -200,6 +200,10 @@ CREATE TABLE users (
         auth_user("admin-id", "admin", Role::Admin)
     }
 
+    fn superadmin_user() -> AuthUser {
+        auth_user("superadmin-id", "superadmin", Role::Superadmin)
+    }
+
     fn operator_user() -> AuthUser {
         auth_user("operator-id", "operator", Role::Operator)
     }
@@ -416,17 +420,103 @@ CREATE TABLE users (
             .await
             .unwrap();
 
-        let response = list_users(
+        let response = list_users(State(state), superadmin_user())
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body[0]["username"], "auditor");
+        assert!(body[0].get("password_hash").is_none());
+    }
+
+    #[tokio::test]
+    async fn superadmin_can_create_regular_user_without_password_hash() {
+        let (state, users) = test_state().await;
+
+        let response = create_user(
             State(state),
-            auth_user("superadmin-id", "superadmin", Role::Superadmin),
+            superadmin_user(),
+            Json(CreateUserReq {
+                username: "operator".to_string(),
+                password: "secret".to_string(),
+                role: Role::Operator,
+                enabled: Some(false),
+            }),
         )
         .await
         .into_response();
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert_eq!(body[0]["username"], "auditor");
-        assert!(body[0].get("password_hash").is_none());
+        assert_eq!(body["username"], "operator");
+        assert_eq!(body["role"], "operator");
+        assert_eq!(body["enabled"], false);
+        assert!(body.get("password_hash").is_none());
+
+        let user = users.get_by_username("operator").await.unwrap().unwrap();
+        assert_eq!(user.role, Role::Operator);
+        assert!(!user.enabled);
+    }
+
+    #[tokio::test]
+    async fn superadmin_can_patch_regular_user_role_and_enabled_without_password_hash() {
+        let (state, users) = test_state().await;
+        let user = users
+            .create("operator", "secret", Role::Operator)
+            .await
+            .unwrap();
+
+        let response = update_user(
+            State(state),
+            axum::extract::Path(user.id.clone()),
+            superadmin_user(),
+            Json(UpdateUserReq {
+                role: Some(Role::Auditor),
+                enabled: Some(false),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["username"], "operator");
+        assert_eq!(body["role"], "auditor");
+        assert_eq!(body["enabled"], false);
+        assert!(body.get("password_hash").is_none());
+
+        let user = users.get_by_id(&user.id).await.unwrap().unwrap();
+        assert_eq!(user.role, Role::Auditor);
+        assert!(!user.enabled);
+    }
+
+    #[tokio::test]
+    async fn superadmin_can_reset_regular_user_password_without_password_hash() {
+        let (state, users) = test_state().await;
+        let user = users
+            .create("operator", "old-pass", Role::Operator)
+            .await
+            .unwrap();
+
+        let response = reset_user_password(
+            State(state),
+            axum::extract::Path(user.id.clone()),
+            superadmin_user(),
+            Json(ResetPasswordReq {
+                password: "new-pass".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["username"], "operator");
+        assert!(body.get("password_hash").is_none());
+
+        let user = users.get_by_id(&user.id).await.unwrap().unwrap();
+        assert!(bcrypt::verify("new-pass", &user.password_hash).unwrap());
     }
 
     #[tokio::test]
