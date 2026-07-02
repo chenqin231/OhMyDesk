@@ -154,7 +154,7 @@ export function AuditLog() {
           <Input
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
-            placeholder="搜索发起方 / 终端 / 会话号"
+            placeholder="搜索操作人 / 终端 / 会话号"
             className="pl-9"
           />
         </div>
@@ -198,7 +198,7 @@ export function AuditLog() {
           <TableHeader>
             <TableRow className="border-border hover:bg-transparent">
               <TableHead className="w-44">时间</TableHead>
-              <TableHead>发起方</TableHead>
+              <TableHead>操作人</TableHead>
               <TableHead>目标终端</TableHead>
               <TableHead>模式</TableHead>
               <TableHead>结果</TableHead>

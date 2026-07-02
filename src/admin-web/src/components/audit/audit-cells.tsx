@@ -43,23 +43,28 @@ export function ResultBadge({ result }: { result: AuditRecord["result"] }) {
   );
 }
 
-// 发起方：管理员高亮 / 终端用户普通
+// 操作人 = 真实 WEB 登录账号，高亮显示；旧数据无身份显示「旧版本记录」，弱化(muted)
 export function InitiatorCell({ name }: { name: string }) {
-  const isAdmin = name.startsWith("admin-");
+  const isLegacy = name === "旧版本记录";
   return (
-    <span className="inline-flex items-center gap-1.5 text-sm text-foreground">
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 text-sm",
+        isLegacy ? "text-muted-foreground" : "text-foreground",
+      )}
+    >
       <span
         className={cn(
           "flex size-6 shrink-0 items-center justify-center rounded-md border",
-          isAdmin
-            ? "border-primary/40 bg-primary/10 text-primary"
-            : "border-border bg-secondary text-muted-foreground",
+          isLegacy
+            ? "border-border bg-secondary text-muted-foreground"
+            : "border-primary/40 bg-primary/10 text-primary",
         )}
         aria-hidden
       >
         <UserCog className="size-3.5" />
       </span>
-      <span>{isAdmin ? "管理员" : name}</span>
+      <span>{name}</span>
     </span>
   );
 }
