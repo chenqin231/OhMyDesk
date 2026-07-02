@@ -11,6 +11,7 @@ import {
   containedFrameRect,
   pointerToFrameCoords,
   remoteMouseButtonEvents,
+  remoteScrollEvent,
   shouldBlockRemoteContextMenu,
 } from "@/components/control/remote-geometry";
 import { CommandPanel, FilePanel, ChatPanel, TabButton } from "@/components/control/remote-tools";
@@ -134,15 +135,23 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
       e.preventDefault();
     }
 
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const evt = remoteScrollEvent(e.deltaX, e.deltaY, e.deltaMode);
+      if ((evt as { dx: number; dy: number }).dx !== 0 || (evt as { dx: number; dy: number }).dy !== 0) sendInput(evt);
+    };
+
     el.addEventListener("mousemove", onMouseMove);
     el.addEventListener("mousedown", onMouseDown);
     el.addEventListener("mouseup", onMouseUp);
     el.addEventListener("contextmenu", onContextMenu);
+    el.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       el.removeEventListener("mousemove", onMouseMove);
       el.removeEventListener("mousedown", onMouseDown);
       el.removeEventListener("mouseup", onMouseUp);
       el.removeEventListener("contextmenu", onContextMenu);
+      el.removeEventListener("wheel", onWheel);
     };
   }, [toFrameCoords, sendInput, tab]);
 
