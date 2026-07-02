@@ -7,9 +7,16 @@
 
 use crate::geom::{scaled_dims, MAX_H, MAX_W};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use fast_image_resize::images::{Image, ImageRef};
+use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use image::RgbaImage;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use xcap::Monitor;
+
+thread_local! {
+    // 复用 Resizer 的内部缓冲，避免每帧分配。encode_frame_q 在被控编码线程调用。
+    static RESIZER: std::cell::RefCell<Resizer> = std::cell::RefCell::new(Resizer::new());
+}
 
 /// 当前画质档位（被控端推帧线程每帧读取）：0=流畅优先(默认)，1=高清优先。
 /// 主控端经 SetQuality 协议消息切换，被控端 dispatch 调 [`set_quality`] 更新。
@@ -40,6 +47,9 @@ pub fn quality_u8() -> u8 {
 
 /// 档位 → 采集参数（纯函数，便于单测）。
 /// 流畅优先：1280×720 / q80 / ~16fps；高清优先：1920×1080 / q88 / ~10fps。
+/// 高清 q 保持 88（4:2:0）：真机试过 q92（jpeg-encoder 以 q≥90 切 4:4:4）文字略清晰，但 4:4:4
+/// 帧体积大 ~1.5–2×，拥塞公网上「切高清后首帧」传输慢 2–3s（切换延迟回归），得不偿失。文字清晰度
+/// 本质受带宽限，留给 resize/codec 侧根治，不靠调 q。
 pub fn params_for(mode: protocol::QualityMode) -> QualityParams {
     match mode {
         protocol::QualityMode::HighQuality => QualityParams {
@@ -181,23 +191,42 @@ pub fn encode_frame_q(
     let (sw, sh) = (img.width(), img.height());
     let (w, h) = scaled_dims(sw, sh, max_w, max_h);
 
-    // 缩放（等比，不放大）。尺寸未变时跳过 resize 省一次拷贝。
-    // 滤波用 Triangle(双线性) 而非 Lanczos3：真机实测 Lanczos3 降采是编码耗时大头(老 Xeon 上
-    // ~200ms/帧，占 ~79%)，且其成本由「读整张输入」决定、降分辨率几乎不省；Triangle 快数倍、
-    // 远控 720p 画质损失可接受，直接砍延迟。详见 specs/2026-07-01-resize-pipeline-perf-design.md。
+    // 缩放（等比，不放大）。尺寸未变时跳过。改用 fast_image_resize（纯 Rust SIMD，
+    // dev 实测 6.38× 于 image::imageops(Triangle)，opt-z 下不削 SIMD；老 Xeon 走 SSE4.1）。
+    // Bilinear 对齐原 Triangle 观感；use_alpha(false)：远控帧不透明(alpha=255)，跳过 premultiply。
     let t_resize = std::time::Instant::now();
-    let rgb = if (w, h) == (sw, sh) {
-        image::DynamicImage::ImageRgba8(img.clone()).to_rgb8()
+    let resized: Option<Vec<u8>> = if (w, h) == (sw, sh) {
+        None
     } else {
-        let resized = image::imageops::resize(img, w, h, image::imageops::FilterType::Triangle);
-        image::DynamicImage::ImageRgba8(resized).to_rgb8()
+        // 源用只读零拷贝视图：ImageRef 直接借 &[u8]，无需 clone。
+        let src = ImageRef::new(sw, sh, img.as_raw(), PixelType::U8x4)
+            .map_err(|e| anyhow::anyhow!("resize 源构造失败: {e}"))?;
+        let mut dst = Image::new(w, h, PixelType::U8x4);
+        let opts = ResizeOptions::new()
+            .resize_alg(ResizeAlg::Convolution(FilterType::Bilinear))
+            .use_alpha(false);
+        RESIZER
+            .with(|r| r.borrow_mut().resize(&src, &mut dst, Some(&opts)))
+            .map_err(|e| anyhow::anyhow!("resize 失败: {e}"))?;
+        Some(dst.into_vec())
+    };
+    let rgba: &[u8] = match &resized {
+        Some(v) => v,
+        None => img.as_raw(),
     };
     let resize_ms = t_resize.elapsed().as_millis() as u32;
 
+    // JPEG：jpeg-encoder 纯 Rust 标量（Ivy Bridge 实测 4.19× 于 image 标量，
+    // 见 specs/2026-07-02-simd-jpeg-encode-design.md）。直接消费 RGBA：JPEG 不含 alpha，
+    // jpeg-encoder 丢弃第 4 通道。默认采样 q<90 → 4:2:0，与主控 image 解码兼容。
     let t_jpeg = std::time::Instant::now();
-    let mut buf = std::io::Cursor::new(Vec::new());
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, q).encode_image(&rgb)?;
-    let data = STANDARD.encode(buf.get_ref());
+    let mut buf: Vec<u8> = Vec::new();
+    // 屏幕分辨率远小于 u16::MAX；显式化该假设，未来异形大屏若越界能在 debug 下即时暴露。
+    debug_assert!(w <= u16::MAX as u32 && h <= u16::MAX as u32, "分辨率超 u16 上限");
+    jpeg_encoder::Encoder::new(&mut buf, q)
+        .encode(rgba, w as u16, h as u16, jpeg_encoder::ColorType::Rgba)
+        .map_err(|e| anyhow::anyhow!("jpeg 编码失败: {e}"))?;
+    let data = STANDARD.encode(&buf);
     let jpeg_ms = t_jpeg.elapsed().as_millis() as u32;
 
     Ok(EncodeOut { data, w, h, resize_ms, jpeg_ms })
@@ -385,6 +414,30 @@ mod tests {
             "单帧 base64 应远小于 1MB，实际 {}",
             b64.len()
         );
+    }
+
+    #[test]
+    fn encode_frame_q_产出可解回原尺寸_高清q88() {
+        let img = solid(1280, 720);
+        let out = encode_frame_q(&img, 1920, 1080, 88).unwrap();
+        assert_eq!((out.w, out.h), (1280, 720), "不放大，尺寸原样");
+        let bytes = STANDARD
+            .decode(out.data.as_bytes())
+            .expect("产出应为合法 base64");
+        let decoded = image::load_from_memory(&bytes).expect("产出应为可解码 JPEG");
+        assert_eq!((decoded.width(), decoded.height()), (1280, 720), "解回同尺寸");
+    }
+
+    #[test]
+    fn encode_frame_q_大屏缩放后可解回上限尺寸() {
+        let img = solid(3840, 2160);
+        let out = encode_frame_q(&img, 1920, 1080, 88).unwrap();
+        assert_eq!((out.w, out.h), (1920, 1080), "4K 等比缩到 1080p 上限");
+        let bytes = STANDARD
+            .decode(out.data.as_bytes())
+            .expect("产出应为合法 base64");
+        let decoded = image::load_from_memory(&bytes).expect("产出应为可解码 JPEG");
+        assert_eq!((decoded.width(), decoded.height()), (1920, 1080), "解回同尺寸");
     }
 
     #[test]
