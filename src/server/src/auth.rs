@@ -90,10 +90,12 @@ impl Auth {
         if !user.enabled || user.username != claims.username || user.role != role {
             return None;
         }
+        // 运行期权限源：superadmin→隐式全集，普通账户→存储集（row_to_user 已归一）。
         Some(crate::http::AuthUser {
             id: user.id,
             username: user.username,
             role: user.role,
+            permissions: user.permissions,
         })
     }
 }
@@ -108,15 +110,18 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::users::{Role, UserStore};
+    use crate::users::{Permission, UserStore};
     use sqlx::sqlite::SqlitePoolOptions;
 
+    // 新权限模型 fixture：CHECK(superadmin/user) + permissions 列，与生产 schema 对齐。
+    // Task3 已把本模块测试从旧 create(Role) 迁到 create_user_v2。
     const USERS_DDL: &str = r#"
 CREATE TABLE users (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('superadmin', 'admin', 'operator', 'auditor')),
+  role TEXT NOT NULL CHECK(role IN ('superadmin', 'user')),
+  permissions TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -148,7 +153,7 @@ CREATE TABLE users (
     async fn jwt_claims_include_user_id_username_role_and_exp() {
         let (auth, users) = auth().await;
         let user = users
-            .create("alice", "secret", Role::Operator)
+            .create_user_v2("alice", "secret", &["view_grid"])
             .await
             .unwrap();
 
@@ -159,7 +164,9 @@ CREATE TABLE users (
 
         assert_eq!(claims.sub, user.id);
         assert_eq!(claims.username, "alice");
-        assert_eq!(claims.role, "operator");
+        // tier=user 账户的 JWT role 门面（parse_role_compat: 'user'→Role::Admin→"admin"）；
+        // 权限来源是 UserRecord.permissions，非此字符串。
+        assert_eq!(claims.role, user.role.as_str());
         assert_eq!(claims.exp, 10_000_000_000 + TOKEN_TTL_SECS);
     }
 
@@ -167,7 +174,7 @@ CREATE TABLE users (
     async fn verify_login_reads_enabled_users_from_store() {
         let (auth, users) = auth().await;
         let user = users
-            .create("alice", "correct-pass", Role::Operator)
+            .create_user_v2("alice", "correct-pass", &["view_grid"])
             .await
             .unwrap();
 
@@ -177,7 +184,7 @@ CREATE TABLE users (
             .expect("正确密码应返回用户记录");
         assert_eq!(logged_in.id, user.id);
         assert_eq!(logged_in.username, "alice");
-        assert_eq!(logged_in.role, Role::Operator);
+        assert_eq!(logged_in.tier(), "user");
 
         assert!(auth.verify_login("alice", "wrong-pass").await.is_none());
 
@@ -186,10 +193,10 @@ CREATE TABLE users (
     }
 
     #[tokio::test]
-    async fn validate_returns_auth_user_when_token_matches_current_enabled_user() {
+    async fn validate_returns_auth_user_with_stored_permissions() {
         let (auth, users) = auth().await;
         let user = users
-            .create("alice", "secret", Role::Auditor)
+            .create_user_v2("alice", "secret", &["view_audit", "view_login_logs"])
             .await
             .unwrap();
         let token = auth.issue_token(&user.id, &user.username, user.role, 10_000_000_000);
@@ -198,14 +205,17 @@ CREATE TABLE users (
 
         assert_eq!(auth_user.id, user.id);
         assert_eq!(auth_user.username, "alice");
-        assert_eq!(auth_user.role, Role::Auditor);
+        // validate 把用户存储权限集组装进 AuthUser（运行期权限源）
+        assert!(auth_user.permissions.contains(Permission::ViewAudit));
+        assert!(auth_user.permissions.contains(Permission::ViewLoginLogs));
+        assert!(!auth_user.permissions.contains(Permission::UseRemote));
     }
 
     #[tokio::test]
-    async fn validate_rejects_old_token_after_user_is_disabled_or_identity_changes() {
+    async fn validate_rejects_old_token_after_user_is_disabled_or_renamed() {
         let (auth, users) = auth().await;
         let disabled = users
-            .create("disabled", "secret", Role::Operator)
+            .create_user_v2("disabled", "secret", &["view_grid"])
             .await
             .unwrap();
         let disabled_token = auth.issue_token(
@@ -218,7 +228,7 @@ CREATE TABLE users (
         assert!(auth.validate(&disabled_token).await.is_none());
 
         let renamed = users
-            .create("renamed", "secret", Role::Operator)
+            .create_user_v2("renamed", "secret", &["view_grid"])
             .await
             .unwrap();
         let renamed_token =
@@ -228,26 +238,13 @@ CREATE TABLE users (
             .await
             .unwrap();
         assert!(auth.validate(&renamed_token).await.is_none());
-
-        let rerolled = users
-            .create("rerolled", "secret", Role::Operator)
-            .await
-            .unwrap();
-        let rerolled_token = auth.issue_token(
-            &rerolled.id,
-            &rerolled.username,
-            rerolled.role,
-            10_000_000_000,
-        );
-        users.set_role(&rerolled.id, Role::Auditor).await.unwrap();
-        assert!(auth.validate(&rerolled_token).await.is_none());
     }
 
     #[tokio::test]
     async fn validate_token_only_rejects_expired_tampered_or_foreign_tokens() {
         let (auth, users) = auth().await;
         let user = users
-            .create("alice", "secret", Role::Operator)
+            .create_user_v2("alice", "secret", &["view_grid"])
             .await
             .unwrap();
         let expired = auth.issue_token(&user.id, &user.username, user.role, 0);

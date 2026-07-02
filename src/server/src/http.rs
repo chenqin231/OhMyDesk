@@ -23,7 +23,7 @@ use crate::audit::AuditStore;
 use crate::auth::Auth;
 use crate::hub::{now_sec, Hub};
 use crate::login_log::LoginLogStore;
-use crate::users::{Permission, Role, UserStore};
+use crate::users::{Permission, PermissionSet, Role, UserRecord, UserStore};
 
 /// HTTP layer 的共享状态（M-SRV3 + 鉴权）
 #[derive(Clone)]
@@ -39,12 +39,28 @@ pub struct HttpState {
 pub struct AuthUser {
     pub id: String,
     pub username: String,
+    // role：superadmin/user 门面（tier 判据）。运行期权限一律读 permissions。
     pub role: Role,
+    // permissions：按账户菜单权限集，运行期权限的真源（superadmin 为隐式全集，validate 组装）。
+    pub permissions: PermissionSet,
 }
 
 impl AuthUser {
     fn can(&self, permission: Permission) -> bool {
-        self.role.permissions().contains(&permission)
+        self.permissions.contains(permission)
+    }
+
+    pub fn is_superadmin(&self) -> bool {
+        self.role == Role::Superadmin
+    }
+
+    /// tier 字符串：superadmin / user。
+    pub fn tier(&self) -> &'static str {
+        if self.is_superadmin() {
+            "superadmin"
+        } else {
+            "user"
+        }
     }
 }
 
@@ -99,8 +115,18 @@ fn require(
     }
 }
 
-fn permissions(role: Role) -> Vec<&'static str> {
-    role.permissions().iter().map(|p| p.as_str()).collect()
+/// 用户对外视图 JSON：输出 tier + permissions（按账户权限模型），绝不泄露 password_hash。
+/// 供 list_users / create_user / update_user / reset_user_password 统一消费。
+fn user_view_json(u: &UserRecord) -> serde_json::Value {
+    json!({
+        "id": u.id,
+        "username": u.username,
+        "tier": u.tier(),
+        "permissions": u.permissions.keys(),
+        "enabled": u.enabled,
+        "created_at": u.created_at,
+        "updated_at": u.updated_at,
+    })
 }
 
 /// 提取客户端真实 IP：优先 X-Forwarded-For（取首个）→ X-Real-IP → 直连对端。
@@ -127,19 +153,22 @@ mod tests {
     use super::*;
     use crate::registry::Registry;
     use crate::session::SessionStore;
-    use crate::users::{Role, UserStore};
+    use crate::users::{PermissionSet, Role, UserStore};
     use axum::body::to_bytes;
     use axum::http::HeaderName;
     use protocol::EndpointInfo;
     use sqlx::sqlite::SqlitePoolOptions;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    // 新权限模型 fixture：CHECK(superadmin/user) + permissions 列，与生产 schema 对齐。
+    // Task3 已把本模块测试从旧 create(Role) 迁到 create_user_v2 + tier/permissions 断言。
     const USERS_DDL: &str = r#"
 CREATE TABLE users (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('superadmin', 'admin', 'operator', 'auditor')),
+  role TEXT NOT NULL CHECK(role IN ('superadmin', 'user')),
+  permissions TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -252,28 +281,57 @@ CREATE TABLE users (
         body["token"].as_str().unwrap().to_string()
     }
 
-    fn auth_user(id: impl Into<String>, username: impl Into<String>, role: Role) -> AuthUser {
+    fn auth_user(
+        id: impl Into<String>,
+        username: impl Into<String>,
+        role: Role,
+        permissions: PermissionSet,
+    ) -> AuthUser {
         AuthUser {
             id: id.into(),
             username: username.into(),
             role,
+            permissions,
         }
     }
 
+    // 普通账户：拥有全部可配菜单（含 manage_assets，不含账户管理 manage_users）。
     fn admin_user() -> AuthUser {
-        auth_user("admin-id", "admin", Role::Admin)
+        auth_user(
+            "admin-id",
+            "admin",
+            Role::Admin,
+            PermissionSet::parse(
+                "view_assets,manage_assets,view_grid,use_remote,view_audit,view_login_logs",
+            ),
+        )
     }
 
     fn superadmin_user() -> AuthUser {
-        auth_user("superadmin-id", "superadmin", Role::Superadmin)
+        auth_user(
+            "superadmin-id",
+            "superadmin",
+            Role::Superadmin,
+            PermissionSet::superadmin_all(),
+        )
     }
 
     fn operator_user() -> AuthUser {
-        auth_user("operator-id", "operator", Role::Operator)
+        auth_user(
+            "operator-id",
+            "operator",
+            Role::Operator,
+            PermissionSet::parse("view_assets,view_grid,use_remote"),
+        )
     }
 
     fn auditor_user() -> AuthUser {
-        auth_user("auditor-id", "auditor", Role::Auditor)
+        auth_user(
+            "auditor-id",
+            "auditor",
+            Role::Auditor,
+            PermissionSet::parse("view_audit,view_login_logs"),
+        )
     }
 
     #[test]
@@ -293,10 +351,14 @@ CREATE TABLE users (
     }
 
     #[tokio::test]
-    async fn login_response_contains_token_user_role_and_permissions() {
+    async fn login_response_contains_token_user_tier_and_permissions() {
         let (state, users) = test_state().await;
         users
-            .create("operator", "secret", Role::Operator)
+            .create_user_v2(
+                "operator",
+                "secret",
+                &["view_assets", "view_grid", "use_remote"],
+            )
             .await
             .unwrap();
 
@@ -316,7 +378,7 @@ CREATE TABLE users (
         let body = response_json(response).await;
         assert!(body["token"].as_str().unwrap_or_default().len() > 20);
         assert_eq!(body["user"], "operator");
-        assert_eq!(body["role"], "operator");
+        assert_eq!(body["tier"], "user");
         assert_eq!(
             body["permissions"],
             json!(["view_assets", "view_grid", "use_remote"])
@@ -324,28 +386,45 @@ CREATE TABLE users (
     }
 
     #[tokio::test]
-    async fn me_response_uses_authenticated_user_identity() {
+    async fn me_returns_stored_permissions_and_superadmin_gets_all() {
         let (state, users) = test_state().await;
-        let user = users
-            .create("auditor", "secret", Role::Auditor)
+        users.bootstrap(None).await.unwrap(); // superadmin / infogo123
+        users
+            .create_user_v2("viewer", "secret", &["view_audit"])
             .await
             .unwrap();
-        let auth_user = AuthUser {
-            id: user.id,
-            username: user.username,
-            role: user.role,
-        };
+        let (addr, server) = spawn_test_server(state).await;
 
-        let response = me(State(state), auth_user).await.into_response();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_json(response).await;
-        assert_eq!(body["user"], "auditor");
-        assert_eq!(body["role"], "auditor");
+        // superadmin → tier=superadmin，permissions 全集（含 manage_users）
+        let sa_token = login_token(addr, "superadmin", "infogo123").await;
+        let (status, body) = raw_request(addr, "GET", "/api/me", Some(&sa_token), "").await;
+        assert_eq!(status, StatusCode::OK);
+        let sa: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(sa["user"], "superadmin");
+        assert_eq!(sa["tier"], "superadmin");
         assert_eq!(
-            body["permissions"],
-            json!(["view_audit", "view_login_logs"])
+            sa["permissions"],
+            json!([
+                "view_assets",
+                "manage_assets",
+                "view_grid",
+                "use_remote",
+                "view_audit",
+                "view_login_logs",
+                "manage_users"
+            ])
         );
+
+        // 普通账户（仅 view_audit）→ tier=user，permissions 只含 view_audit
+        let v_token = login_token(addr, "viewer", "secret").await;
+        let (status, body) = raw_request(addr, "GET", "/api/me", Some(&v_token), "").await;
+        assert_eq!(status, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["user"], "viewer");
+        assert_eq!(v["tier"], "user");
+        assert_eq!(v["permissions"], json!(["view_audit"]));
+
+        server.abort();
     }
 
     #[tokio::test]
@@ -527,28 +606,10 @@ CREATE TABLE users (
     }
 
     #[tokio::test]
-    async fn admin_can_list_users_without_password_hash() {
-        let (state, users) = test_state().await;
-        users
-            .create("operator", "secret", Role::Operator)
-            .await
-            .unwrap();
-
-        let response = list_users(State(state), admin_user()).await.into_response();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_json(response).await;
-        assert_eq!(body.as_array().unwrap().len(), 1);
-        assert_eq!(body[0]["username"], "operator");
-        assert_eq!(body[0]["role"], "operator");
-        assert!(body[0].get("password_hash").is_none());
-    }
-
-    #[tokio::test]
     async fn superadmin_can_list_users_without_password_hash() {
         let (state, users) = test_state().await;
         users
-            .create("auditor", "secret", Role::Auditor)
+            .create_user_v2("auditor", "secret", &["view_audit", "view_login_logs"])
             .await
             .unwrap();
 
@@ -559,11 +620,17 @@ CREATE TABLE users (
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(body[0]["username"], "auditor");
+        assert_eq!(body[0]["tier"], "user");
+        assert_eq!(
+            body[0]["permissions"],
+            json!(["view_audit", "view_login_logs"])
+        );
         assert!(body[0].get("password_hash").is_none());
+        assert!(body[0].get("role").is_none());
     }
 
     #[tokio::test]
-    async fn superadmin_can_create_regular_user_without_password_hash() {
+    async fn superadmin_can_create_regular_user_with_permissions() {
         let (state, users) = test_state().await;
 
         let response = create_user(
@@ -572,7 +639,11 @@ CREATE TABLE users (
             Ok(Json(CreateUserReq {
                 username: "operator".to_string(),
                 password: "secret".to_string(),
-                role: Role::Operator,
+                permissions: vec![
+                    "view_assets".to_string(),
+                    "view_grid".to_string(),
+                    "use_remote".to_string(),
+                ],
                 enabled: Some(false),
             })),
         )
@@ -582,29 +653,35 @@ CREATE TABLE users (
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(body["username"], "operator");
-        assert_eq!(body["role"], "operator");
+        assert_eq!(body["tier"], "user");
+        assert_eq!(
+            body["permissions"],
+            json!(["view_assets", "view_grid", "use_remote"])
+        );
         assert_eq!(body["enabled"], false);
         assert!(body.get("password_hash").is_none());
 
         let user = users.get_by_username("operator").await.unwrap().unwrap();
-        assert_eq!(user.role, Role::Operator);
+        assert!(!user.is_superadmin());
+        assert_eq!(user.tier(), "user");
         assert!(!user.enabled);
     }
 
     #[tokio::test]
-    async fn superadmin_can_patch_regular_user_role_and_enabled_without_password_hash() {
+    async fn superadmin_can_patch_regular_user_enabled_without_password_hash() {
         let (state, users) = test_state().await;
         let user = users
-            .create("operator", "secret", Role::Operator)
+            .create_user_v2("operator", "secret", &["view_grid"])
             .await
             .unwrap();
 
         let response = update_user(
             State(state),
-            axum::extract::Path(user.id.clone()),
+            Path(user.id.clone()),
             superadmin_user(),
             Ok(Json(UpdateUserReq {
-                role: Some(Role::Auditor),
+                permissions: None,
+                username: None,
                 enabled: Some(false),
             })),
         )
@@ -614,12 +691,11 @@ CREATE TABLE users (
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(body["username"], "operator");
-        assert_eq!(body["role"], "auditor");
+        assert_eq!(body["tier"], "user");
         assert_eq!(body["enabled"], false);
         assert!(body.get("password_hash").is_none());
 
         let user = users.get_by_id(&user.id).await.unwrap().unwrap();
-        assert_eq!(user.role, Role::Auditor);
         assert!(!user.enabled);
     }
 
@@ -627,13 +703,13 @@ CREATE TABLE users (
     async fn superadmin_can_reset_regular_user_password_without_password_hash() {
         let (state, users) = test_state().await;
         let user = users
-            .create("operator", "old-pass", Role::Operator)
+            .create_user_v2("operator", "old-pass", &["view_grid"])
             .await
             .unwrap();
 
         let response = reset_user_password(
             State(state),
-            axum::extract::Path(user.id.clone()),
+            Path(user.id.clone()),
             superadmin_user(),
             Ok(Json(ResetPasswordReq {
                 password: "new-pass".to_string(),
@@ -667,87 +743,16 @@ CREATE TABLE users (
     }
 
     #[tokio::test]
-    async fn admin_can_create_operator_and_disabled_user() {
-        let (state, _users) = test_state().await;
-
-        let enabled = create_user(
-            State(state.clone()),
-            admin_user(),
-            Ok(Json(CreateUserReq {
-                username: "operator".to_string(),
-                password: "secret".to_string(),
-                role: Role::Operator,
-                enabled: None,
-            })),
-        )
-        .await
-        .into_response();
-        let disabled = create_user(
-            State(state),
-            admin_user(),
-            Ok(Json(CreateUserReq {
-                username: "disabled".to_string(),
-                password: "secret".to_string(),
-                role: Role::Operator,
-                enabled: Some(false),
-            })),
-        )
-        .await
-        .into_response();
-
-        assert_eq!(enabled.status(), StatusCode::OK);
-        let body = response_json(enabled).await;
-        assert_eq!(body["username"], "operator");
-        assert_eq!(body["role"], "operator");
-        assert_eq!(body["enabled"], true);
-        assert!(body.get("password_hash").is_none());
-
-        assert_eq!(disabled.status(), StatusCode::OK);
-        let body = response_json(disabled).await;
-        assert_eq!(body["username"], "disabled");
-        assert_eq!(body["role"], "operator");
-        assert_eq!(body["enabled"], false);
-        assert!(body.get("password_hash").is_none());
-    }
-
-    #[tokio::test]
-    async fn admin_can_patch_regular_user_role_and_enabled() {
-        let (state, users) = test_state().await;
-        let user = users
-            .create("operator", "secret", Role::Operator)
-            .await
-            .unwrap();
-
-        let response = update_user(
-            State(state),
-            axum::extract::Path(user.id),
-            admin_user(),
-            Ok(Json(UpdateUserReq {
-                role: Some(Role::Auditor),
-                enabled: Some(false),
-            })),
-        )
-        .await
-        .into_response();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_json(response).await;
-        assert_eq!(body["username"], "operator");
-        assert_eq!(body["role"], "auditor");
-        assert_eq!(body["enabled"], false);
-        assert!(body.get("password_hash").is_none());
-    }
-
-    #[tokio::test]
-    async fn admin_patch_missing_user_returns_404() {
+    async fn patch_missing_user_returns_404() {
         let (state, _users) = test_state().await;
 
         let response = update_user(
             State(state),
-            axum::extract::Path("missing-id".to_string()),
-            admin_user(),
+            Path("missing-id".to_string()),
+            superadmin_user(),
             Ok(Json(UpdateUserReq {
-                role: Some(Role::Auditor),
+                permissions: Some(vec!["view_grid".to_string()]),
+                username: None,
                 enabled: None,
             })),
         )
@@ -762,70 +767,182 @@ CREATE TABLE users (
     }
 
     #[tokio::test]
-    async fn admin_can_reset_regular_user_password_without_leaking_hash() {
+    async fn patch_user_permissions_superadmin_only_and_validated() {
         let (state, users) = test_state().await;
-        let user = users
-            .create("operator", "old-pass", Role::Operator)
+        users.bootstrap(None).await.unwrap();
+        let superadmin = users.get_by_username("superadmin").await.unwrap().unwrap();
+        let target = users
+            .create_user_v2("op", "secret", &["view_grid"])
             .await
             .unwrap();
 
-        let response = reset_user_password(
-            State(state),
-            axum::extract::Path(user.id.clone()),
-            admin_user(),
-            Ok(Json(ResetPasswordReq {
-                password: "new-pass".to_string(),
-            })),
-        )
-        .await
-        .into_response();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_json(response).await;
-        assert_eq!(body["username"], "operator");
-        assert!(body.get("password_hash").is_none());
-        let user = users.get_by_id(&user.id).await.unwrap().unwrap();
-        assert!(bcrypt::verify("new-pass", &user.password_hash).unwrap());
-    }
-
-    #[tokio::test]
-    async fn admin_cannot_create_or_promote_superadmin() {
-        let (state, users) = test_state().await;
-        let user = users
-            .create("operator", "secret", Role::Operator)
-            .await
-            .unwrap();
-
-        let create_response = create_user(
+        // 普通账户（无 manage_users）PATCH → 403
+        let forbidden = update_user(
             State(state.clone()),
-            admin_user(),
-            Ok(Json(CreateUserReq {
-                username: "root".to_string(),
-                password: "secret".to_string(),
-                role: Role::Superadmin,
-                enabled: None,
-            })),
-        )
-        .await
-        .into_response();
-        let promote_response = update_user(
-            State(state),
-            axum::extract::Path(user.id),
-            admin_user(),
+            Path(target.id.clone()),
+            operator_user(),
             Ok(Json(UpdateUserReq {
-                role: Some(Role::Superadmin),
+                permissions: Some(vec!["view_audit".to_string()]),
+                username: None,
                 enabled: None,
             })),
         )
         .await
         .into_response();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
 
-        assert_eq!(create_response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(promote_response.status(), StatusCode::BAD_REQUEST);
+        // superadmin PATCH 合法集 → 200，回读生效（覆盖语义：旧 view_grid 被替换）
+        let ok = update_user(
+            State(state.clone()),
+            Path(target.id.clone()),
+            superadmin_user(),
+            Ok(Json(UpdateUserReq {
+                permissions: Some(vec!["view_assets".to_string(), "manage_assets".to_string()]),
+                username: None,
+                enabled: None,
+            })),
+        )
+        .await
+        .into_response();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body = response_json(ok).await;
+        assert_eq!(body["tier"], "user");
+        assert_eq!(body["permissions"], json!(["view_assets", "manage_assets"]));
+
+        // 缺依赖的 manage_assets（无 view_assets）→ 400
+        let bad = update_user(
+            State(state.clone()),
+            Path(target.id.clone()),
+            superadmin_user(),
+            Ok(Json(UpdateUserReq {
+                permissions: Some(vec!["manage_assets".to_string()]),
+                username: None,
+                enabled: None,
+            })),
+        )
+        .await
+        .into_response();
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+        // 改 superadmin 目标降权 → 拒（400）
+        let sa_target = update_user(
+            State(state),
+            Path(superadmin.id.clone()),
+            superadmin_user(),
+            Ok(Json(UpdateUserReq {
+                permissions: Some(vec!["view_assets".to_string()]),
+                username: None,
+                enabled: None,
+            })),
+        )
+        .await
+        .into_response();
+        assert_eq!(sa_target.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
-    async fn create_user_invalid_role_returns_400_json_from_router() {
+    async fn patch_username_unique_and_superadmin_target_locked() {
+        let (state, users) = test_state().await;
+        users.bootstrap(None).await.unwrap();
+        let superadmin = users.get_by_username("superadmin").await.unwrap().unwrap();
+        let alice = users
+            .create_user_v2("alice", "secret", &["view_grid"])
+            .await
+            .unwrap();
+        let bob = users
+            .create_user_v2("bob", "secret", &["view_grid"])
+            .await
+            .unwrap();
+
+        // 改普通账户名 → 200
+        let ok = update_user(
+            State(state.clone()),
+            Path(alice.id.clone()),
+            superadmin_user(),
+            Ok(Json(UpdateUserReq {
+                permissions: None,
+                username: Some("alice2".to_string()),
+                enabled: None,
+            })),
+        )
+        .await
+        .into_response();
+        assert_eq!(ok.status(), StatusCode::OK);
+        assert_eq!(response_json(ok).await["username"], "alice2");
+
+        // 撞名（bob → alice2）→ 400
+        let dup = update_user(
+            State(state.clone()),
+            Path(bob.id.clone()),
+            superadmin_user(),
+            Ok(Json(UpdateUserReq {
+                permissions: None,
+                username: Some("alice2".to_string()),
+                enabled: None,
+            })),
+        )
+        .await
+        .into_response();
+        assert_eq!(dup.status(), StatusCode::BAD_REQUEST);
+
+        // 改 superadmin 自己登录名 → 拒（400）
+        let sa = update_user(
+            State(state),
+            Path(superadmin.id.clone()),
+            superadmin_user(),
+            Ok(Json(UpdateUserReq {
+                permissions: None,
+                username: Some("root".to_string()),
+                enabled: None,
+            })),
+        )
+        .await
+        .into_response();
+        assert_eq!(sa.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn self_password_change_verifies_old_and_updates() {
+        let (state, users) = test_state().await;
+        users.bootstrap(None).await.unwrap();
+        // 仅 view_grid 的普通账户：证明 /api/me/password 只需登录、不需任何菜单权限
+        users
+            .create_user_v2("alice", "old-pass", &["view_grid"])
+            .await
+            .unwrap();
+        let (addr, server) = spawn_test_server(state).await;
+        let token = login_token(addr, "alice", "old-pass").await;
+
+        // 旧密错 → 400
+        let (status, _) = raw_request(
+            addr,
+            "POST",
+            "/api/me/password",
+            Some(&token),
+            &json!({ "old": "wrong-pass", "new": "new-pass" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // 旧密对 → 200
+        let (status, _) = raw_request(
+            addr,
+            "POST",
+            "/api/me/password",
+            Some(&token),
+            &json!({ "old": "old-pass", "new": "new-pass" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // 新密可登录（走真实 /api/login 路径，login_token 内部断言 200）
+        let new_token = login_token(addr, "alice", "new-pass").await;
+        assert!(new_token.len() > 20);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn create_user_invalid_permission_returns_400_json_from_router() {
         let (state, users) = test_state().await;
         users.bootstrap(None).await.unwrap();
         let (addr, server) = spawn_test_server(state).await;
@@ -836,7 +953,7 @@ CREATE TABLE users (
             "POST",
             "/api/users",
             Some(&token),
-            r#"{"username":"bad-role","password":"secret","role":"root","enabled":true}"#,
+            r#"{"username":"bad","password":"secret","permissions":["not_a_menu"]}"#,
         )
         .await;
 
@@ -845,45 +962,6 @@ CREATE TABLE users (
         let body: serde_json::Value = serde_json::from_str(&body).expect("响应体应为 JSON");
         assert!(body.get("error").is_some());
     }
-
-    #[tokio::test]
-    async fn change_credential_requires_manage_settings_permission() {
-        let (state, users) = test_state().await;
-        let admin = users
-            .create("admin", "old-pass", Role::Admin)
-            .await
-            .unwrap();
-
-        let forbidden = change_credential(
-            State(state.clone()),
-            operator_user(),
-            Json(CredReq {
-                current_pass: "old-pass".to_string(),
-                new_user: None,
-                new_pass: None,
-            }),
-        )
-        .await
-        .into_response();
-        let allowed = change_credential(
-            State(state),
-            auth_user(admin.id, admin.username, admin.role),
-            Json(CredReq {
-                current_pass: "old-pass".to_string(),
-                new_user: None,
-                new_pass: None,
-            }),
-        )
-        .await
-        .into_response();
-
-        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
-        assert_eq!(
-            response_json(forbidden).await,
-            json!({ "error": "权限不足" })
-        );
-        assert_eq!(allowed.status(), StatusCode::OK);
-    }
 }
 
 /// 构建 HTTP 路由，State = HttpState（与 WS router 分别挂 State，最终在 main.rs merge）
@@ -891,10 +969,10 @@ pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/api/login", post(login))
         .route("/api/me", get(me))
+        .route("/api/me/password", post(change_own_password))
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/:id", patch(update_user))
         .route("/api/users/:id/reset-password", post(reset_user_password))
-        .route("/api/settings/credential", post(change_credential))
         .route("/api/endpoints", get(list_endpoints))
         .route("/api/endpoints/delete", post(delete_endpoints))
         .route("/api/sessions", get(list_sessions))
@@ -937,8 +1015,8 @@ async fn login(
             Json(json!({
                 "token": token,
                 "user": user.username,
-                "role": user.role.as_str(),
-                "permissions": permissions(user.role),
+                "tier": user.tier(),
+                "permissions": user.permissions.keys(),
             })),
         )
             .into_response()
@@ -956,28 +1034,56 @@ async fn login(
     }
 }
 
-/// GET /api/me（需登录）→ 回请求 token 对应的用户身份。
+/// GET /api/me（需登录）→ 回请求 token 对应的用户 tier + 权限集。
 async fn me(State(_s): State<HttpState>, user: AuthUser) -> impl IntoResponse {
     Json(json!({
         "user": user.username,
-        "role": user.role.as_str(),
-        "permissions": permissions(user.role),
+        "tier": user.tier(),
+        "permissions": user.permissions.keys(),
     }))
 }
 
-// ── 用户管理 Handler ───────────────────────────────────────────────────────
+/// POST /api/me/password（仅需登录，不 require 任何菜单权限）→ 验旧密码后改自己的密码。
+#[derive(Deserialize)]
+struct SelfPasswordReq {
+    old: String,
+    new: String,
+}
+
+async fn change_own_password(
+    State(s): State<HttpState>,
+    user: AuthUser,
+    Json(req): Json<SelfPasswordReq>,
+) -> impl IntoResponse {
+    if req.new.trim().is_empty() {
+        return bad_request(anyhow!("新密码不能为空")).into_response();
+    }
+    // 复用 change_credential：先 bcrypt 验旧密码，成功才改；不改用户名（None）。
+    match s
+        .auth
+        .change_credential(&user.id, &req.old, None, Some(&req.new))
+        .await
+    {
+        Ok(_) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+// ── 用户管理 Handler（均 require ManageUsers = superadmin 独占）─────────────
 
 #[derive(Deserialize)]
 struct CreateUserReq {
     username: String,
     password: String,
-    role: Role,
+    #[serde(default)]
+    permissions: Vec<String>,
     enabled: Option<bool>,
 }
 
 #[derive(Deserialize)]
 struct UpdateUserReq {
-    role: Option<Role>,
+    permissions: Option<Vec<String>>,
+    username: Option<String>,
     enabled: Option<bool>,
 }
 
@@ -992,7 +1098,10 @@ async fn list_users(State(s): State<HttpState>, user: AuthUser) -> impl IntoResp
     }
 
     match s.users.list().await {
-        Ok(users) => (StatusCode::OK, Json(json!(users))).into_response(),
+        Ok(users) => {
+            let views: Vec<serde_json::Value> = users.iter().map(user_view_json).collect();
+            (StatusCode::OK, Json(json!(views))).into_response()
+        }
         Err(e) => bad_request(e).into_response(),
     }
 }
@@ -1010,7 +1119,14 @@ async fn create_user(
         Err(_) => return bad_request(anyhow!("请求体格式错误")).into_response(),
     };
 
-    let created = match s.users.create(&req.username, &req.password, req.role).await {
+    // 走 create_user_v2（tier=user + 校验 ASSIGNABLE + manage_assets⇒view_assets），
+    // 彻底消除旧 create(Role) 撞 CHECK(superadmin/user) 的隐患。
+    let perms: Vec<&str> = req.permissions.iter().map(String::as_str).collect();
+    let created = match s
+        .users
+        .create_user_v2(&req.username, &req.password, &perms)
+        .await
+    {
         Ok(user) => user,
         Err(e) => return bad_request(e).into_response(),
     };
@@ -1021,7 +1137,7 @@ async fn create_user(
     }
 
     match s.users.get_by_id(&created.id).await {
-        Ok(Some(user)) => (StatusCode::OK, Json(json!(user))).into_response(),
+        Ok(Some(user)) => (StatusCode::OK, Json(user_view_json(&user))).into_response(),
         Ok(None) => not_found("用户不存在").into_response(),
         Err(e) => bad_request(e).into_response(),
     }
@@ -1046,8 +1162,16 @@ async fn update_user(
         Err(e) => return bad_request(e).into_response(),
     }
 
-    if let Some(role) = req.role {
-        if let Err(e) = s.users.set_role(&id, role).await {
+    // 分别调 set_permissions / set_username / set_enabled；三者内部对 superadmin 目标各自拒改
+    // （改权限/改名/停用），故 superadmin 天然被锁。
+    if let Some(perms) = &req.permissions {
+        let perms: Vec<&str> = perms.iter().map(String::as_str).collect();
+        if let Err(e) = s.users.set_permissions(&id, &perms).await {
+            return bad_request(e).into_response();
+        }
+    }
+    if let Some(username) = &req.username {
+        if let Err(e) = s.users.set_username(&id, username).await {
             return bad_request(e).into_response();
         }
     }
@@ -1058,7 +1182,7 @@ async fn update_user(
     }
 
     match s.users.get_by_id(&id).await {
-        Ok(Some(user)) => (StatusCode::OK, Json(json!(user))).into_response(),
+        Ok(Some(user)) => (StatusCode::OK, Json(user_view_json(&user))).into_response(),
         Ok(None) => not_found("用户不存在").into_response(),
         Err(e) => bad_request(e).into_response(),
     }
@@ -1082,49 +1206,9 @@ async fn reset_user_password(
         return bad_request(e).into_response();
     }
     match s.users.get_by_id(&id).await {
-        Ok(Some(user)) => (StatusCode::OK, Json(json!(user))).into_response(),
+        Ok(Some(user)) => (StatusCode::OK, Json(user_view_json(&user))).into_response(),
         Ok(None) => not_found("用户不存在").into_response(),
         Err(e) => bad_request(e).into_response(),
-    }
-}
-
-#[derive(Deserialize)]
-struct CredReq {
-    current_pass: String,
-    new_user: Option<String>,
-    new_pass: Option<String>,
-}
-
-/// POST /api/settings/credential（需登录）→ 当前用户验旧密码后修改自己的账号密码。
-async fn change_credential(
-    State(s): State<HttpState>,
-    user: AuthUser,
-    Json(req): Json<CredReq>,
-) -> impl IntoResponse {
-    if let Err(err) = require(&user, Permission::ManageSettings) {
-        return err.into_response();
-    }
-
-    match s
-        .auth
-        .change_credential(
-            &user.id,
-            &req.current_pass,
-            req.new_user.as_deref(),
-            req.new_pass.as_deref(),
-        )
-        .await
-    {
-        Ok(user) => (
-            StatusCode::OK,
-            Json(json!({
-                "user": user.username,
-                "role": user.role.as_str(),
-                "permissions": permissions(user.role),
-            })),
-        )
-            .into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     }
 }
 

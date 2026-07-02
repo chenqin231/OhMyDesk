@@ -14,13 +14,13 @@ import {
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { navItems, systemNavItems } from "@/components/shell/nav-config";
-import { hasPermission, roleLabel } from "@/lib/permissions";
+import { hasPermission, tierLabel } from "@/lib/permissions";
 import { useAuthStore } from "@/store/auth";
 
 export function AppSidebar() {
   const { pathname } = useLocation();
   const user = useAuthStore((s) => s.user);
-  const role = useAuthStore((s) => s.role);
+  const tier = useAuthStore((s) => s.tier);
   const permissions = useAuthStore((s) => s.permissions);
 
   // 无权限项（如 AI 助手）恒显示；有权限项按登录者权限过滤
@@ -122,7 +122,7 @@ export function AppSidebar() {
                   {user ?? "管理员"}
                 </span>
                 <span className="truncate text-xs text-muted-foreground">
-                  {roleLabel(role)}
+                  {tierLabel(tier)}
                 </span>
               </div>
               <ChevronsUpDown className="ml-auto size-4 text-muted-foreground" />

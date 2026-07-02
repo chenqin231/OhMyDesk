@@ -88,12 +88,14 @@ CREATE TABLE settings (
 )
 "#;
 
+    // 新权限模型 fixture：bootstrap 会写 tier='user'，故 CHECK 必须允许 'user' + permissions 列。
     const USERS_DDL: &str = r#"
 CREATE TABLE users (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('superadmin', 'admin', 'operator', 'auditor')),
+  role TEXT NOT NULL CHECK(role IN ('superadmin', 'user')),
+  permissions TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL

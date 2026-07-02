@@ -222,7 +222,7 @@ export function App() {
         <Route
           path="/settings"
           element={
-            <RequireAuth permission="manage_settings">
+            <RequireAuth>
               <Settings />
             </RequireAuth>
           }
