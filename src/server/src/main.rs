@@ -11,6 +11,7 @@ mod login_log;
 mod registry;
 mod session;
 mod settings;
+mod users;
 
 use std::sync::Arc;
 
