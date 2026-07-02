@@ -50,12 +50,12 @@ impl AuthUser {
         self.permissions.contains(permission)
     }
 
-    fn is_superadmin(&self) -> bool {
+    pub fn is_superadmin(&self) -> bool {
         self.role == Role::Superadmin
     }
 
     /// tier 字符串：superadmin / user。
-    fn tier(&self) -> &'static str {
+    pub fn tier(&self) -> &'static str {
         if self.is_superadmin() {
             "superadmin"
         } else {
