@@ -43,7 +43,7 @@ use users::UserStore;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    // CLI 子命令：set-password —— 复用 bcrypt + settings 落库，改完即退（不起服务）。
+    // CLI 子命令：set-password —— 更新 users 表中的管理账号，改完即退（不起服务）。
     let cli_args: Vec<String> = std::env::args().collect();
     if cli_args.get(1).map(String::as_str) == Some("set-password") {
         return run_set_password(&cli_args).await;
@@ -53,12 +53,16 @@ async fn main() -> anyhow::Result<()> {
     let db = db::connect().await; // Option<Db>，None 时审计 best-effort 跳过
 
     let settings = Arc::new(SettingsStore::new(db.clone()));
-    let legacy_credential = settings.load_credential().await;
+    let legacy_credential = settings.load_legacy_credential_for_migration().await;
+    let had_legacy_credential = legacy_credential.is_some();
     let Some(user_db) = db.clone() else {
         anyhow::bail!("SQLite 不可用，用户系统无法启动");
     };
     let user_store = Arc::new(UserStore::new(user_db));
     user_store.bootstrap(legacy_credential).await?;
+    if had_legacy_credential {
+        settings.mark_credential_migrated().await;
+    }
 
     // ── 共享状态构造 ─────────────────────────────────────────────────────────
     // 注册表带 DB 持久化：启动回灌历史终端（修复升级/重启后终端列表为空）。
@@ -302,7 +306,7 @@ async fn handle_socket(socket: WebSocket, hub: Arc<Hub>, authed: bool, token_pre
 }
 
 /// `ohmydesk-server set-password <新密码> [--user <用户名>]`
-/// 更新 users 表中的管理账号密码；同时写入旧 settings 键用于兼容迁移记录。
+/// 更新 users 表中的管理账号密码；不再回写旧 settings 凭据。
 async fn run_set_password(args: &[String]) -> anyhow::Result<()> {
     let new_pass = args.get(2).filter(|p| !p.is_empty()).ok_or_else(|| {
         anyhow::anyhow!("用法: ohmydesk-server set-password <新密码> [--user <用户名>]")
@@ -325,9 +329,13 @@ async fn run_set_password(args: &[String]) -> anyhow::Result<()> {
         anyhow::bail!("无法连接数据库，改密未生效；请检查 DATABASE_URL / 数据卷挂载");
     };
     let settings = SettingsStore::new(db);
-    let legacy_credential = settings.load_credential().await;
+    let legacy_credential = settings.load_legacy_credential_for_migration().await;
+    let had_legacy_credential = legacy_credential.is_some();
     let users = UserStore::new(pool);
     users.bootstrap(legacy_credential).await?;
+    if had_legacy_credential {
+        settings.mark_credential_migrated().await;
+    }
 
     let requested_user = new_user.as_deref().map(str::trim).filter(|u| !u.is_empty());
     let mut target = if let Some(username) = requested_user {
@@ -362,9 +370,6 @@ async fn run_set_password(args: &[String]) -> anyhow::Result<()> {
         .get_by_id(&target.id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("用户不存在: {}", target.id))?;
-    settings
-        .save_credential(&target.username, &target.password_hash)
-        .await;
     println!("已更新管理员凭据：user={}", target.username);
     Ok(())
 }

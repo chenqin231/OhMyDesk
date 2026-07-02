@@ -256,12 +256,14 @@ impl UserStore {
         if username.is_empty() {
             bail!("用户名不能为空");
         }
+        self.ensure_username_available(username, Some(id)).await?;
         let result = sqlx::query("UPDATE users SET username = ?, updated_at = ? WHERE id = ?")
             .bind(username)
             .bind(now_sec())
             .bind(id)
             .execute(&self.db)
-            .await?;
+            .await
+            .map_err(map_username_write_error)?;
         if result.rows_affected() == 0 {
             bail!("用户不存在: {id}");
         }
@@ -288,6 +290,7 @@ impl UserStore {
             .filter(|username| !username.is_empty())
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| user.username.clone());
+        self.ensure_username_available(&username, Some(id)).await?;
         let password_hash = match new_pass {
             Some(pass) if !pass.is_empty() => crate::auth::hash_password(pass),
             _ => user.password_hash.clone(),
@@ -304,7 +307,8 @@ impl UserStore {
         .bind(now_sec())
         .bind(id)
         .execute(&self.db)
-        .await?;
+        .await
+        .map_err(map_username_write_error)?;
         self.get_by_id(id)
             .await?
             .ok_or_else(|| anyhow!("用户不存在: {id}"))
@@ -323,6 +327,7 @@ impl UserStore {
         if password_hash.is_empty() {
             bail!("密码哈希不能为空");
         }
+        self.ensure_username_available(username, None).await?;
 
         let now = now_sec();
         let user = UserRecord {
@@ -346,8 +351,22 @@ impl UserStore {
         .bind(user.created_at)
         .bind(user.updated_at)
         .execute(&self.db)
-        .await?;
+        .await
+        .map_err(map_username_write_error)?;
         Ok(user)
+    }
+
+    async fn ensure_username_available(
+        &self,
+        username: &str,
+        except_id: Option<&str>,
+    ) -> Result<()> {
+        if let Some(existing) = self.get_by_username(username).await? {
+            if Some(existing.id.as_str()) != except_id {
+                bail!("用户名已存在");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -380,6 +399,19 @@ fn legacy_admin_username(legacy_user: &str) -> String {
     } else {
         legacy_user.to_string()
     }
+}
+
+fn map_username_write_error(err: sqlx::Error) -> anyhow::Error {
+    if let sqlx::Error::Database(db_err) = &err {
+        if is_username_unique_violation(db_err.message()) {
+            return anyhow!("用户名已存在");
+        }
+    }
+    err.into()
+}
+
+fn is_username_unique_violation(message: &str) -> bool {
+    message.contains("users.username")
 }
 
 #[cfg(test)]
@@ -445,6 +477,16 @@ CREATE TABLE users (
         assert!("unknown".parse::<Role>().is_err());
     }
 
+    #[test]
+    fn sqlite_username_unique_violation_maps_to_stable_error() {
+        assert!(is_username_unique_violation(
+            "UNIQUE constraint failed: users.username"
+        ));
+        assert!(!is_username_unique_violation(
+            "UNIQUE constraint failed: users.id"
+        ));
+    }
+
     #[tokio::test]
     async fn create_rejects_superadmin_role() {
         let store = test_store().await;
@@ -470,6 +512,25 @@ CREATE TABLE users (
         assert_eq!(user.username, "alice");
         assert_ne!(user.password_hash, "secret");
         assert!(bcrypt::verify("secret", &user.password_hash).unwrap());
+    }
+
+    #[tokio::test]
+    async fn create_returns_stable_error_when_username_already_exists() {
+        let store = test_store().await;
+        store
+            .create("alice", "secret", Role::Operator)
+            .await
+            .unwrap();
+
+        let err = store
+            .create(" alice ", "another-secret", Role::Auditor)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "用户名已存在");
+        let users = store.list().await.unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].username, "alice");
     }
 
     #[tokio::test]
@@ -592,6 +653,22 @@ CREATE TABLE users (
     }
 
     #[tokio::test]
+    async fn set_username_returns_stable_error_when_username_already_exists() {
+        let store = test_store().await;
+        store
+            .create("alice", "secret", Role::Operator)
+            .await
+            .unwrap();
+        let bob = store.create("bob", "secret", Role::Auditor).await.unwrap();
+
+        let err = store.set_username(&bob.id, " alice ").await.unwrap_err();
+
+        assert_eq!(err.to_string(), "用户名已存在");
+        let bob = store.get_by_id(&bob.id).await.unwrap().unwrap();
+        assert_eq!(bob.username, "bob");
+    }
+
+    #[tokio::test]
     async fn change_credential_verifies_current_password_and_updates_self() {
         let store = test_store().await;
         let user = store
@@ -613,6 +690,29 @@ CREATE TABLE users (
         assert_eq!(updated.role, Role::Operator);
         assert!(bcrypt::verify("new-pass", &updated.password_hash).unwrap());
         assert!(!bcrypt::verify("old-pass", &updated.password_hash).unwrap());
+    }
+
+    #[tokio::test]
+    async fn change_credential_returns_stable_error_when_username_already_exists() {
+        let store = test_store().await;
+        store
+            .create("alice", "secret", Role::Operator)
+            .await
+            .unwrap();
+        let bob = store
+            .create("bob", "old-pass", Role::Auditor)
+            .await
+            .unwrap();
+
+        let err = store
+            .change_credential(&bob.id, "old-pass", Some(" alice "), Some("new-pass"))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "用户名已存在");
+        let bob = store.get_by_id(&bob.id).await.unwrap().unwrap();
+        assert_eq!(bob.username, "bob");
+        assert!(bcrypt::verify("old-pass", &bob.password_hash).unwrap());
     }
 
     #[tokio::test]
