@@ -281,12 +281,35 @@ CREATE TABLE users (
     }
 
     #[tokio::test]
-    async fn operator_cannot_view_audit_sessions_or_login_logs() {
+    async fn operator_can_list_endpoints() {
+        let (state, _users) = test_state().await;
+
+        let response = list_endpoints(State(state), operator_user())
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await, json!([]));
+    }
+
+    #[tokio::test]
+    async fn operator_cannot_view_audit_sessions_audit_logs_or_login_logs() {
         let (state, _users) = test_state().await;
 
         let sessions = list_sessions(State(state.clone()), operator_user())
             .await
             .into_response();
+        let audit_logs = query_audit(
+            State(state.clone()),
+            operator_user(),
+            Query(AuditQuery {
+                endpoint: None,
+                from: None,
+                to: None,
+            }),
+        )
+        .await
+        .into_response();
         let login_logs = query_login_logs(
             State(state),
             operator_user(),
@@ -303,11 +326,53 @@ CREATE TABLE users (
             response_json(sessions).await,
             json!({ "error": "权限不足" })
         );
+        assert_eq!(audit_logs.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response_json(audit_logs).await,
+            json!({ "error": "权限不足" })
+        );
         assert_eq!(login_logs.status(), StatusCode::FORBIDDEN);
         assert_eq!(
             response_json(login_logs).await,
             json!({ "error": "权限不足" })
         );
+    }
+
+    #[tokio::test]
+    async fn auditor_can_view_audit_sessions_audit_logs_and_login_logs() {
+        let (state, _users) = test_state().await;
+
+        let sessions = list_sessions(State(state.clone()), auditor_user())
+            .await
+            .into_response();
+        let audit_logs = query_audit(
+            State(state.clone()),
+            auditor_user(),
+            Query(AuditQuery {
+                endpoint: None,
+                from: None,
+                to: None,
+            }),
+        )
+        .await
+        .into_response();
+        let login_logs = query_login_logs(
+            State(state),
+            auditor_user(),
+            Query(LoginLogQuery {
+                limit: None,
+                offset: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(sessions.status(), StatusCode::OK);
+        assert_eq!(response_json(sessions).await, json!([]));
+        assert_eq!(audit_logs.status(), StatusCode::OK);
+        assert_eq!(response_json(audit_logs).await, json!([]));
+        assert_eq!(login_logs.status(), StatusCode::OK);
+        assert_eq!(response_json(login_logs).await, json!([]));
     }
 
     #[tokio::test]
@@ -573,7 +638,7 @@ CREATE TABLE users (
             response_json(forbidden).await,
             json!({ "error": "权限不足" })
         );
-        assert_ne!(allowed.status(), StatusCode::FORBIDDEN);
+        assert_eq!(allowed.status(), StatusCode::OK);
     }
 }
 
