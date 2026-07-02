@@ -40,6 +40,9 @@ pub fn quality_u8() -> u8 {
 
 /// 档位 → 采集参数（纯函数，便于单测）。
 /// 流畅优先：1280×720 / q80 / ~16fps；高清优先：1920×1080 / q88 / ~10fps。
+/// 高清 q 保持 88（4:2:0）：真机试过 q92（jpeg-encoder 以 q≥90 切 4:4:4）文字略清晰，但 4:4:4
+/// 帧体积大 ~1.5–2×，拥塞公网上「切高清后首帧」传输慢 2–3s（切换延迟回归），得不偿失。文字清晰度
+/// 本质受带宽限，留给 resize/codec 侧根治，不靠调 q。
 pub fn params_for(mode: protocol::QualityMode) -> QualityParams {
     match mode {
         protocol::QualityMode::HighQuality => QualityParams {
