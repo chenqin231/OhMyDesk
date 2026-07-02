@@ -53,6 +53,11 @@ pub async fn connect() -> Option<Db> {
         tracing::warn!("补齐审计身份列失败，审计存储已降级（M-SRV1）: {e}");
         return None;
     }
+    // users 表按账户权限模型迁移（role→tier + permissions 列）；幂等，现网每次启动都会跑。
+    if let Err(e) = migrate_users_to_per_account_permissions(&pool).await {
+        tracing::warn!("迁移 users 为按账户权限模型失败，审计存储已降级（M-SRV1）: {e}");
+        return None;
+    }
 
     tracing::info!("SQLite 就绪，审计存储已启用");
     Some(pool)
@@ -121,10 +126,263 @@ async fn add_column_if_missing(
     Ok(())
 }
 
+/// 判断 users 表是否已有指定列（迁移幂等判据）。
+async fn users_has_column(pool: &Db, col: &str) -> sqlx::Result<bool> {
+    let rows = sqlx::query("PRAGMA table_info(users)")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.iter().any(|row| row.get::<String, _>("name") == col))
+}
+
+/// 旧固定角色 → 按账户菜单权限键串。
+/// 仅迁移期使用；运行期权限一律走 users.permissions（superadmin 隐式全权，无需存储）。
+fn perms_for_legacy_role(role: &str) -> &'static str {
+    match role {
+        // admin 迁为拥有全部可配菜单的普通账户（含 manage_assets，但账户管理 manage_users 归 superadmin 独占）
+        "admin" => "view_assets,manage_assets,view_grid,use_remote,view_audit,view_login_logs",
+        "operator" => "view_assets,view_grid,use_remote",
+        "auditor" => "view_audit,view_login_logs",
+        _ => "",
+    }
+}
+
+/// 把 users 表从「固定 4 角色」迁移为「tier(superadmin/user) + 按账户 permissions 列」。
+///
+/// 幂等：permissions 列已存在（全新库 schema 已是新版，或已迁移过）直接跳过。
+/// SQLite 无法 ALTER 既有 CHECK，故建新表 users_new（新 CHECK + permissions）→ 拷贝映射数据
+/// → DROP 旧表 → RENAME，全程单事务原子提交，失败自动回滚不留半态。
+/// role 映射：superadmin→superadmin（permissions 空）；admin/operator/auditor→user（按旧角色 backfill 菜单键）。
+pub(crate) async fn migrate_users_to_per_account_permissions(pool: &Db) -> sqlx::Result<()> {
+    // users 表不存在（异常/极早期）或已含 permissions 列（全新库/已迁移）→ 跳过
+    let exists: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'")
+            .fetch_one(pool)
+            .await?;
+    if exists == 0 {
+        return Ok(());
+    }
+    if users_has_column(pool, "permissions").await? {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    // DROP IF EXISTS：防御上一次非原子中断遗留的 users_new（正常情况下事务回滚不会留残表）。
+    sqlx::raw_sql(
+        "DROP TABLE IF EXISTS users_new;\
+         CREATE TABLE users_new (\
+           id TEXT PRIMARY KEY,\
+           username TEXT NOT NULL UNIQUE,\
+           password_hash TEXT NOT NULL,\
+           role TEXT NOT NULL CHECK(role IN ('superadmin','user')),\
+           permissions TEXT NOT NULL DEFAULT '',\
+           enabled INTEGER NOT NULL DEFAULT 1,\
+           created_at INTEGER NOT NULL,\
+           updated_at INTEGER NOT NULL)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let rows = sqlx::query(
+        "SELECT id, username, password_hash, role, enabled, created_at, updated_at FROM users",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    for r in rows {
+        let role: String = r.get("role");
+        let (tier, perms) = if role == "superadmin" {
+            ("superadmin", String::new())
+        } else {
+            ("user", perms_for_legacy_role(&role).to_string())
+        };
+        sqlx::query(
+            "INSERT INTO users_new \
+             (id, username, password_hash, role, permissions, enabled, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(r.get::<String, _>("id"))
+        .bind(r.get::<String, _>("username"))
+        .bind(r.get::<String, _>("password_hash"))
+        .bind(tier)
+        .bind(perms)
+        .bind(r.get::<i64, _>("enabled"))
+        .bind(r.get::<i64, _>("created_at"))
+        .bind(r.get::<i64, _>("updated_at"))
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    sqlx::raw_sql("DROP TABLE users; ALTER TABLE users_new RENAME TO users;")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    tracing::info!("users 表已迁移为按账户权限模型（role→tier + permissions 列）");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// 现网旧 users 建表（4 固定角色 CHECK、无 permissions 列），迁移测试的输入 fixture。
+    const OLD_USERS_DDL: &str = "\
+CREATE TABLE users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('superadmin', 'admin', 'operator', 'auditor')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+)";
+
+    async fn new_memory_pool() -> Db {
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn migrate_users_maps_roles_to_tier_and_backfills_permissions_idempotently() {
+        let pool = new_memory_pool().await;
+        sqlx::raw_sql(OLD_USERS_DDL).execute(&pool).await.unwrap();
+        for (u, r) in [
+            ("superadmin", "superadmin"),
+            ("admin", "admin"),
+            ("op", "operator"),
+            ("aud", "auditor"),
+        ] {
+            sqlx::query(
+                "INSERT INTO users(id, username, password_hash, role, enabled, created_at, updated_at) \
+                 VALUES(?, ?, ?, ?, 1, 0, 0)",
+            )
+            .bind(u)
+            .bind(u)
+            .bind("h")
+            .bind(r)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        migrate_users_to_per_account_permissions(&pool).await.unwrap();
+
+        // permissions 列已建
+        assert!(users_has_column(&pool, "permissions").await.unwrap());
+
+        // superadmin：tier=superadmin，permissions 空（隐式全权）
+        let (role, perms): (String, String) =
+            sqlx::query_as("SELECT role, permissions FROM users WHERE username='superadmin'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(role, "superadmin");
+        assert_eq!(perms, "");
+
+        // admin → user + 全功能（含 manage_assets，不含 manage_users）
+        let (role, perms): (String, String) =
+            sqlx::query_as("SELECT role, permissions FROM users WHERE username='admin'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(role, "user");
+        assert!(
+            perms.contains("view_assets")
+                && perms.contains("manage_assets")
+                && perms.contains("view_grid")
+                && perms.contains("use_remote")
+                && perms.contains("view_audit")
+                && perms.contains("view_login_logs")
+        );
+        assert!(!perms.contains("manage_users"));
+
+        // operator → user + view_assets,view_grid,use_remote（不含 view_audit / manage_assets）
+        let (role, perms): (String, String) =
+            sqlx::query_as("SELECT role, permissions FROM users WHERE username='op'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(role, "user");
+        assert!(
+            perms.contains("view_assets")
+                && perms.contains("view_grid")
+                && perms.contains("use_remote")
+        );
+        assert!(!perms.contains("view_audit"));
+        assert!(!perms.contains("manage_assets"));
+
+        // auditor → user + view_audit,view_login_logs（不含 use_remote）
+        let (role, perms): (String, String) =
+            sqlx::query_as("SELECT role, permissions FROM users WHERE username='aud'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(role, "user");
+        assert!(perms.contains("view_audit") && perms.contains("view_login_logs"));
+        assert!(!perms.contains("use_remote"));
+
+        // 幂等：再跑一次不报错、行数不变、数据不变
+        migrate_users_to_per_account_permissions(&pool).await.unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 4);
+        let (role2, perms2): (String, String) =
+            sqlx::query_as("SELECT role, permissions FROM users WHERE username='admin'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(role2, "user");
+        assert!(perms2.contains("manage_assets") && !perms2.contains("manage_users"));
+    }
+
+    #[tokio::test]
+    async fn migrate_users_is_noop_on_fresh_schema_with_permissions_column() {
+        // 全新库：users 已是新版（含 permissions 列）→ 迁移直接跳过、不报错、不改数据
+        let pool = new_memory_pool().await;
+        sqlx::raw_sql(
+            "CREATE TABLE users (
+               id TEXT PRIMARY KEY,
+               username TEXT NOT NULL UNIQUE,
+               password_hash TEXT NOT NULL,
+               role TEXT NOT NULL CHECK(role IN ('superadmin','user')),
+               permissions TEXT NOT NULL DEFAULT '',
+               enabled INTEGER NOT NULL DEFAULT 1,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO users(id, username, password_hash, role, permissions, enabled, created_at, updated_at) \
+             VALUES('1', 'superadmin', 'h', 'superadmin', '', 1, 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        migrate_users_to_per_account_permissions(&pool).await.unwrap();
+
+        let (role, perms): (String, String) =
+            sqlx::query_as("SELECT role, permissions FROM users WHERE username='superadmin'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(role, "superadmin");
+        assert_eq!(perms, "");
+    }
+
+    #[tokio::test]
+    async fn migrate_users_is_noop_when_users_table_absent() {
+        // users 表不存在（异常/极早期）→ 迁移应静默返回 Ok，不报错
+        let pool = new_memory_pool().await;
+        migrate_users_to_per_account_permissions(&pool).await.unwrap();
+    }
 
     #[tokio::test]
     async fn ensure_identity_columns_migrates_old_schema_idempotently() {
