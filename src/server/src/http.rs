@@ -134,12 +134,15 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    // 保留旧 4 角色 CHECK（本模块测试仍用 create(Role) 走旧角色 API，Task3 改造），
+    // 仅补 permissions 列以对齐 UserRecord 读取（SELECT 含 permissions）。
     const USERS_DDL: &str = r#"
 CREATE TABLE users (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('superadmin', 'admin', 'operator', 'auditor')),
+  permissions TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
