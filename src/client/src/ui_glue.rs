@@ -768,6 +768,11 @@ pub async fn consume_to_ui(
                 }
             }
             net::ToUi::SessionEnded { session_id } => {
+                // 重置首帧标志：窗口贴合是「每会话一次」而非「每进程一次」。否则重连新会话时
+                // last_frame_dims 仍是上次的 Some(..)，is_first_frame 恒 false → 新会话首帧不再
+                // 贴合窗口，卡在上次尺寸。置 None 让下次连接的首帧重新贴合（不重新引入 set_size 风暴：
+                // 会话内首帧后 last_frame_dims 即非 None，其余帧仍不触发）。
+                last_frame_dims = None;
                 // 记下结束的会话 id，丢弃其迟到帧（与本地断开同样防「复活」）。
                 activity.end_pending_connect();
                 let prev = cur_session.lock().unwrap().take();
