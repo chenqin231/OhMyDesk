@@ -407,6 +407,9 @@ pub struct Session {
     pub start_at: i64,
     pub end_at: Option<i64>,
     pub status: SessionStatus,
+    pub operator_user_id: Option<String>,
+    pub operator_username: Option<String>,
+    pub operator_role: Option<String>,
 }
 
 /// 终态语义（Wave 0 钉死）：status 只记会话**最终结果**——拒因细分（密码错 `auth_fail`
@@ -428,6 +431,9 @@ pub struct AuditLog {
     pub session_id: String,
     pub ts: i64,
     pub actor_id: String,
+    pub actor_user_id: Option<String>,
+    pub actor_username: Option<String>,
+    pub actor_role: Option<String>,
     #[serde(rename = "type")]
     pub kind: AuditType, // Rust 关键字 type → 用 kind + serde rename；DB 列名 event_type(B-DB1)
     pub text: String,

@@ -1,87 +1,69 @@
-//! 管理平台鉴权：JWT(HS256) 签发/校验 + bcrypt 密码 + 可改凭据（内存态，持久化由 settings 落库）。
-//!
-//! 默认凭据写死（首次启动且无持久化时用）；管理员可在「系统设置」改账号密码。
-//! 凭据放 RwLock，登录走内存（不每次查库）；改密时同步更新内存 + 由调用方落 settings 表。
+//! 管理平台鉴权：JWT(HS256) 签发/校验 + bcrypt 密码校验。
 
-use std::sync::RwLock;
+use std::sync::Arc;
 
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
-/// 写死的默认管理员账号/密码（系统设置页可改）。
+use crate::users::{Role, UserRecord, UserStore};
+
+/// 旧版默认管理员账号，用于兼容 set-password 的缺省用户名。
 pub const DEFAULT_USER: &str = "admin";
-pub const DEFAULT_PASS: &str = "OhMyDesk@2026";
 /// token 有效期（秒）：12 小时。
 const TOKEN_TTL_SECS: i64 = 12 * 3600;
 
 /// JWT 载荷。
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String, // 用户名
+    pub sub: String,
+    pub username: String,
+    pub role: String,
     pub exp: i64,
 }
 
-struct Cred {
-    user: String,
-    pass_hash: String,
-}
-
-/// 鉴权状态：当前凭据 + JWT 签名密钥。
+/// 鉴权状态：用户仓储 + JWT 签名密钥。
 pub struct Auth {
-    cred: RwLock<Cred>,
+    users: Arc<UserStore>,
     secret: Vec<u8>,
 }
 
 impl Auth {
-    /// 用持久化凭据（无则默认）+ JWT secret 构造。
-    pub fn new(secret: Vec<u8>, user: Option<String>, pass_hash: Option<String>) -> Self {
-        let user = user.unwrap_or_else(|| DEFAULT_USER.to_string());
-        let pass_hash = pass_hash.unwrap_or_else(|| hash_password(DEFAULT_PASS));
-        Auth {
-            cred: RwLock::new(Cred { user, pass_hash }),
-            secret,
+    pub fn new(secret: Vec<u8>, users: Arc<UserStore>) -> Self {
+        Auth { users, secret }
+    }
+
+    /// 校验登录（用户表读取 + enabled + bcrypt 验密码）。
+    pub async fn verify_login(&self, user: &str, pass: &str) -> Option<UserRecord> {
+        let record = self.users.get_by_username(user).await.ok().flatten()?;
+        if !record.enabled {
+            return None;
+        }
+        if bcrypt::verify(pass, &record.password_hash).unwrap_or(false) {
+            Some(record)
+        } else {
+            None
         }
     }
 
-    /// 校验登录（用户名匹配 + bcrypt 验密码）。
-    pub fn verify_login(&self, user: &str, pass: &str) -> bool {
-        let c = self.cred.read().unwrap();
-        c.user == user && bcrypt::verify(pass, &c.pass_hash).unwrap_or(false)
-    }
-
-    /// 当前用户名（系统设置回显）。
-    pub fn current_user(&self) -> String {
-        self.cred.read().unwrap().user.clone()
-    }
-
-    /// 改凭据：先验当前密码 → 改内存。返回新 (user, pass_hash) 供调用方落库。
-    pub fn change_credential(
+    pub async fn change_credential(
         &self,
+        user_id: &str,
         current_pass: &str,
         new_user: Option<&str>,
         new_pass: Option<&str>,
-    ) -> Result<(String, String), String> {
-        let mut c = self.cred.write().unwrap();
-        if !bcrypt::verify(current_pass, &c.pass_hash).unwrap_or(false) {
-            return Err("当前密码错误".into());
-        }
-        if let Some(u) = new_user {
-            if !u.trim().is_empty() {
-                c.user = u.trim().to_string();
-            }
-        }
-        if let Some(p) = new_pass {
-            if !p.is_empty() {
-                c.pass_hash = hash_password(p);
-            }
-        }
-        Ok((c.user.clone(), c.pass_hash.clone()))
+    ) -> Result<UserRecord, String> {
+        self.users
+            .change_credential(user_id, current_pass, new_user, new_pass)
+            .await
+            .map_err(|e| e.to_string())
     }
 
-    /// 签发 JWT；`now` 为秒级时间戳。
-    pub fn issue_token(&self, user: &str, now: i64) -> String {
+    /// 签发 JWT；`now` 为秒级时间戳，sub 使用 users.id。
+    pub fn issue_token(&self, user_id: &str, username: &str, role: Role, now: i64) -> String {
         let claims = Claims {
-            sub: user.to_string(),
+            sub: user_id.to_string(),
+            username: username.to_string(),
+            role: role.as_str().to_string(),
             exp: now + TOKEN_TTL_SECS,
         };
         encode(
@@ -93,15 +75,26 @@ impl Auth {
     }
 
     /// 校验 JWT（签名 + 过期）；通过返回 Claims，否则 None。
-    pub fn validate(&self, token: &str) -> Option<Claims> {
+    pub fn validate_token_only(&self, token: &str) -> Option<Claims> {
         let validation = Validation::new(Algorithm::HS256);
-        decode::<Claims>(
-            token,
-            &DecodingKey::from_secret(&self.secret),
-            &validation,
-        )
-        .ok()
-        .map(|d| d.claims)
+        decode::<Claims>(token, &DecodingKey::from_secret(&self.secret), &validation)
+            .ok()
+            .map(|d| d.claims)
+    }
+
+    /// 校验 JWT 并回查用户表，确保旧 token 在用户禁用、改名或改角色后立即失效。
+    pub async fn validate(&self, token: &str) -> Option<crate::http::AuthUser> {
+        let claims = self.validate_token_only(token)?;
+        let role: Role = claims.role.parse().ok()?;
+        let user = self.users.get_by_id(&claims.sub).await.ok().flatten()?;
+        if !user.enabled || user.username != claims.username || user.role != role {
+            return None;
+        }
+        Some(crate::http::AuthUser {
+            id: user.id,
+            username: user.username,
+            role: user.role,
+        })
     }
 }
 
@@ -113,59 +106,160 @@ pub fn hash_password(p: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
-    fn auth() -> Auth {
-        Auth::new(b"test-secret-32-bytes-long-xxxxxx".to_vec(), None, None)
-    }
+    use crate::users::{Role, UserStore};
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    #[test]
-    fn 默认凭据可登录_错密码拒绝() {
-        let a = auth();
-        assert!(a.verify_login(DEFAULT_USER, DEFAULT_PASS), "默认账号密码应可登录");
-        assert!(!a.verify_login(DEFAULT_USER, "wrong"), "错密码应拒绝");
-        assert!(!a.verify_login("hacker", DEFAULT_PASS), "错用户名应拒绝");
-    }
+    const USERS_DDL: &str = r#"
+CREATE TABLE users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('superadmin', 'admin', 'operator', 'auditor')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+)
+"#;
 
-    #[test]
-    fn jwt_签发后可校验_含用户名() {
-        let a = auth();
-        let token = a.issue_token("admin", 10_000_000_000); // 远未来 exp
-        let claims = a.validate(&token).expect("自签 token 应校验通过");
-        assert_eq!(claims.sub, "admin");
-    }
-
-    #[test]
-    fn jwt_过期_或_篡改_校验失败() {
-        let a = auth();
-        // exp = 0+43200（1970 年），早已过期
-        let expired = a.issue_token("admin", 0);
-        assert!(a.validate(&expired).is_none(), "过期 token 应失败");
-        // 篡改
-        assert!(a.validate("not.a.jwt").is_none(), "非法 token 应失败");
-        // 换密钥签的 token 不被本实例接受
-        let other = Auth::new(b"another-secret-different-bytes!!".to_vec(), None, None);
-        let foreign = other.issue_token("admin", 10_000_000_000);
-        assert!(a.validate(&foreign).is_none(), "异密钥 token 应失败");
-    }
-
-    #[test]
-    fn 改密_旧密码错则拒绝_对则生效() {
-        let a = auth();
-        assert!(a.change_credential("wrong", None, Some("new")).is_err(), "旧密码错应拒绝");
-        let (u, _h) = a
-            .change_credential(DEFAULT_PASS, Some("boss"), Some("NewPass@1"))
-            .expect("旧密码对应成功");
-        assert_eq!(u, "boss");
-        // 旧密码失效，新凭据生效
-        assert!(!a.verify_login(DEFAULT_USER, DEFAULT_PASS), "改后旧账号应失效");
-        assert!(a.verify_login("boss", "NewPass@1"), "新账号密码应可登录");
-    }
-
-    #[test]
-    fn 改密_仅改密码_保留用户名() {
-        let a = auth();
-        a.change_credential(DEFAULT_PASS, None, Some("OnlyPass@2"))
+    async fn user_store() -> Arc<UserStore> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
             .unwrap();
-        assert!(a.verify_login(DEFAULT_USER, "OnlyPass@2"));
+        sqlx::raw_sql(USERS_DDL).execute(&pool).await.unwrap();
+        Arc::new(UserStore::new(pool))
+    }
+
+    async fn auth() -> (Auth, Arc<UserStore>) {
+        let users = user_store().await;
+        (
+            Auth::new(
+                b"test-secret-32-bytes-long-xxxxxx".to_vec(),
+                Arc::clone(&users),
+            ),
+            users,
+        )
+    }
+
+    #[tokio::test]
+    async fn jwt_claims_include_user_id_username_role_and_exp() {
+        let (auth, users) = auth().await;
+        let user = users
+            .create("alice", "secret", Role::Operator)
+            .await
+            .unwrap();
+
+        let token = auth.issue_token(&user.id, &user.username, user.role, 10_000_000_000);
+        let claims = auth
+            .validate_token_only(&token)
+            .expect("自签 token 应校验通过");
+
+        assert_eq!(claims.sub, user.id);
+        assert_eq!(claims.username, "alice");
+        assert_eq!(claims.role, "operator");
+        assert_eq!(claims.exp, 10_000_000_000 + TOKEN_TTL_SECS);
+    }
+
+    #[tokio::test]
+    async fn verify_login_reads_enabled_users_from_store() {
+        let (auth, users) = auth().await;
+        let user = users
+            .create("alice", "correct-pass", Role::Operator)
+            .await
+            .unwrap();
+
+        let logged_in = auth
+            .verify_login("alice", "correct-pass")
+            .await
+            .expect("正确密码应返回用户记录");
+        assert_eq!(logged_in.id, user.id);
+        assert_eq!(logged_in.username, "alice");
+        assert_eq!(logged_in.role, Role::Operator);
+
+        assert!(auth.verify_login("alice", "wrong-pass").await.is_none());
+
+        users.set_enabled(&user.id, false).await.unwrap();
+        assert!(auth.verify_login("alice", "correct-pass").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn validate_returns_auth_user_when_token_matches_current_enabled_user() {
+        let (auth, users) = auth().await;
+        let user = users
+            .create("alice", "secret", Role::Auditor)
+            .await
+            .unwrap();
+        let token = auth.issue_token(&user.id, &user.username, user.role, 10_000_000_000);
+
+        let auth_user = auth.validate(&token).await.expect("有效 token 应通过");
+
+        assert_eq!(auth_user.id, user.id);
+        assert_eq!(auth_user.username, "alice");
+        assert_eq!(auth_user.role, Role::Auditor);
+    }
+
+    #[tokio::test]
+    async fn validate_rejects_old_token_after_user_is_disabled_or_identity_changes() {
+        let (auth, users) = auth().await;
+        let disabled = users
+            .create("disabled", "secret", Role::Operator)
+            .await
+            .unwrap();
+        let disabled_token = auth.issue_token(
+            &disabled.id,
+            &disabled.username,
+            disabled.role,
+            10_000_000_000,
+        );
+        users.set_enabled(&disabled.id, false).await.unwrap();
+        assert!(auth.validate(&disabled_token).await.is_none());
+
+        let renamed = users
+            .create("renamed", "secret", Role::Operator)
+            .await
+            .unwrap();
+        let renamed_token =
+            auth.issue_token(&renamed.id, &renamed.username, renamed.role, 10_000_000_000);
+        users
+            .set_username(&renamed.id, "renamed-now")
+            .await
+            .unwrap();
+        assert!(auth.validate(&renamed_token).await.is_none());
+
+        let rerolled = users
+            .create("rerolled", "secret", Role::Operator)
+            .await
+            .unwrap();
+        let rerolled_token = auth.issue_token(
+            &rerolled.id,
+            &rerolled.username,
+            rerolled.role,
+            10_000_000_000,
+        );
+        users.set_role(&rerolled.id, Role::Auditor).await.unwrap();
+        assert!(auth.validate(&rerolled_token).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn validate_token_only_rejects_expired_tampered_or_foreign_tokens() {
+        let (auth, users) = auth().await;
+        let user = users
+            .create("alice", "secret", Role::Operator)
+            .await
+            .unwrap();
+        let expired = auth.issue_token(&user.id, &user.username, user.role, 0);
+        assert!(auth.validate_token_only(&expired).is_none());
+        assert!(auth.validate_token_only("not.a.jwt").is_none());
+
+        let foreign_users = user_store().await;
+        let foreign_auth = Auth::new(
+            b"another-secret-different-bytes!!".to_vec(),
+            Arc::clone(&foreign_users),
+        );
+        let foreign = foreign_auth.issue_token(&user.id, &user.username, user.role, 10_000_000_000);
+        assert!(auth.validate_token_only(&foreign).is_none());
     }
 }

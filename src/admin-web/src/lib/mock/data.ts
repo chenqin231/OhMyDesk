@@ -119,13 +119,29 @@ export function makeEndpoints(nowSec: number): EndpointView[] {
 // 会话列表（~30 条审计事件，覆盖 connect/screenshot/input/disconnect/auth_fail/reject）
 export function makeSessions(nowSec: number): Session[] {
   const d = (hoursAgo: number) => BigInt(nowSec - hoursAgo * 3600);
+  // 真实 WEB 操作人身份（Task 8：审计展示真实登录账号）
+  const op = (
+    userId: string,
+    username: string,
+    role: string,
+  ): Pick<Session, "operator_user_id" | "operator_username" | "operator_role"> => ({
+    operator_user_id: userId,
+    operator_username: username,
+    operator_role: role,
+  });
+  // 旧数据：升级前的历史会话，无 WEB 身份 → 显示「旧版本记录」
+  const legacy: Pick<Session, "operator_user_id" | "operator_username" | "operator_role"> = {
+    operator_user_id: null,
+    operator_username: null,
+    operator_role: null,
+  };
   return [
-    { id: "ses-001", mode: "a", from_id: "admin-001", to_id: "ep-001", start_at: d(2), end_at: d(2) - BigInt(204), status: "ended" },
-    { id: "ses-002", mode: "b", from_id: "ep-003", to_id: "ep-002", start_at: d(4), end_at: d(4) - BigInt(341), status: "rejected" },
-    { id: "ses-003", mode: "a", from_id: "admin-001", to_id: "ep-004", start_at: d(6), end_at: d(6) - BigInt(535), status: "ended" },
-    { id: "ses-004", mode: "b", from_id: "ep-002", to_id: "ep-001", start_at: d(8), end_at: null, status: "active" },
-    { id: "ses-005", mode: "a", from_id: "admin-001", to_id: "ep-003", start_at: d(24), end_at: d(24) - BigInt(728), status: "ended" },
-    { id: "ses-006", mode: "a", from_id: "admin-001", to_id: "ep-002", start_at: d(26), end_at: d(26) - BigInt(113), status: "rejected" },
+    { id: "ses-001", mode: "a", from_id: "admin-001", to_id: "ep-001", start_at: d(2), end_at: d(2) - BigInt(204), status: "ended", ...op("u-001", "张伟", "superadmin") },
+    { id: "ses-002", mode: "b", from_id: "ep-003", to_id: "ep-002", start_at: d(4), end_at: d(4) - BigInt(341), status: "rejected", ...legacy },
+    { id: "ses-003", mode: "a", from_id: "admin-001", to_id: "ep-004", start_at: d(6), end_at: d(6) - BigInt(535), status: "ended", ...op("u-002", "李强", "admin") },
+    { id: "ses-004", mode: "b", from_id: "ep-002", to_id: "ep-001", start_at: d(8), end_at: null, status: "active", ...legacy },
+    { id: "ses-005", mode: "a", from_id: "admin-001", to_id: "ep-003", start_at: d(24), end_at: d(24) - BigInt(728), status: "ended", ...op("u-001", "张伟", "superadmin") },
+    { id: "ses-006", mode: "a", from_id: "admin-001", to_id: "ep-002", start_at: d(26), end_at: d(26) - BigInt(113), status: "rejected", ...op("u-003", "王芳", "admin") },
   ];
 }
 
@@ -133,44 +149,49 @@ export function makeSessions(nowSec: number): Session[] {
 export function makeAuditLogs(nowSec: number): AuditLog[] {
   const ts = (hoursAgo: number, offsetSec = 0) =>
     BigInt(nowSec - hoursAgo * 3600 - offsetSec);
+  const identity: Pick<AuditLog, "actor_user_id" | "actor_username" | "actor_role"> = {
+    actor_user_id: null,
+    actor_username: null,
+    actor_role: null,
+  };
 
   return [
     // ses-001：连接 → 截图×2 → 输入 → 断开
-    { id: "al-001", session_id: "ses-001", ts: ts(2, 0), actor_id: "admin-001", type: "connect", text: "管理员 → ep-001，建立连接" },
-    { id: "al-002", session_id: "ses-001", ts: ts(2, 30), actor_id: "admin-001", type: "screenshot", text: "截图 1 张" },
-    { id: "al-003", session_id: "ses-001", ts: ts(2, 90), actor_id: "admin-001", type: "input", text: "输入操作 47 次" },
-    { id: "al-004", session_id: "ses-001", ts: ts(2, 150), actor_id: "admin-001", type: "screenshot", text: "截图 1 张" },
-    { id: "al-005", session_id: "ses-001", ts: ts(2, 204), actor_id: "admin-001", type: "disconnect", text: "管理员主动断开，时长 03:24" },
+    { id: "al-001", session_id: "ses-001", ts: ts(2, 0), actor_id: "admin-001", type: "connect", text: "管理员 → ep-001，建立连接", ...identity },
+    { id: "al-002", session_id: "ses-001", ts: ts(2, 30), actor_id: "admin-001", type: "screenshot", text: "截图 1 张", ...identity },
+    { id: "al-003", session_id: "ses-001", ts: ts(2, 90), actor_id: "admin-001", type: "input", text: "输入操作 47 次", ...identity },
+    { id: "al-004", session_id: "ses-001", ts: ts(2, 150), actor_id: "admin-001", type: "screenshot", text: "截图 1 张", ...identity },
+    { id: "al-005", session_id: "ses-001", ts: ts(2, 204), actor_id: "admin-001", type: "disconnect", text: "管理员主动断开，时长 03:24", ...identity },
 
     // ses-002：模式B密码错 → 拒连
-    { id: "al-006", session_id: "ses-002", ts: ts(4, 0), actor_id: "ep-003", type: "connect", text: "ep-003 → ep-002，发起模式B连接" },
-    { id: "al-007", session_id: "ses-002", ts: ts(4, 10), actor_id: "ep-003", type: "auth_fail", text: "密码错误（第1次）" },
-    { id: "al-008", session_id: "ses-002", ts: ts(4, 25), actor_id: "ep-003", type: "auth_fail", text: "密码错误（第2次）" },
-    { id: "al-009", session_id: "ses-002", ts: ts(4, 40), actor_id: "ep-003", type: "reject", text: "连续密码错误，连接被拒绝" },
+    { id: "al-006", session_id: "ses-002", ts: ts(4, 0), actor_id: "ep-003", type: "connect", text: "ep-003 → ep-002，发起模式B连接", ...identity },
+    { id: "al-007", session_id: "ses-002", ts: ts(4, 10), actor_id: "ep-003", type: "auth_fail", text: "密码错误（第1次）", ...identity },
+    { id: "al-008", session_id: "ses-002", ts: ts(4, 25), actor_id: "ep-003", type: "auth_fail", text: "密码错误（第2次）", ...identity },
+    { id: "al-009", session_id: "ses-002", ts: ts(4, 40), actor_id: "ep-003", type: "reject", text: "连续密码错误，连接被拒绝", ...identity },
 
     // ses-003：连接 → 截图×3 → 输入 → 断开
-    { id: "al-010", session_id: "ses-003", ts: ts(6, 0), actor_id: "admin-001", type: "connect", text: "管理员 → ep-004，建立连接" },
-    { id: "al-011", session_id: "ses-003", ts: ts(6, 60), actor_id: "admin-001", type: "screenshot", text: "截图 1 张" },
-    { id: "al-012", session_id: "ses-003", ts: ts(6, 180), actor_id: "admin-001", type: "input", text: "输入操作 156 次" },
-    { id: "al-013", session_id: "ses-003", ts: ts(6, 300), actor_id: "admin-001", type: "screenshot", text: "截图 1 张" },
-    { id: "al-014", session_id: "ses-003", ts: ts(6, 420), actor_id: "admin-001", type: "screenshot", text: "截图 1 张" },
-    { id: "al-015", session_id: "ses-003", ts: ts(6, 535), actor_id: "admin-001", type: "disconnect", text: "管理员主动断开，时长 08:55" },
+    { id: "al-010", session_id: "ses-003", ts: ts(6, 0), actor_id: "admin-001", type: "connect", text: "管理员 → ep-004，建立连接", ...identity },
+    { id: "al-011", session_id: "ses-003", ts: ts(6, 60), actor_id: "admin-001", type: "screenshot", text: "截图 1 张", ...identity },
+    { id: "al-012", session_id: "ses-003", ts: ts(6, 180), actor_id: "admin-001", type: "input", text: "输入操作 156 次", ...identity },
+    { id: "al-013", session_id: "ses-003", ts: ts(6, 300), actor_id: "admin-001", type: "screenshot", text: "截图 1 张", ...identity },
+    { id: "al-014", session_id: "ses-003", ts: ts(6, 420), actor_id: "admin-001", type: "screenshot", text: "截图 1 张", ...identity },
+    { id: "al-015", session_id: "ses-003", ts: ts(6, 535), actor_id: "admin-001", type: "disconnect", text: "管理员主动断开，时长 08:55", ...identity },
 
     // ses-004：进行中（active）
-    { id: "al-016", session_id: "ses-004", ts: ts(8, 0), actor_id: "ep-002", type: "connect", text: "ep-002 → ep-001，模式B建立连接" },
-    { id: "al-017", session_id: "ses-004", ts: ts(8, 60), actor_id: "ep-002", type: "screenshot", text: "截图 1 张" },
-    { id: "al-018", session_id: "ses-004", ts: ts(8, 120), actor_id: "ep-002", type: "input", text: "输入操作 22 次" },
+    { id: "al-016", session_id: "ses-004", ts: ts(8, 0), actor_id: "ep-002", type: "connect", text: "ep-002 → ep-001，模式B建立连接", ...identity },
+    { id: "al-017", session_id: "ses-004", ts: ts(8, 60), actor_id: "ep-002", type: "screenshot", text: "截图 1 张", ...identity },
+    { id: "al-018", session_id: "ses-004", ts: ts(8, 120), actor_id: "ep-002", type: "input", text: "输入操作 22 次", ...identity },
 
     // ses-005：昨天成功
-    { id: "al-019", session_id: "ses-005", ts: ts(24, 0), actor_id: "admin-001", type: "connect", text: "管理员 → ep-003，建立连接" },
-    { id: "al-020", session_id: "ses-005", ts: ts(24, 200), actor_id: "admin-001", type: "screenshot", text: "截图 5 张" },
-    { id: "al-021", session_id: "ses-005", ts: ts(24, 400), actor_id: "admin-001", type: "input", text: "输入操作 213 次" },
-    { id: "al-022", session_id: "ses-005", ts: ts(24, 600), actor_id: "admin-001", type: "screenshot", text: "截图 2 张" },
-    { id: "al-023", session_id: "ses-005", ts: ts(24, 728), actor_id: "admin-001", type: "disconnect", text: "管理员主动断开，时长 12:08" },
+    { id: "al-019", session_id: "ses-005", ts: ts(24, 0), actor_id: "admin-001", type: "connect", text: "管理员 → ep-003，建立连接", ...identity },
+    { id: "al-020", session_id: "ses-005", ts: ts(24, 200), actor_id: "admin-001", type: "screenshot", text: "截图 5 张", ...identity },
+    { id: "al-021", session_id: "ses-005", ts: ts(24, 400), actor_id: "admin-001", type: "input", text: "输入操作 213 次", ...identity },
+    { id: "al-022", session_id: "ses-005", ts: ts(24, 600), actor_id: "admin-001", type: "screenshot", text: "截图 2 张", ...identity },
+    { id: "al-023", session_id: "ses-005", ts: ts(24, 728), actor_id: "admin-001", type: "disconnect", text: "管理员主动断开，时长 12:08", ...identity },
 
     // ses-006：终端用户拒绝授权
-    { id: "al-024", session_id: "ses-006", ts: ts(26, 0), actor_id: "admin-001", type: "connect", text: "管理员 → ep-002，发起授权请求" },
-    { id: "al-025", session_id: "ses-006", ts: ts(26, 18), actor_id: "ep-002", type: "reject", text: "李娜 点击「拒绝」，会话未建立" },
+    { id: "al-024", session_id: "ses-006", ts: ts(26, 0), actor_id: "admin-001", type: "connect", text: "管理员 → ep-002，发起授权请求", ...identity },
+    { id: "al-025", session_id: "ses-006", ts: ts(26, 18), actor_id: "ep-002", type: "reject", text: "李娜 点击「拒绝」，会话未建立", ...identity },
   ];
 }
 

@@ -58,6 +58,9 @@ export interface Session {
   start_at: bigint;
   end_at: bigint | null;
   status: SessionStatus;
+  operator_user_id: string | null;
+  operator_username: string | null;
+  operator_role: string | null;
 }
 
 export type AuditType =
@@ -66,13 +69,19 @@ export type AuditType =
   | "reject"
   | "screenshot"
   | "input"
-  | "disconnect";
+  | "disconnect"
+  | "command"
+  | "file_transfer"
+  | "chat";
 
 export interface AuditLog {
   id: string;
   session_id: string;
   ts: bigint;
   actor_id: string;
+  actor_user_id: string | null;
+  actor_username: string | null;
+  actor_role: string | null;
   type: AuditType;
   text: string;
 }
