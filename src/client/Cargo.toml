@@ -16,6 +16,7 @@ enigo = "0.6"
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }  # 客户端只做 JPEG 帧编解码，裁掉 png/gif/webp/tiff/exr/avif(rav1e) 等死重量
 jpeg-encoder = "0.7"
+fast_image_resize = "6.0"
 protocol = { path = "../protocol" }
 rand = "0.8"
 serde.workspace = true
