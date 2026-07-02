@@ -271,6 +271,28 @@ pub fn wire_ui_callbacks(
     {
         let tx = from_ui_tx.clone();
         let sess = cur_session.clone();
+        ui.on_on_pointer_scroll(move |dx_px, dy_px| {
+            // px→"格":除步长四舍五入,非零但舍入为 0 时保底 ±1(小滚动也动)。
+            const SCROLL_STEP_PX: f32 = 40.0;
+            let to_notch = |d: f32| -> i32 {
+                if d == 0.0 { return 0; }
+                let n = (d / SCROLL_STEP_PX).round() as i32;
+                if n != 0 { n } else if d > 0.0 { 1 } else { -1 }
+            };
+            let dx = to_notch(dx_px);
+            let dy = to_notch(dy_px);
+            if dx == 0 && dy == 0 { return; }
+            if let Some(sid) = sess.lock().unwrap().clone() {
+                let _ = tx.send(net::FromUi::Input {
+                    session_id: sid,
+                    event: protocol::InputEvent::Scroll { dx, dy },
+                });
+            }
+        });
+    }
+    {
+        let tx = from_ui_tx.clone();
+        let sess = cur_session.clone();
         ui.on_on_key(move |code, down| {
             let sid = sess.lock().unwrap().clone();
             tracing::info!(

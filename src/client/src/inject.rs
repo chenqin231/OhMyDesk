@@ -8,7 +8,7 @@
 
 use crate::geom::map_frame_to_real;
 use enigo::{
-    Button,
+    Axis, Button,
     Coordinate::Abs,
     Direction::{Press, Release},
     Enigo, Key, Keyboard, Mouse, Settings,
@@ -105,8 +105,16 @@ impl Injector {
             InputEvent::Text { text } => {
                 self.enigo.text(text)?;
             }
-            // S2 实现滚轮注入；当前占位让编译通过。
-            InputEvent::Scroll { .. } => {}
+            InputEvent::Scroll { dx, dy } => {
+                // enigo scroll: length>0 的滚动方向按平台约定,真机验;反了就翻 SCROLL_SIGN。
+                const SCROLL_SIGN: i32 = -1;
+                if *dy != 0 {
+                    self.enigo.scroll(SCROLL_SIGN * *dy, Axis::Vertical)?;
+                }
+                if *dx != 0 {
+                    self.enigo.scroll(SCROLL_SIGN * *dx, Axis::Horizontal)?;
+                }
+            }
         }
         Ok(())
     }
