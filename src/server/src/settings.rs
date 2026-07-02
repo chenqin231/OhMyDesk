@@ -1,5 +1,5 @@
-//! 管理凭据持久化：MySQL `settings` 表（key-value）。
-//! 无 DB 时 load 返回 None（用写死默认）、save 为 no-op（改密本次生效，重启复位）。
+//! 旧管理凭据读取：SQLite `settings` 表（key-value）。
+//! 启动时读取旧 `admin_user/admin_pass_hash`，作为 users 表 bootstrap 迁移输入。
 
 use crate::db::Db;
 
@@ -12,7 +12,7 @@ impl SettingsStore {
         SettingsStore { db }
     }
 
-    /// 读持久化的 (admin_user, admin_pass_hash)；任一缺失返回 None（回退默认凭据）。
+    /// 读旧版持久化的 (admin_user, admin_pass_hash)；任一缺失返回 None。
     pub async fn load_credential(&self) -> Option<(String, String)> {
         let db = self.db.as_ref()?;
         let user = get(db, "admin_user").await?;
@@ -20,7 +20,7 @@ impl SettingsStore {
         Some((user, hash))
     }
 
-    /// 落库新凭据（best-effort，失败仅告警）。
+    /// 旧版凭据写入接口保留给兼容路径；新登录系统以 users 表为准。
     pub async fn save_credential(&self, user: &str, pass_hash: &str) {
         let Some(db) = &self.db else {
             tracing::warn!("无 DB，凭据改动未持久化（重启复位）");
