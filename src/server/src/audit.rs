@@ -33,7 +33,16 @@ impl AuditStore {
     // ── 公开接口 ─────────────────────────────────────────────────────────────
 
     /// 写一条 audit_log（B-DB1：列名 event_type；C-1：枚举含 input）
-    pub async fn log(&self, session_id: &str, actor_id: &str, kind: AuditType, text: &str) {
+    /// `actor_id` = 发起该操作的连接 id（admin-/endpoint id）；`actor` = 该连接绑定的 WEB
+    /// 人员身份（Task5），有则写入 actor_user_id/username/role 三列，无则留空（agent 侧操作）。
+    pub async fn log(
+        &self,
+        session_id: &str,
+        actor_id: &str,
+        kind: AuditType,
+        text: &str,
+        actor: Option<&crate::hub::ActorIdentity>,
+    ) {
         let Some(db) = &self.db else {
             tracing::warn!("审计降级（M-SRV1），跳过写入: kind={kind:?} text={text}");
             return;
@@ -49,9 +58,9 @@ impl AuditStore {
         .bind(session_id)
         .bind(ts)
         .bind(actor_id)
-        .bind(None::<String>)
-        .bind(None::<String>)
-        .bind(None::<String>)
+        .bind(actor.map(|a| a.user_id.clone()))
+        .bind(actor.map(|a| a.username.clone()))
+        .bind(actor.map(|a| a.role.clone()))
         .bind(kind_str)
         .bind(text)
         .execute(db)
@@ -290,6 +299,66 @@ fn session_from_row(r: SessionRow) -> Option<Session> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    const AUDIT_DDL: &str = r#"
+CREATE TABLE audit_logs (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_user_id TEXT,
+  actor_username TEXT,
+  actor_role TEXT,
+  event_type TEXT NOT NULL,
+  text TEXT NOT NULL
+)
+"#;
+
+    async fn audit_store() -> AuditStore {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(AUDIT_DDL).execute(&pool).await.unwrap();
+        AuditStore::new(Some(pool))
+    }
+
+    /// 归属回归：带 actor 落审计 → actor_user_id/username/role 三列写入，可回查。
+    #[tokio::test]
+    async fn log_with_actor_persists_actor_identity_columns() {
+        let store = audit_store().await;
+        let actor = crate::hub::ActorIdentity {
+            user_id: "u-1".into(),
+            username: "alice".into(),
+            role: "operator".into(),
+        };
+        store
+            .log("sess-1", "admin-1", AuditType::Connect, "会话建立", Some(&actor))
+            .await;
+
+        let logs = store.query_audit(None, None, None).await;
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].actor_user_id.as_deref(), Some("u-1"));
+        assert_eq!(logs[0].actor_username.as_deref(), Some("alice"));
+        assert_eq!(logs[0].actor_role.as_deref(), Some("operator"));
+    }
+
+    /// 无 actor（agent 侧操作）→ actor_* 三列留空。
+    #[tokio::test]
+    async fn log_without_actor_leaves_identity_columns_null() {
+        let store = audit_store().await;
+        store
+            .log("sess-2", "ep-9", AuditType::Chat, "hi", None)
+            .await;
+
+        let logs = store.query_audit(None, None, None).await;
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].actor_user_id.is_none());
+        assert!(logs[0].actor_username.is_none());
+        assert!(logs[0].actor_role.is_none());
+    }
 
     #[test]
     fn chat_audit_type_str_and_back() {
