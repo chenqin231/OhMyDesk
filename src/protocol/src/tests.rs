@@ -97,7 +97,9 @@ fn session_and_audit_identity_fields_serialize() {
         operator_role: Some("operator".into()),
     };
     let json = serde_json::to_value(&session).unwrap();
+    assert_eq!(json["operator_user_id"], "u-1");
     assert_eq!(json["operator_username"], "alice");
+    assert_eq!(json["operator_role"], "operator");
 
     let audit = AuditLog {
         id: "a-1".into(),
@@ -111,7 +113,9 @@ fn session_and_audit_identity_fields_serialize() {
         text: "建立连接".into(),
     };
     let json = serde_json::to_value(&audit).unwrap();
+    assert_eq!(json["actor_user_id"], "u-1");
     assert_eq!(json["actor_username"], "alice");
+    assert_eq!(json["actor_role"], "operator");
     assert_eq!(json["type"], "connect");
 }
 
