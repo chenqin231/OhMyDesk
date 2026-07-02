@@ -471,6 +471,14 @@ impl UserStore {
         if username.is_empty() {
             bail!("用户名不能为空");
         }
+        // superadmin 目标拒改登录名（唯一 god，登录名锁定）。
+        let user = self
+            .get_by_id(id)
+            .await?
+            .ok_or_else(|| anyhow!("用户不存在: {id}"))?;
+        if user.is_superadmin() {
+            bail!("不能修改超级管理员用户名");
+        }
         self.ensure_username_available(username, Some(id)).await?;
         let result = sqlx::query("UPDATE users SET username = ?, updated_at = ? WHERE id = ?")
             .bind(username)
