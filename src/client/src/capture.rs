@@ -422,8 +422,8 @@ mod tests {
         assert_eq!((out.w, out.h), (1920, 1080), "4K 等比缩到 1080p 上限");
         let bytes = STANDARD
             .decode(out.data.as_bytes())
-            .unwrap();
-        let decoded = image::load_from_memory(&bytes).unwrap();
+            .expect("产出应为合法 base64");
+        let decoded = image::load_from_memory(&bytes).expect("产出应为可解码 JPEG");
         assert_eq!((decoded.width(), decoded.height()), (1920, 1080), "解回同尺寸");
     }
 
