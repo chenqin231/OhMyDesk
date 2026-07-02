@@ -1,6 +1,9 @@
-// 鉴权 store：管理 token / 当前用户，封装登录、登出、改密、拉取当前用户。
+// 鉴权 store：管理 token / 当前用户 / 角色 / 权限，封装登录、登出、改密、拉取当前用户。
 // token 持久化到 localStorage，刷新后保留；其余 store 与 real.ts 通过 getToken() 读取同一份。
+// role/permissions 不持久化，刷新后由 loadMe 从 /api/me 重新拉取（server 为唯一权威）。
 import { create } from "zustand";
+
+import type { Permission, Role } from "@/lib/permissions";
 
 const TOKEN_KEY = "ohmydesk_token";
 
@@ -24,9 +27,11 @@ function apiUrl(path: string): string {
 type AuthState = {
   token: string | null;
   user: string | null;
+  role: Role | null;
+  permissions: Permission[] | null;
   // 登录：成功存 token 并返回；失败抛出可读错误信息
   login: (user: string, pass: string) => Promise<void>;
-  // 登出：清 token + user（跳转由调用方负责）
+  // 登出：清 token + user + role + permissions（跳转由调用方负责）
   logout: () => void;
   // 改密/改用户名：成功后返回，调用方负责提示并登出
   changeCredential: (
@@ -41,6 +46,8 @@ type AuthState = {
 export const useAuthStore = create<AuthState>((set, get) => ({
   token: getToken(),
   user: null,
+  role: null,
+  permissions: null,
 
   async login(user, pass) {
     const res = await fetch(apiUrl("/api/login"), {
@@ -55,14 +62,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const msg = await readError(res);
       throw new Error(msg ?? "登录失败，请稍后重试");
     }
-    const data = (await res.json()) as { token: string; user: string };
+    const data = (await res.json()) as {
+      token: string;
+      user: string;
+      role: Role;
+      permissions: Permission[];
+    };
     setStoredToken(data.token);
-    set({ token: data.token, user: data.user });
+    set({
+      token: data.token,
+      user: data.user,
+      role: data.role,
+      permissions: data.permissions,
+    });
   },
 
   logout() {
     setStoredToken(null);
-    set({ token: null, user: null });
+    set({ token: null, user: null, role: null, permissions: null });
   },
 
   async changeCredential(currentPass, newUser, newPass) {
@@ -100,8 +117,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return;
     }
     if (!res.ok) return;
-    const data = (await res.json()) as { user: string };
-    set({ user: data.user });
+    const data = (await res.json()) as {
+      user: string;
+      role: Role;
+      permissions: Permission[];
+    };
+    set({ user: data.user, role: data.role, permissions: data.permissions });
   },
 }));
 
