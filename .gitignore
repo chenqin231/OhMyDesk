@@ -24,6 +24,7 @@ credentials.*
 # 杂项
 *.log
 .DS_Store
+.worktrees/
 
 # deb 打包产物
 dist-deb/
