@@ -445,7 +445,7 @@ CREATE TABLE users (
         state
             .hub
             .reg
-            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec());
+            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec(), None);
 
         let response = delete_endpoints(
             State(state.clone()),
@@ -471,7 +471,7 @@ CREATE TABLE users (
         state
             .hub
             .reg
-            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec());
+            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec(), None);
 
         let admin_response = delete_endpoints(
             State(state.clone()),
@@ -489,7 +489,7 @@ CREATE TABLE users (
         state
             .hub
             .reg
-            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec());
+            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec(), None);
         let superadmin_response = delete_endpoints(
             State(state),
             superadmin_user(),

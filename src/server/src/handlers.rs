@@ -358,7 +358,7 @@ mod tests {
         let hub = test_hub();
         let mut info = EndpointInfo::sample();
         info.id = "ep-self".into();
-        hub.reg.upsert(info, "123456".into(), 100);
+        hub.reg.upsert(info, "123456".into(), 100, None);
 
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         hub.add_client("ep-self".into(), tx);

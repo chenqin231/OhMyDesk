@@ -17,6 +17,8 @@ struct Entry {
     info: EndpointInfo,
     password: String,
     last_seen: i64,
+    /// 归属账号 user_id（服务端从连接 JWT 派生）。None=无归属旧端，仅 superadmin 可见。
+    owner: Option<String>,
 }
 
 pub struct Registry {
@@ -56,13 +58,14 @@ impl Registry {
         let offline_cap = now - ONLINE_TIMEOUT_SEC - 1; // 强制回灌项落在离线区间
         match db_load_all(db).await {
             Ok(rows) => {
-                for (info, last_seen) in rows {
+                for (info, last_seen, owner) in rows {
                     self.map.insert(
                         info.id.clone(),
                         Entry {
                             info,
                             password: String::new(),
                             last_seen: last_seen.min(offline_cap),
+                            owner,
                         },
                     );
                 }
@@ -72,15 +75,18 @@ impl Registry {
         }
     }
 
-    /// 注册或更新终端信息；now 为秒级 Unix 时间戳
-    pub fn upsert(&self, info: EndpointInfo, password: String, now: i64) {
+    /// 注册或更新终端信息；now 为秒级 Unix 时间戳。
+    /// `owner` 为服务端从连接 JWT 派生的归属账号 user_id（无 token 旧端为 None）。
+    /// 换绑语义：后一次 upsert 覆盖归属（一机多账户接管，非并发多归属）。
+    pub fn upsert(&self, info: EndpointInfo, password: String, now: i64, owner: Option<String>) {
         // 持久化（best-effort，仅在有 db 时；fire-and-forget 不阻塞）。先序列化再移动 info 进表。
-        // 不落 password（见 load_from_db / schema 注释）：只持久化终端身份与最后可见时间。
+        // 不落 password（见 load_from_db / schema 注释）：只持久化终端身份、最后可见时间与归属。
         if let Some(db) = self.db.clone() {
             if let Ok(info_json) = serde_json::to_string(&info) {
                 let id = info.id.clone();
+                let owner_db = owner.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = db_save(&db, &id, &info_json, now).await {
+                    if let Err(e) = db_save(&db, &id, &info_json, now, owner_db.as_deref()).await {
                         tracing::warn!("终端落库失败 id={id}：{e}");
                     }
                 });
@@ -92,6 +98,7 @@ impl Registry {
                 info,
                 password,
                 last_seen: now,
+                owner,
             },
         );
     }
@@ -122,8 +129,28 @@ impl Registry {
                     online,
                     last_seen: e.last_seen,
                     xinchuang: xinchuang_label(&e.info.os, &e.info.cpu),
+                    owner_id: e.owner.clone(),
                 }
             })
+            .collect()
+    }
+
+    /// 按归属过滤的视图快照（行级数据隔离核心）。
+    ///
+    /// - `viewer`=当前登录账号 user_id（服务端从 JWT 派生，非自报）。
+    /// - `is_superadmin`=true → 全量（含 owner=None 旧端），绕过过滤。
+    /// - 否则仅返回 `owner == Some(viewer)` 的终端；owner=None 旧端对普通账号不可见。
+    ///
+    /// 安全不变量：viewer=None 且非 superadmin（异常连接）→ 返回空集，绝不泄露。
+    pub fn views_visible_to(
+        &self,
+        now: i64,
+        viewer: Option<&str>,
+        is_superadmin: bool,
+    ) -> Vec<EndpointView> {
+        self.views(now)
+            .into_iter()
+            .filter(|v| is_superadmin || (viewer.is_some() && v.owner_id.as_deref() == viewer))
             .collect()
     }
 
@@ -152,14 +179,23 @@ impl Registry {
 // ── SQLite 持久化（自由函数，便于单测直接 await，避开 fire-and-forget 竞态）─────────────
 
 /// upsert 一条终端（info 为 EndpointInfo 的 JSON）。不存密码。
-async fn db_save(db: &Db, id: &str, info_json: &str, last_seen: i64) -> anyhow::Result<()> {
+/// owner_id 随 upsert 覆盖（换绑：后写覆盖前写）。
+async fn db_save(
+    db: &Db,
+    id: &str,
+    info_json: &str,
+    last_seen: i64,
+    owner_id: Option<&str>,
+) -> anyhow::Result<()> {
     sqlx::query(
-        "INSERT INTO endpoint_registry(id, info, last_seen) VALUES(?,?,?) \
-         ON CONFLICT(id) DO UPDATE SET info=excluded.info, last_seen=excluded.last_seen",
+        "INSERT INTO endpoint_registry(id, info, last_seen, owner_id) VALUES(?,?,?,?) \
+         ON CONFLICT(id) DO UPDATE SET info=excluded.info, last_seen=excluded.last_seen, \
+         owner_id=excluded.owner_id",
     )
     .bind(id)
     .bind(info_json)
     .bind(last_seen)
+    .bind(owner_id)
     .execute(db)
     .await?;
     Ok(())
@@ -174,16 +210,16 @@ async fn db_delete(db: &Db, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 读取全部终端 → (EndpointInfo, last_seen)。跳过 JSON 解析失败的脏行。
-async fn db_load_all(db: &Db) -> anyhow::Result<Vec<(EndpointInfo, i64)>> {
-    let rows: Vec<(String, i64)> =
-        sqlx::query_as("SELECT info, last_seen FROM endpoint_registry")
+/// 读取全部终端 → (EndpointInfo, last_seen, owner_id)。跳过 JSON 解析失败的脏行。
+async fn db_load_all(db: &Db) -> anyhow::Result<Vec<(EndpointInfo, i64, Option<String>)>> {
+    let rows: Vec<(String, i64, Option<String>)> =
+        sqlx::query_as("SELECT info, last_seen, owner_id FROM endpoint_registry")
             .fetch_all(db)
             .await?;
     let mut out = Vec::with_capacity(rows.len());
-    for (info_json, last_seen) in rows {
+    for (info_json, last_seen, owner_id) in rows {
         match serde_json::from_str::<EndpointInfo>(&info_json) {
-            Ok(info) => out.push((info, last_seen)),
+            Ok(info) => out.push((info, last_seen, owner_id)),
             Err(e) => tracing::warn!("终端记录 JSON 解析失败，跳过：{e}"),
         }
     }
@@ -200,7 +236,7 @@ mod tests {
     #[test]
     fn upsert_and_view() {
         let reg = Registry::new();
-        reg.upsert(EndpointInfo::sample(), "123456".into(), 1000);
+        reg.upsert(EndpointInfo::sample(), "123456".into(), 1000, None);
         let views = reg.views(1000);
         assert_eq!(views.len(), 1);
         assert!(views[0].online);
@@ -210,7 +246,7 @@ mod tests {
     #[test]
     fn offline_after_timeout() {
         let reg = Registry::new();
-        reg.upsert(EndpointInfo::sample(), "123456".into(), 1000);
+        reg.upsert(EndpointInfo::sample(), "123456".into(), 1000, None);
         // now 比 last_seen 晚 16s，超过 15s 阈值
         let views = reg.views(1016);
         assert!(!views[0].online);
@@ -219,7 +255,7 @@ mod tests {
     #[test]
     fn touch_refreshes_online() {
         let reg = Registry::new();
-        reg.upsert(EndpointInfo::sample(), "123456".into(), 1000);
+        reg.upsert(EndpointInfo::sample(), "123456".into(), 1000, None);
         reg.touch("ep-001", 1016);
         let views = reg.views(1016);
         assert!(views[0].online);
@@ -228,7 +264,7 @@ mod tests {
     #[test]
     fn remove_删除终端记录() {
         let reg = Registry::new();
-        reg.upsert(EndpointInfo::sample(), "123456".into(), 1000);
+        reg.upsert(EndpointInfo::sample(), "123456".into(), 1000, None);
         assert_eq!(reg.views(1000).len(), 1);
         assert!(reg.remove("ep-001"), "删除已存在终端返回 true");
         assert_eq!(reg.views(1000).len(), 0, "删除后列表为空");
@@ -239,7 +275,7 @@ mod tests {
     #[test]
     fn mode_b_password_check() {
         let reg = Registry::new();
-        reg.upsert(EndpointInfo::sample(), "123456".into(), 0);
+        reg.upsert(EndpointInfo::sample(), "123456".into(), 0, None);
         assert!(reg.check_password("ep-001", "123456"));
         assert!(!reg.check_password("ep-001", "000000"));
         assert!(!reg.check_password("nonexist", "123456"));
@@ -253,7 +289,7 @@ mod tests {
         let db: Db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::raw_sql(
             "CREATE TABLE endpoint_registry (id TEXT PRIMARY KEY, info TEXT NOT NULL, \
-             last_seen INTEGER NOT NULL)",
+             last_seen INTEGER NOT NULL, owner_id TEXT)",
         )
         .execute(&db)
         .await
@@ -263,7 +299,9 @@ mod tests {
         // last_seen=1000 模拟「曾在线」；回灌时刻 now=1005（停机仅 5s < 15s 阈值）。
         let info = EndpointInfo::sample();
         let info_json = serde_json::to_string(&info).unwrap();
-        super::db_save(&db, &info.id, &info_json, 1000).await.unwrap();
+        super::db_save(&db, &info.id, &info_json, 1000, None)
+            .await
+            .unwrap();
 
         // 模拟服务器重启：全新注册表从同一 DB 回灌
         let reg2 = Registry::with_db(Some(db.clone()));
@@ -282,5 +320,74 @@ mod tests {
         let reg3 = Registry::with_db(Some(db.clone()));
         reg3.load_from_db(1005).await;
         assert_eq!(reg3.views(1005).len(), 0, "删除后回灌应为空");
+    }
+
+    /// 构造带自定义 id 的 EndpointInfo（owner 可见性测试用多台终端）。
+    fn ep(id: &str) -> EndpointInfo {
+        let mut e = EndpointInfo::sample();
+        e.id = id.to_string();
+        e
+    }
+
+    fn sorted_ids(vs: Vec<EndpointView>) -> Vec<String> {
+        let mut v: Vec<String> = vs.into_iter().map(|x| x.info.id).collect();
+        v.sort();
+        v
+    }
+
+    /// T002【RED】owner 可见性过滤：普通账号仅见自己归属；superadmin 全量（含 owner=None）。
+    #[test]
+    fn owner_可见性过滤() {
+        let reg = Registry::new();
+        reg.upsert(ep("ep-a"), "pw".into(), 1000, Some("A".to_string()));
+        reg.upsert(ep("ep-b"), "pw".into(), 1000, Some("B".to_string()));
+        reg.upsert(ep("ep-n"), "pw".into(), 1000, None);
+
+        // A 普通账号：仅见自己归属 ep-a
+        assert_eq!(sorted_ids(reg.views_visible_to(1000, Some("A"), false)), vec!["ep-a"]);
+        // B 普通账号：仅见 ep-b
+        assert_eq!(sorted_ids(reg.views_visible_to(1000, Some("B"), false)), vec!["ep-b"]);
+        // superadmin：全量（含 owner=None 旧端）
+        assert_eq!(
+            sorted_ids(reg.views_visible_to(1000, None, true)),
+            vec!["ep-a", "ep-b", "ep-n"]
+        );
+        // A 不含 owner=None 的旧端
+        assert!(!reg
+            .views_visible_to(1000, Some("A"), false)
+            .iter()
+            .any(|v| v.info.id == "ep-n"));
+        // owner_id 落在视图字段上
+        let a_view = reg.views_visible_to(1000, Some("A"), false);
+        assert_eq!(a_view[0].owner_id.as_deref(), Some("A"));
+    }
+
+    /// T002【RED】落库→回灌保留 owner_id（历史归属可追溯；换绑语义基石）。
+    #[tokio::test]
+    async fn 落库回灌保留_owner_id() {
+        let db: Db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE endpoint_registry (id TEXT PRIMARY KEY, info TEXT NOT NULL, \
+             last_seen INTEGER NOT NULL, owner_id TEXT)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let info = EndpointInfo::sample();
+        let info_json = serde_json::to_string(&info).unwrap();
+        super::db_save(&db, &info.id, &info_json, 1000, Some("A"))
+            .await
+            .unwrap();
+
+        let reg2 = Registry::with_db(Some(db.clone()));
+        reg2.load_from_db(1005).await;
+
+        // superadmin 视角回灌 1 项，owner_id 保留
+        let sup = reg2.views_visible_to(1005, None, true);
+        assert_eq!(sup.len(), 1);
+        assert_eq!(sup[0].owner_id.as_deref(), Some("A"));
+        // 普通账号 A 仍可见该离线机（归属未随重启丢失）
+        assert_eq!(reg2.views_visible_to(1005, Some("A"), false).len(), 1);
     }
 }

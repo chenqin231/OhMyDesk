@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS endpoints (
 CREATE TABLE IF NOT EXISTS endpoint_registry (
   id TEXT PRIMARY KEY,
   info TEXT NOT NULL,
-  last_seen INTEGER NOT NULL
+  last_seen INTEGER NOT NULL,
+  owner_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
