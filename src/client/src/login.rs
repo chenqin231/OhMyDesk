@@ -39,7 +39,11 @@ pub fn login(server: &str, user: &str, pass: &str) -> Result<Creds, LoginErr> {
         .set("Content-Type", "application/json")
         .send_string(&body);
     match resp {
-        Ok(r) => parse_ok(&r.into_string().map_err(|_| LoginErr::Server)?, user),
+        Ok(r) => {
+            let mut creds = parse_ok(&r.into_string().map_err(|_| LoginErr::Server)?, user)?;
+            creds.server = Some(server.trim().to_string());
+            Ok(creds)
+        }
         Err(ureq::Error::Status(401, _)) => Err(LoginErr::BadCredential),
         Err(ureq::Error::Status(_, _)) => Err(LoginErr::Server),
         Err(ureq::Error::Transport(_)) => Err(LoginErr::Network),
@@ -61,6 +65,7 @@ fn parse_ok(text: &str, fallback_user: &str) -> Result<Creds, LoginErr> {
     Ok(Creds {
         token: token.to_string(),
         user: user.to_string(),
+        server: None,
     })
 }
 
@@ -122,7 +127,8 @@ mod tests {
             ok,
             Ok(Creds {
                 token: "jwt-xyz".into(),
-                user: "alice".into()
+                user: "alice".into(),
+                server: None
             })
         );
         // user 缺失 → 回落输入账号

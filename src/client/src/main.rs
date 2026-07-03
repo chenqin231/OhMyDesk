@@ -16,6 +16,7 @@ mod activity;
 mod adaptive;
 mod asset;
 mod capture;
+mod chat_notice;
 mod credential;
 mod elevate;
 mod suwen;
@@ -40,6 +41,7 @@ slint::include_modules!();
 
 /// UI 线程与后台共享的会话 id（主控/被控各一份）。
 pub(crate) type SharedSession = Arc<std::sync::Mutex<Option<String>>>;
+pub(crate) type SharedServerUrl = Arc<std::sync::Mutex<String>>;
 
 fn main() -> anyhow::Result<()> {
     // 最先声明 DPI 感知：必须早于任何窗口/GDI/截屏初始化，否则缩放屏上 xcap 抓到模糊的虚拟化画面。
@@ -87,6 +89,11 @@ fn main() -> anyhow::Result<()> {
     // 登录门（D10）：启动读盘凭据。有效则自动上线（跳过 S1）；无则显示登录页、net 阻塞在登录门。
     // token 用 watch 广播给 net::run：登录成功 send Some(token) 放行、注销 send None 断开回门。
     let creds0 = credential::load();
+    let initial_server_url = creds0
+        .as_ref()
+        .and_then(|c| c.server.clone())
+        .unwrap_or_else(|| server_url.clone());
+    let active_server_url: SharedServerUrl = Arc::new(std::sync::Mutex::new(initial_server_url));
     let (token_tx, token_rx) =
         tokio::sync::watch::channel::<Option<String>>(creds0.as_ref().map(|c| c.token.clone()));
     let token_tx = std::sync::Arc::new(token_tx);
@@ -101,6 +108,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     let ui = AppWindow::new()?;
+    let chat_notice = ChatNoticeWindow::new()?;
     ui.set_app_version(env!("CARGO_PKG_VERSION").into()); // 标题栏「OhMyDesk v{版本} 极速远控」
     ui.set_self_id(ui_glue::group_digits(&self_id).into());
     // 登录门初始态：有有效凭据 → 已登录（自动上线）；否则显示登录页。
@@ -170,8 +178,9 @@ fn main() -> anyhow::Result<()> {
     ui.set_diag_dir(ohmydesk_state_dir().join("diag").to_string_lossy().to_string().into());
     // UI 回调注册（UI 线程）
     ui_glue::wire_ui_callbacks(&ui, &from_ui_tx, &cur_session, &ctrl_session, &ended_session, &activity, &tele_tx);
+    ui_glue::wire_chat_notice_callbacks(&ui, &chat_notice);
     // 登录 / 注销回调（后台 ureq 登录 + token watch 通知 net）。
-    ui_glue::wire_login_callbacks(&ui, token_tx.clone(), server_url.clone());
+    ui_glue::wire_login_callbacks(&ui, token_tx.clone(), server_url.clone(), active_server_url.clone());
 
     // 后台 tokio runtime
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -179,10 +188,11 @@ fn main() -> anyhow::Result<()> {
         .build()?;
     // 更新守护（独立 std 线程，在 to_ui_tx move 进 net::run 之前 clone）
     update::spawn_update_daemon(server_url.clone(), self_id.clone(), activity.clone(), to_ui_tx.clone(), nudge_rx);
-    rt.spawn(net::run(server_url, info, to_ui_tx, from_ui_rx, tele_tx.clone(), token_rx));
+    rt.spawn(net::run(active_server_url, info, to_ui_tx, from_ui_rx, tele_tx.clone(), token_rx));
     rt.spawn(ui_glue::consume_to_ui(
         to_ui_rx,
         ui.as_weak(),
+        chat_notice.as_weak(),
         cur_session,
         ctrl_session,
         ended_session,

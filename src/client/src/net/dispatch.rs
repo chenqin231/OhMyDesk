@@ -82,11 +82,17 @@ pub(super) async fn handle_downlink(
         Message::IncomingControl {
             session_id,
             from,
+            operator_username,
             mode,
             auto_accept,
         } => {
+            let peer_name = control_peer_name(operator_username.as_deref(), &from);
             if auto_accept {
-                session.lock().await.controlled = Some(session_id.clone());
+                {
+                    let mut ctx = session.lock().await;
+                    ctx.controlled = Some(session_id.clone());
+                    ctx.controlled_peer_name = Some(peer_name.clone());
+                }
                 CAPTURE_CTRL.send(CaptureCtrl::Start {
                     session_id: session_id.clone(),
                 });
@@ -94,13 +100,14 @@ pub(super) async fn handle_downlink(
                     session_id: session_id.clone(),
                 });
                 let _ = to_ui.send(ToUi::BeingControlled {
-                    peer_name: from,
+                    peer_name,
                     forced: mode == protocol::Mode::A,
                     session_id: session_id.clone(),
                 });
             } else {
+                session.lock().await.controlled_peer_name = Some(peer_name.clone());
                 let _ = to_ui.send(ToUi::ControlRequest {
-                    requester: from,
+                    requester: peer_name,
                     session_id,
                     source: control_source(mode).to_string(),
                 });
@@ -113,7 +120,13 @@ pub(super) async fn handle_downlink(
             reason,
         } => {
             if ok {
-                session.lock().await.controlled = Some(session_id.clone());
+                let peer_name = {
+                    let mut ctx = session.lock().await;
+                    ctx.controlled = Some(session_id.clone());
+                    ctx.controlled_peer_name
+                        .clone()
+                        .unwrap_or_else(|| "远程方".into())
+                };
                 // 进入被控态：启动 2-3fps 截屏推帧（main 截屏线程消费此信号）
                 CAPTURE_CTRL.send(CaptureCtrl::Start {
                     session_id: session_id.clone(),
@@ -122,7 +135,7 @@ pub(super) async fn handle_downlink(
                     session_id: session_id.clone(),
                 });
                 let _ = to_ui.send(ToUi::BeingControlled {
-                    peer_name: "远程方".into(),
+                    peer_name,
                     forced: false,
                     session_id: session_id.clone(),
                 });
@@ -242,6 +255,7 @@ pub(super) async fn handle_downlink(
             }
             if ctx.controlled.as_deref() == Some(session_id.as_str()) {
                 ctx.controlled = None;
+                ctx.controlled_peer_name = None;
                 CAPTURE_CTRL.send(CaptureCtrl::Stop); // 停被控端推帧
             }
             CLIPBOARD_TX.send(ClipboardMsg::Stop);
@@ -539,6 +553,14 @@ pub(super) async fn handle_downlink(
     Ok(())
 }
 
+fn control_peer_name(operator_username: Option<&str>, fallback_conn_id: &str) -> String {
+    operator_username
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback_conn_id)
+        .to_string()
+}
+
 /// 来控来源中文标签(管理端 mode A / 终端伙伴 mode B),用于被控端授权弹窗展示。
 pub(super) fn control_source(mode: protocol::Mode) -> &'static str {
     match mode {
@@ -688,6 +710,7 @@ pub(super) async fn handle_uplink(
                 let mut ctx = session.lock().await;
                 if ctx.controlled.as_deref() == Some(session_id.as_str()) {
                     ctx.controlled = None;
+                    ctx.controlled_peer_name = None;
                 }
             }
             CAPTURE_CTRL.send(CaptureCtrl::Stop);
@@ -1217,6 +1240,39 @@ mod tests {
             }
             other => panic!("应为 ChatIncoming，实际 {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn incoming_control_优先显示操作账号名() {
+        let (out_tx, _out_rx) = mpsc::unbounded_channel::<String>();
+        let (to_ui, mut to_ui_rx) = mpsc::unbounded_channel::<ToUi>();
+        let session = Arc::new(tokio::sync::Mutex::new(SessionCtx::default()));
+        let t = env_text(
+            "server",
+            Message::IncomingControl {
+                session_id: "s-1".into(),
+                from: "admin-vazkcy".into(),
+                operator_username: Some("caodan".into()),
+                mode: protocol::Mode::B,
+                auto_accept: true,
+            },
+        );
+
+        handle_downlink(&t, "ep-self", &out_tx, &to_ui, &session)
+            .await
+            .unwrap();
+
+        match to_ui_rx.try_recv().expect("应进入被控态") {
+            ToUi::BeingControlled { peer_name, .. } => assert_eq!(peer_name, "caodan"),
+            other => panic!("应为 BeingControlled，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 控制方显示名_缺账号名时回退连接id() {
+        assert_eq!(control_peer_name(Some(" caodan "), "admin-vazkcy"), "caodan");
+        assert_eq!(control_peer_name(Some("   "), "admin-vazkcy"), "admin-vazkcy");
+        assert_eq!(control_peer_name(None, "admin-vazkcy"), "admin-vazkcy");
     }
 
     /// 主控态收 pull 回流（FileOpen{dir:Pull} + FileChunk last）→ 据 PULL_TARGETS 落盘到本机目录。

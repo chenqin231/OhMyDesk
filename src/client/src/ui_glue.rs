@@ -2,7 +2,7 @@
 //!
 //! UI 更新一律 `invoke_from_event_loop` + `Weak`（AppWindow 强句柄非 Send）。
 
-use crate::{history, net, AppWindow, FileEntry, HistoryItem, SharedSession};
+use crate::{history, net, AppWindow, ChatNoticeWindow, FileEntry, HistoryItem, SharedSession};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 /// 把 9 位 id 按 3-3-3 分组展示（"617343065" → "617 343 065"）。复制时 Rust 侧再去空白。
@@ -627,26 +627,22 @@ pub fn wire_login_callbacks(
     ui: &AppWindow,
     token_tx: std::sync::Arc<tokio::sync::watch::Sender<Option<String>>>,
     server_url: String,
+    active_server_url: crate::SharedServerUrl,
 ) {
     // on_do_login(user, pass, server_override)
     {
         let ui_weak = ui.as_weak();
         let token_tx = token_tx.clone();
         let default_server = server_url;
+        let active_server_url = active_server_url.clone();
         ui.on_do_login(move |user, pass, server_override| {
             let user = user.to_string();
             let pass = pass.to_string();
             // 服务器地址：高级项非空则用它，否则用默认（env/OHMYDESK_SERVER）。
-            let server = {
-                let s = server_override.to_string();
-                if s.trim().is_empty() {
-                    default_server.clone()
-                } else {
-                    s.trim().to_string()
-                }
-            };
+            let server = selected_login_server(&default_server, &server_override);
             let ui_weak = ui_weak.clone();
             let token_tx = token_tx.clone();
+            let active_server_url = active_server_url.clone();
             // 进入 loading 态（回调在 UI 线程，直接 set）。
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_login_loading(true);
@@ -663,6 +659,7 @@ pub fn wire_login_callbacks(
                     match result {
                         Ok(creds) => {
                             crate::credential::save(&creds);
+                            *active_server_url.lock().unwrap() = server;
                             ui.set_logged_user(creds.user.clone().into());
                             ui.set_login_pass("".into()); // 清密码框
                             ui.set_login_error("".into());
@@ -699,10 +696,60 @@ pub fn wire_login_callbacks(
     }
 }
 
+pub fn wire_chat_notice_callbacks(ui: &AppWindow, notice: &ChatNoticeWindow) {
+    {
+        let ui_weak = ui.as_weak();
+        let notice_weak = notice.as_weak();
+        notice.on_open_chat(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_chat_panel_open(true);
+                ui.set_controlled_chat_unread(false);
+                ui.window().set_minimized(false);
+                let _ = ui.show();
+            }
+            if let Some(notice) = notice_weak.upgrade() {
+                let _ = notice.hide();
+            }
+        });
+    }
+
+    {
+        let notice_weak = notice.as_weak();
+        notice.on_dismiss(move || {
+            if let Some(notice) = notice_weak.upgrade() {
+                let _ = notice.hide();
+            }
+        });
+    }
+
+    {
+        let notice_weak = notice.as_weak();
+        ui.on_controlled_chat_panel_opened(move || {
+            if let Some(notice) = notice_weak.upgrade() {
+                let _ = notice.hide();
+            }
+        });
+    }
+}
+
+fn selected_login_server(default_server: &str, server_override: &str) -> String {
+    let server = server_override.trim();
+    if server.is_empty() {
+        default_server.to_string()
+    } else {
+        server.to_string()
+    }
+}
+
+fn should_show_controlled_chat_notice(chat_panel_open: bool) -> bool {
+    !chat_panel_open
+}
+
 /// 拉 ToUi 流，逐条应用到 UI（invoke_from_event_loop），并维护主控/被控会话 id。
 pub async fn consume_to_ui(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<net::ToUi>,
     ui_weak: slint::Weak<AppWindow>,
+    chat_notice_weak: slint::Weak<ChatNoticeWindow>,
     cur_session: SharedSession,
     ctrl_session: SharedSession,
     ended_session: SharedSession,
@@ -897,6 +944,7 @@ pub async fn consume_to_ui(
                     let mut g = ctrl_session.lock().unwrap();
                     *g = next_ctrl_session_after_end(g.as_deref(), &session_id);
                 }
+                let chat_notice_weak = chat_notice_weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         let was_controlling = ui.get_remote_active();
@@ -913,11 +961,10 @@ pub async fn consume_to_ui(
                         ui.set_cmd_output("".into());
                         ui.set_chat_log("".into());
                         ui.set_chat_unread(false);
-                        // 被控聊天记录 / 入口红点 / 面板开合 / 右下角弹卡 复位，避免残留。
+                        // 被控聊天记录 / 入口红点 / 面板开合复位，避免残留。
                         ui.set_controlled_chat_log("".into());
                         ui.set_controlled_chat_unread(false);
                         ui.set_chat_panel_open(false);
-                        ui.set_controlled_toast_visible(false);
                         // 远端 / 本机目录条目与路径、文件状态行清空（下次会话由 RemoteAck 重列）。
                         ui.set_remote_entries(build_file_model(&[]));
                         ui.set_remote_path("".into());
@@ -928,6 +975,9 @@ pub async fn consume_to_ui(
                         if was_controlling {
                             ui.window().set_size(slint::LogicalSize::new(460.0, 620.0));
                         }
+                    }
+                    if let Some(notice) = chat_notice_weak.upgrade() {
+                        let _ = notice.hide();
                     }
                 });
             }
@@ -1046,6 +1096,7 @@ pub async fn consume_to_ui(
             } => {
                 let is_controlling =
                     cur_session.lock().unwrap().as_deref() == Some(session_id.as_str());
+                let chat_notice_weak = chat_notice_weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         if is_controlling {
@@ -1057,13 +1108,13 @@ pub async fn consume_to_ui(
                         } else {
                             let log = ui.get_controlled_chat_log().to_string();
                             ui.set_controlled_chat_log(append_line(&log, "对方", &text).into());
-                            if !ui.get_chat_panel_open() {
+                            if should_show_controlled_chat_notice(ui.get_chat_panel_open()) {
                                 ui.set_controlled_chat_unread(true);
-                                // 右下角弹卡醒目提醒（面板未打开时）：被控用户此前看不到顶部小入口。
-                                ui.set_controlled_toast_text(text.into());
-                                ui.set_controlled_toast_visible(true);
-                                // 被控窗口可能最小化/在后台：尽力取消最小化，让弹卡可见（best-effort）。
-                                ui.window().set_minimized(false);
+                                show_controlled_chat_notice(
+                                    &chat_notice_weak,
+                                    &ui.get_peer_name().to_string(),
+                                    &text,
+                                );
                             }
                         }
                     }
@@ -1090,6 +1141,30 @@ pub async fn consume_to_ui(
                 });
             }
         }
+    }
+}
+
+fn show_controlled_chat_notice(
+    notice_weak: &slint::Weak<ChatNoticeWindow>,
+    peer: &str,
+    text: &str,
+) {
+    if crate::chat_notice::auto_dismiss_ms().is_some() {
+        return;
+    }
+    if let Some(notice) = notice_weak.upgrade() {
+        notice.set_peer_name(peer.into());
+        notice.set_message_text(text.into());
+        notice.window().set_size(slint::LogicalSize::new(
+            crate::chat_notice::NOTICE_SIZE.width as f32,
+            crate::chat_notice::NOTICE_SIZE.height as f32,
+        ));
+        if let Some(pos) = crate::chat_notice::desktop_bottom_right_position() {
+            notice
+                .window()
+                .set_position(slint::LogicalPosition::new(pos.x as f32, pos.y as f32));
+        }
+        let _ = notice.show();
     }
 }
 
@@ -1189,5 +1264,44 @@ mod tests {
         );
         // 本无被控会话：保持 None。
         assert_eq!(next_ctrl_session_after_end(None, "S1"), None);
+    }
+
+    #[test]
+    fn 登录服务器地址_高级项覆盖默认地址() {
+        assert_eq!(
+            selected_login_server("wss://rc.guoziweb.com/ws", " ws://172.16.76.1:8765/ws "),
+            "ws://172.16.76.1:8765/ws"
+        );
+        assert_eq!(
+            selected_login_server("wss://rc.guoziweb.com/ws", "   "),
+            "wss://rc.guoziweb.com/ws"
+        );
+    }
+
+    #[test]
+    fn 被控端新消息_仅面板未打开时触发自绘通知() {
+        assert!(should_show_controlled_chat_notice(false));
+        assert!(!should_show_controlled_chat_notice(true));
+    }
+
+    #[test]
+    fn 被控消息通知_自绘常驻并贴工作区右下角() {
+        assert_eq!(crate::chat_notice::auto_dismiss_ms(), None);
+
+        let pos = crate::chat_notice::bottom_right_position(
+            crate::chat_notice::WorkArea {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1040,
+            },
+            crate::chat_notice::NoticeSize {
+                width: 340,
+                height: 148,
+            },
+            18,
+        );
+
+        assert_eq!(pos, crate::chat_notice::NoticePosition { x: 1562, y: 874 });
     }
 }

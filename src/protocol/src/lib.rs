@@ -193,6 +193,8 @@ pub enum Message {
     IncomingControl {
         session_id: String,
         from: String,
+        #[serde(default)]
+        operator_username: Option<String>,
         mode: Mode,
         /// true=免同意直连（密码正确/强制），被控端跳过弹框直接进被控态；false=弹框等用户同意。
         #[serde(default)]

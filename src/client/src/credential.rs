@@ -18,6 +18,9 @@ pub struct Creds {
     pub token: String,
     /// 登录用户名（顶栏「已登录:<user>」展示用；非鉴权凭据）。
     pub user: String,
+    /// 签发该 token 的服务器地址。旧凭据没有此字段时为 None，回落启动默认地址。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
 }
 
 /// 凭据文件路径：`<state_dir>/credential.json`（与日志/config 同目录，见 `ohmydesk_state_dir`）。
@@ -105,6 +108,7 @@ mod tests {
         let c = Creds {
             token: "tok-abc123".into(),
             user: "alice".into(),
+            server: Some("ws://172.16.76.1:8765/ws".into()),
         };
         save_to(&p, &c);
         assert_eq!(load_from(&p), Some(c), "往返应一致");
@@ -122,6 +126,17 @@ mod tests {
         assert_eq!(load_from(&p), None, "清除后应得 None");
         // 重复 clear 不报错（文件已不存在）
         clear_at(&p);
+    }
+
+    #[test]
+    fn load_旧凭据缺server_兼容为空() {
+        let p = tmp("legacy-no-server");
+        std::fs::write(&p, r#"{"token":"tok-abc123","user":"alice"}"#).unwrap();
+        let c = load_from(&p).expect("旧凭据应兼容读取");
+        assert_eq!(c.token, "tok-abc123");
+        assert_eq!(c.user, "alice");
+        assert_eq!(c.server, None);
+        let _ = std::fs::remove_file(&p);
     }
 
     /// T007：文件损坏（非法 JSON）→ load 返回 None，不 panic。
