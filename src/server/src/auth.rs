@@ -9,8 +9,21 @@ use crate::users::{Role, UserRecord, UserStore};
 
 /// 旧版默认管理员账号，用于兼容 set-password 的缺省用户名。
 pub const DEFAULT_USER: &str = "admin";
-/// token 有效期（秒）：12 小时。
-const TOKEN_TTL_SECS: i64 = 12 * 3600;
+/// token 有效期（秒）默认值：7 天。
+/// 原 12h 对无人值守被控端过短——任一重连遇过期即 1008→回登录页掉线（rbac3 强制登录模型）。
+/// 可用 `OHMYDESK_TOKEN_TTL_SECS` 覆盖（无人值守 fleet 可调大）。注意：本 token 同时用于 web
+/// 管理端，过大增管理端会话暴露面；生产须配 `OHMYDESK_JWT_SECRET` 固定值，否则服务端重启即令全 fleet
+/// 令牌失效（见 rbac3 部署注意）。
+const TOKEN_TTL_SECS: i64 = 7 * 24 * 3600;
+
+/// token TTL：环境变量 `OHMYDESK_TOKEN_TTL_SECS` 优先（正整数秒），否则默认 [`TOKEN_TTL_SECS`]。
+fn token_ttl_secs() -> i64 {
+    std::env::var("OHMYDESK_TOKEN_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(TOKEN_TTL_SECS)
+}
 
 /// JWT 载荷。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +77,7 @@ impl Auth {
             sub: user_id.to_string(),
             username: username.to_string(),
             role: role.as_str().to_string(),
-            exp: now + TOKEN_TTL_SECS,
+            exp: now + token_ttl_secs(),
         };
         encode(
             &Header::default(),
