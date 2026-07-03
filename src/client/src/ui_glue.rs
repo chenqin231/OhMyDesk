@@ -619,6 +619,86 @@ fn next_ctrl_session_after_end(current: Option<&str>, ending_session_id: &str) -
     }
 }
 
+/// 登录 / 注销回调（客户端账号登录 + 归属绑定）。独立于 net 上行通道：
+/// - `on_do_login`：后台线程阻塞 ureq 调 `/api/login` → `invoke_from_event_loop` 回填 UI；
+///   成功则存盘凭据 + 经 `token_tx`(watch) 通知 `net::run` 携 token 上线（放行登录门，服务端派生 owner）。
+/// - `on_do_logout`：清凭据 + token 置 None（令 net 主动断开 WS + 回登录门）+ 回登录页。
+pub fn wire_login_callbacks(
+    ui: &AppWindow,
+    token_tx: std::sync::Arc<tokio::sync::watch::Sender<Option<String>>>,
+    server_url: String,
+) {
+    // on_do_login(user, pass, server_override)
+    {
+        let ui_weak = ui.as_weak();
+        let token_tx = token_tx.clone();
+        let default_server = server_url;
+        ui.on_do_login(move |user, pass, server_override| {
+            let user = user.to_string();
+            let pass = pass.to_string();
+            // 服务器地址：高级项非空则用它，否则用默认（env/OHMYDESK_SERVER）。
+            let server = {
+                let s = server_override.to_string();
+                if s.trim().is_empty() {
+                    default_server.clone()
+                } else {
+                    s.trim().to_string()
+                }
+            };
+            let ui_weak = ui_weak.clone();
+            let token_tx = token_tx.clone();
+            // 进入 loading 态（回调在 UI 线程，直接 set）。
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_login_loading(true);
+                ui.set_login_error("".into());
+            }
+            // 阻塞式 ureq 放后台线程，完成后投回 UI 线程回填。
+            std::thread::spawn(move || {
+                let result = crate::login::login(&server, &user, &pass);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
+                    ui.set_login_loading(false);
+                    match result {
+                        Ok(creds) => {
+                            crate::credential::save(&creds);
+                            ui.set_logged_user(creds.user.clone().into());
+                            ui.set_login_pass("".into()); // 清密码框
+                            ui.set_login_error("".into());
+                            ui.set_logged_in(true);
+                            // 放行 net 登录门：携 token 上线（服务端据此派生 owner）。
+                            let _ = token_tx.send(Some(creds.token));
+                        }
+                        Err(e) => {
+                            // 错密码：清空密码框、账号保留（AC-001-E1）；网络错则保留密码便于直接重试。
+                            if e == crate::login::LoginErr::BadCredential {
+                                ui.set_login_pass("".into());
+                            }
+                            ui.set_login_error(e.message().into());
+                        }
+                    }
+                });
+            });
+        });
+    }
+    // on_do_logout（S3 确定）
+    {
+        let ui_weak = ui.as_weak();
+        let token_tx = token_tx.clone();
+        ui.on_do_logout(move || {
+            crate::credential::clear();
+            let _ = token_tx.send(None); // 令 net 主动断开 WS + 回登录门（终端离线，归属服务端保留）
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_logged_in(false);
+                ui.set_connected(false);
+                ui.set_login_pass("".into());
+                ui.set_login_error("".into());
+            }
+        });
+    }
+}
+
 /// 拉 ToUi 流，逐条应用到 UI（invoke_from_event_loop），并维护主控/被控会话 id。
 pub async fn consume_to_ui(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<net::ToUi>,
@@ -627,6 +707,7 @@ pub async fn consume_to_ui(
     ctrl_session: SharedSession,
     ended_session: SharedSession,
     activity: std::sync::Arc<crate::activity::ClientActivityState>,
+    token_tx: std::sync::Arc<tokio::sync::watch::Sender<Option<String>>>,
 ) {
     // 诊断画面发虚：记录主控实际收到的帧分辨率，变化时打印（流畅=1280×720 / 高清=1920×1080 上限）。
     // 据此判断高清是否真生效、被控源分辨率多大。
@@ -855,6 +936,20 @@ pub async fn consume_to_ui(
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_connected(false);
                         ui.set_remote_status("与服务器断开，重连中…".into());
+                    }
+                });
+            }
+            net::ToUi::AuthExpired => {
+                // token 失效/过期（服务端 close 1008）：清凭据 + token 置 None（停重连循环，
+                // 否则会拿着过期 token 反复重连被拒），回登录页提示重新登录。
+                crate::credential::clear();
+                let _ = token_tx.send(None);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_connected(false);
+                        ui.set_logged_in(false);
+                        ui.set_login_pass("".into());
+                        ui.set_login_error("登录已过期，请重新登录".into());
                     }
                 });
             }

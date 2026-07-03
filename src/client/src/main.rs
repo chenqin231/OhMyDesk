@@ -16,6 +16,7 @@ mod activity;
 mod adaptive;
 mod asset;
 mod capture;
+mod credential;
 mod elevate;
 mod suwen;
 mod exec;
@@ -25,6 +26,7 @@ mod render_mode;
 mod geom;
 mod history;
 mod inject;
+mod login;
 mod net;
 mod transfer;
 mod ui_glue;
@@ -82,6 +84,13 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(detect_user);
     let server_url = std::env::var("OHMYDESK_SERVER").unwrap_or_else(|_| default_server_url());
 
+    // 登录门（D10）：启动读盘凭据。有效则自动上线（跳过 S1）；无则显示登录页、net 阻塞在登录门。
+    // token 用 watch 广播给 net::run：登录成功 send Some(token) 放行、注销 send None 断开回门。
+    let creds0 = credential::load();
+    let (token_tx, token_rx) =
+        tokio::sync::watch::channel::<Option<String>>(creds0.as_ref().map(|c| c.token.clone()));
+    let token_tx = std::sync::Arc::new(token_tx);
+
     let info = asset::collect(&user);
     let self_id = info.id.clone();
     tracing::info!(
@@ -94,6 +103,11 @@ fn main() -> anyhow::Result<()> {
     let ui = AppWindow::new()?;
     ui.set_app_version(env!("CARGO_PKG_VERSION").into()); // 标题栏「OhMyDesk v{版本} 极速远控」
     ui.set_self_id(ui_glue::group_digits(&self_id).into());
+    // 登录门初始态：有有效凭据 → 已登录（自动上线）；否则显示登录页。
+    ui.set_logged_in(creds0.is_some());
+    if let Some(c) = &creds0 {
+        ui.set_logged_user(c.user.clone().into());
+    }
     // 最近连接历史（本地持久化）初始填充
     ui.set_history(ui_glue::build_history_model(&history::load(), net::now()));
 
@@ -156,6 +170,8 @@ fn main() -> anyhow::Result<()> {
     ui.set_diag_dir(ohmydesk_state_dir().join("diag").to_string_lossy().to_string().into());
     // UI 回调注册（UI 线程）
     ui_glue::wire_ui_callbacks(&ui, &from_ui_tx, &cur_session, &ctrl_session, &ended_session, &activity, &tele_tx);
+    // 登录 / 注销回调（后台 ureq 登录 + token watch 通知 net）。
+    ui_glue::wire_login_callbacks(&ui, token_tx.clone(), server_url.clone());
 
     // 后台 tokio runtime
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -163,7 +179,7 @@ fn main() -> anyhow::Result<()> {
         .build()?;
     // 更新守护（独立 std 线程，在 to_ui_tx move 进 net::run 之前 clone）
     update::spawn_update_daemon(server_url.clone(), self_id.clone(), activity.clone(), to_ui_tx.clone(), nudge_rx);
-    rt.spawn(net::run(server_url, info, to_ui_tx, from_ui_rx, tele_tx.clone()));
+    rt.spawn(net::run(server_url, info, to_ui_tx, from_ui_rx, tele_tx.clone(), token_rx));
     rt.spawn(ui_glue::consume_to_ui(
         to_ui_rx,
         ui.as_weak(),
@@ -171,6 +187,7 @@ fn main() -> anyhow::Result<()> {
         ctrl_session,
         ended_session,
         activity.clone(),
+        token_tx.clone(),
     ));
     rt.spawn(workers::consume_inject(inject_rx));
     rt.spawn(workers::consume_screenshot(shot_rx, from_ui_tx.clone()));
@@ -236,7 +253,7 @@ fn lock_x11_session() {
 }
 
 /// 跨平台状态目录：Win=%APPDATA%/OhMyDesk，Linux=~/.local/state/ohmydesk。
-fn ohmydesk_state_dir() -> std::path::PathBuf {
+pub(crate) fn ohmydesk_state_dir() -> std::path::PathBuf {
     if let Some(pd) = directories::ProjectDirs::from("", "", "OhMyDesk") {
         #[cfg(windows)]
         { return pd.data_dir().to_path_buf(); }
