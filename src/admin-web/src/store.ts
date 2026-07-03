@@ -49,6 +49,9 @@ const pullBuffers = new Map<string, { name: string; parts: Uint8Array[] }>();
 type State = {
   // 终端列表（从 endpoint_list 推送更新）
   endpoints: EndpointView[];
+  // 是否已收到过至少一帧 endpoint_list。用于区分「加载中」与「已加载但名下无终端」
+  // （按 owner 隔离后普通账号名下可能为空，不能再把空列表当作加载中）。
+  endpointsLoaded: boolean;
   // 审计日志（fetchAudit 返回）
   auditLogs: AuditLog[];
   // 会话列表（mock 预生成）
@@ -110,6 +113,7 @@ const selfId = "admin-" + Math.random().toString(36).slice(2, 8);
 
 export const useStore = create<State>((set, get) => ({
   endpoints: [],
+  endpointsLoaded: false,
   auditLogs: [],
   sessions: [],
   remoteSessionId: null,
@@ -136,7 +140,7 @@ export const useStore = create<State>((set, get) => ({
       const p = env.payload;
 
       if (p.type === "endpoint_list") {
-        set({ endpoints: p.endpoints });
+        set({ endpoints: p.endpoints, endpointsLoaded: true });
         return;
       }
 

@@ -140,15 +140,6 @@ impl Hub {
         }
     }
 
-    /// 广播给所有以 "admin-" 开头的连接
-    pub fn broadcast_admins(&self, json: &str) {
-        for kv in self.clients.iter() {
-            if kv.key().starts_with("admin-") {
-                let _ = kv.value().send(json.to_string());
-            }
-        }
-    }
-
     /// 向所有在线 agent（非 admin）广播截图指令
     pub fn broadcast_agents(&self, json: &str) {
         for kv in self.clients.iter() {
@@ -158,18 +149,34 @@ impl Hub {
         }
     }
 
-    /// 推送最新 endpoint_list 给所有 admin 连接；now 为秒级时间戳
+    /// 推送最新 endpoint_list 给每个 admin 连接——**逐连接按归属过滤**（行级隔离核心，T019）。
+    /// 每个 admin 只收到 owner==自己 的终端；superadmin 收全量（含 owner=None 旧端）。
+    /// 从「全量广播」改为「逐 admin 序列化」：他人终端上线触发 push 时，普通 admin 通道任何一帧
+    /// 都不含他人终端（推送级隔离，AC-005-E2）。now 为秒级时间戳。
     pub fn push_list(&self, now: i64) {
-        let env = Envelope {
-            from: "server".into(),
-            to: None,
-            ts: now,
-            payload: Message::EndpointList {
-                endpoints: self.reg.views(now),
-            },
-        };
-        if let Ok(json) = serde_json::to_string(&env) {
-            self.broadcast_admins(&json);
+        // 全量视图**只算一次**，逐 admin 从 all 过滤（仅克隆命中子集），避免每 admin 重算 views(now)。
+        // 注：遍历 clients（DashMap）时对每个 admin 查 actors（另一 map）+ 直接 send，
+        // 不复用 send_to（会二次锁 clients），避免同 map 重入。
+        let all = self.reg.views(now);
+        for kv in self.clients.iter() {
+            let conn_id = kv.key();
+            if !conn_id.starts_with("admin-") {
+                continue;
+            }
+            let (viewer, is_super) = match self.actor_of(conn_id) {
+                Some(a) => (Some(a.user_id), a.is_superadmin),
+                None => (None, false), // 无身份 admin（不应出现）→ 空集，绝不泄露
+            };
+            let endpoints = Registry::filter_visible(&all, viewer.as_deref(), is_super);
+            let env = Envelope {
+                from: "server".into(),
+                to: Some(conn_id.clone()),
+                ts: now,
+                payload: Message::EndpointList { endpoints },
+            };
+            if let Ok(json) = serde_json::to_string(&env) {
+                let _ = kv.value().send(json);
+            }
         }
     }
 
@@ -278,7 +285,11 @@ impl Hub {
         match &env.payload {
             // ── 注册（W0-1：回发 RegisterAck；刷新注册表 + 广播列表）──────────
             Message::Register { info, password } => {
-                self.reg.upsert(*info.clone(), password.clone(), now);
+                // 归属绑定（反自报伪造）：owner_id 由服务端从连接绑定身份（WS token→JWT 派生）注入，
+                // **忽略 info 内任何自报归属**——EndpointInfo 结构上无 owner 字段，且此处只读连接身份。
+                // 无 token 旧端 actor_of=None → owner=None（仅 superadmin 可见），不破坏现网。
+                let owner = self.actor_of(&env.from).map(|a| a.user_id);
+                self.reg.upsert(*info.clone(), password.clone(), now, owner);
                 self.send_ack(&env.from, now);
                 self.push_list(now);
             }
@@ -1015,6 +1026,9 @@ mod tests {
         let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
         hub.add_client("admin-x".into(), admin_tx);
         hub.add_client("ep-victim".into(), victim_tx);
+        // 归属范围闸（T020）：ep-victim 须归属该操作人（u-op）才可被其远控；
+        // 否则即便持 use_remote 也越权被拒（见 connect_request_归属范围闸）。
+        hub.reg.upsert(ep_owned("ep-victim"), "pw".into(), 200, Some("u-op".into()));
         hub.bind_actor(
             "admin-x",
             ActorIdentity {
@@ -1045,8 +1059,18 @@ mod tests {
             .expect("含 use_remote，被控端应收到 IncomingControl");
         let got_env: Envelope = serde_json::from_str(&got).unwrap();
         assert!(
-            matches!(got_env.payload, Message::IncomingControl { auto_accept: true, .. }),
+            matches!(&got_env.payload, Message::IncomingControl { auto_accept: true, .. }),
             "force 直连应 auto_accept=true"
+        );
+        assert!(
+            matches!(
+                &got_env.payload,
+                Message::IncomingControl {
+                    operator_username: Some(name),
+                    ..
+                } if name == "operator1"
+            ),
+            "被控端应收到操作者账号名而不是 admin 连接 id"
         );
 
         // 会话写入操作人身份（operator_*，tier 写 user）
@@ -1161,5 +1185,283 @@ mod tests {
             Message::Frame { seq, .. } => assert_eq!(seq, 1, "drop-stale：应保留最新 seq=1"),
             other => panic!("应为 Frame，实际 {other:?}"),
         }
+    }
+
+    /// T006【RED】归属绑定 + 反伪造（AC-002-H1 / AC-002-E1）：
+    /// token=A 的被控端连接（conn_id=终端 id）发 Register → owner_id 由服务端从连接绑定身份
+    /// （JWT 派生）注入为 A.id，**与 info 内容无关**（EndpointInfo 结构上无 owner 字段，客户端无从自报）。
+    /// A 视图可见该端、B 视图不可见——越权归属被结构性阻断。
+    #[tokio::test]
+    async fn register_从连接身份派生_owner_忽略自报() {
+        let hub = test_hub();
+        // 模拟 token=A 的被控端连接：连接 id = 终端 id = ep-001，绑定操作人身份 A(ua)。
+        hub.bind_actor(
+            "ep-001",
+            ActorIdentity {
+                user_id: "ua".into(),
+                username: "alice".into(),
+                role: "user".into(),
+                permissions: crate::users::PermissionSet::default(),
+                is_superadmin: false,
+            },
+        );
+
+        let env = Envelope {
+            from: "ep-001".into(),
+            to: None,
+            ts: 100,
+            payload: Message::Register {
+                info: Box::new(protocol::EndpointInfo::sample()), // id=ep-001
+                password: "123456".into(),
+            },
+        };
+        hub.handle(env, 100).await;
+
+        // owner_id 落库为连接身份 ua，而非任何 info 自报值。
+        let sup = hub.reg.views_visible_to(100, None, true);
+        assert_eq!(sup.len(), 1);
+        assert_eq!(
+            sup[0].owner_id.as_deref(),
+            Some("ua"),
+            "owner 必须源自连接 JWT 身份，而非客户端自报"
+        );
+        // 反越权：A 可见、B 不可见。
+        assert_eq!(hub.reg.views_visible_to(100, Some("ua"), false).len(), 1);
+        assert_eq!(hub.reg.views_visible_to(100, Some("ub"), false).len(), 0);
+    }
+
+    // ── US2 测试辅助 ────────────────────────────────────────────────────
+    fn ep_owned(id: &str) -> protocol::EndpointInfo {
+        let mut e = protocol::EndpointInfo::sample();
+        e.id = id.to_string();
+        e
+    }
+    fn actor_of_uid(uid: &str, is_super: bool) -> ActorIdentity {
+        ActorIdentity {
+            user_id: uid.to_string(),
+            username: uid.to_string(),
+            role: if is_super { "superadmin" } else { "user" }.to_string(),
+            permissions: crate::users::PermissionSet::parse("view_assets,view_grid,use_remote"),
+            is_superadmin: is_super,
+        }
+    }
+    /// 抽取某通道收到的最后一条 EndpointList 的 id 集合（排序）。
+    fn list_ids(rx: &mut mpsc::UnboundedReceiver<String>) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        while let Ok(s) = rx.try_recv() {
+            let env: Envelope = serde_json::from_str(&s).unwrap();
+            if let Message::EndpointList { endpoints } = env.payload {
+                out = endpoints.into_iter().map(|v| v.info.id).collect();
+                out.sort();
+            }
+        }
+        out
+    }
+
+    /// T016【RED】push_list 逐 admin 按 owner 过滤；superadmin 全量；推送级隔离（AC-005-H1/H2/E2）。
+    #[tokio::test]
+    async fn push_list_每admin按owner过滤() {
+        let hub = test_hub();
+        hub.reg.upsert(ep_owned("ep-a"), "pw".into(), 100, Some("ua".into()));
+        hub.reg.upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
+
+        let (a_tx, mut a_rx) = mpsc::unbounded_channel::<String>();
+        let (b_tx, mut b_rx) = mpsc::unbounded_channel::<String>();
+        let (s_tx, mut s_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-a".into(), a_tx);
+        hub.add_client("admin-b".into(), b_tx);
+        hub.add_client("admin-s".into(), s_tx);
+        hub.bind_actor("admin-a", actor_of_uid("ua", false));
+        hub.bind_actor("admin-b", actor_of_uid("ub", false));
+        hub.bind_actor("admin-s", actor_of_uid("us", true));
+
+        hub.push_list(100);
+        assert_eq!(list_ids(&mut a_rx), vec!["ep-a"], "admin-A 仅见自己归属");
+        assert_eq!(list_ids(&mut b_rx), vec!["ep-b"], "admin-B 仅见自己归属");
+        assert_eq!(list_ids(&mut s_rx), vec!["ep-a", "ep-b"], "superadmin 全量");
+
+        // AC-005-E2 推送级：ep-b 再触发 push，admin-A 通道任何帧都不含 ep-b。
+        hub.reg.upsert(ep_owned("ep-b"), "pw".into(), 101, Some("ub".into()));
+        hub.push_list(101);
+        assert_eq!(list_ids(&mut a_rx), vec!["ep-a"], "推送级隔离：admin-A 永不含他人终端");
+    }
+
+    /// T017【RED】ConnectRequest 归属范围闸（AC-006-H1/E1/E2）：
+    /// A 控他人/NULL 终端→拒绝(不建会话)+回带 reason；A 控自有→放行；superadmin→放行。
+    #[tokio::test]
+    async fn connect_request_归属范围闸() {
+        let hub = test_hub();
+        hub.reg.upsert(ep_owned("ep-a"), "pw".into(), 100, Some("ua".into()));
+        hub.reg.upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
+        hub.reg.upsert(ep_owned("ep-n"), "pw".into(), 100, None);
+        for id in ["ep-a", "ep-b", "ep-n"] {
+            let (t, _r) = mpsc::unbounded_channel::<String>();
+            hub.add_client(id.into(), t);
+        }
+
+        // 发起方 A（use_remote 权限，归属 ua）
+        let (a_tx, mut a_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-a".into(), a_tx);
+        hub.bind_actor("admin-a", actor_of_uid("ua", false));
+
+        let req = |target: &str| Envelope {
+            from: "admin-a".into(),
+            to: None,
+            ts: 200,
+            payload: Message::ConnectRequest {
+                mode: Mode::A,
+                target: target.into(),
+                password: None,
+                force: true,
+            },
+        };
+
+        // A 控他人终端 ep-b → 拒绝：不建会话 + 回 Reject「无权远控该终端」
+        hub.handle(req("ep-b"), 200).await;
+        assert!(
+            hub.sessions.active_sessions().is_empty(),
+            "越权远控不应建会话"
+        );
+        let reject = a_rx.try_recv().expect("越权应回拒连消息");
+        let env: Envelope = serde_json::from_str(&reject).unwrap();
+        match env.payload {
+            Message::Reject { reason, .. } => {
+                assert_eq!(reason, "无权远控该终端", "拒连 reason 供 web RejectedCard 渲染")
+            }
+            other => panic!("应为 Reject，实际 {other:?}"),
+        }
+
+        // A 控 owner=None 旧端 → 同样拒绝（非 superadmin）
+        hub.handle(req("ep-n"), 200).await;
+        assert!(hub.sessions.active_sessions().is_empty(), "控 NULL 端不应建会话");
+        assert!(a_rx.try_recv().is_ok(), "控 NULL 端应回拒连");
+
+        // A 控自有终端 ep-a → 放行（mode A force → 建 Active 会话）
+        hub.handle(req("ep-a"), 200).await;
+        assert_eq!(
+            hub.sessions.active_sessions().len(),
+            1,
+            "控自有终端应建会话"
+        );
+
+        // superadmin 控他人终端 → 放行
+        let hub2 = test_hub();
+        hub2.reg.upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
+        let (tb, _rb) = mpsc::unbounded_channel::<String>();
+        hub2.add_client("ep-b".into(), tb);
+        let (sa_tx, _sa_rx) = mpsc::unbounded_channel::<String>();
+        hub2.add_client("admin-s".into(), sa_tx);
+        hub2.bind_actor("admin-s", actor_of_uid("us", true));
+        hub2.handle(
+            Envelope {
+                from: "admin-s".into(),
+                to: None,
+                ts: 200,
+                payload: Message::ConnectRequest {
+                    mode: Mode::A,
+                    target: "ep-b".into(),
+                    password: None,
+                    force: true,
+                },
+            },
+            200,
+        )
+        .await;
+        assert_eq!(
+            hub2.sessions.active_sessions().len(),
+            1,
+            "superadmin 控任意终端放行"
+        );
+    }
+
+    /// T025（AC-008-H1）：无 token 旧端 Register → 上线成功、owner=NULL；
+    /// 普通账号不可见、superadmin 可见（不因缺 token 被拒——gate 只拦 admin- 前缀）。
+    #[tokio::test]
+    async fn register_无token旧端_owner_null_仅superadmin可见() {
+        let hub = test_hub();
+        // 不 bind_actor（模拟无 token 旧端连接）→ actor_of=None → owner=None。
+        let env = Envelope {
+            from: "ep-old".into(),
+            to: None,
+            ts: 100,
+            payload: Message::Register {
+                info: Box::new(ep_owned("ep-old")),
+                password: "pw".into(),
+            },
+        };
+        hub.handle(env, 100).await;
+
+        // 上线成功、owner=NULL。
+        let sup = hub.reg.views_visible_to(100, None, true);
+        assert_eq!(sup.len(), 1, "无 token 旧端应正常上线");
+        assert_eq!(sup[0].owner_id, None, "无 token 旧端 owner=NULL");
+        // 普通账号不可见（b）。
+        assert!(
+            hub.reg.views_visible_to(100, Some("ua"), false).is_empty(),
+            "普通账号不可见无归属旧端"
+        );
+    }
+
+    /// T027（AC-008-H1/E1 · c 点）：owner=None 旧端远控守卫——普通账号控旧端被拒（不建会话），
+    /// superadmin 控旧端放行。与 T025（a/b）合起来坐实旧端「仅 superadmin 可见/可控」。
+    #[tokio::test]
+    async fn owner_none_旧端_远控守卫() {
+        // 普通账号 A 控 owner=None 旧端 → 拒绝。
+        let hub = test_hub();
+        hub.reg.upsert(ep_owned("ep-old"), "pw".into(), 100, None);
+        let (t, _r) = mpsc::unbounded_channel::<String>();
+        hub.add_client("ep-old".into(), t);
+        let (a_tx, mut a_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-a".into(), a_tx);
+        hub.bind_actor("admin-a", actor_of_uid("ua", false));
+        hub.handle(
+            Envelope {
+                from: "admin-a".into(),
+                to: None,
+                ts: 200,
+                payload: Message::ConnectRequest {
+                    mode: Mode::A,
+                    target: "ep-old".into(),
+                    password: None,
+                    force: true,
+                },
+            },
+            200,
+        )
+        .await;
+        assert!(
+            hub.sessions.active_sessions().is_empty(),
+            "普通账号控无归属旧端不应建会话"
+        );
+        assert!(a_rx.try_recv().is_ok(), "应回拒连消息");
+
+        // superadmin 控同一 owner=None 旧端 → 放行。
+        let hub2 = test_hub();
+        hub2.reg.upsert(ep_owned("ep-old"), "pw".into(), 100, None);
+        let (t2, _r2) = mpsc::unbounded_channel::<String>();
+        hub2.add_client("ep-old".into(), t2);
+        let (s_tx, _s_rx) = mpsc::unbounded_channel::<String>();
+        hub2.add_client("admin-s".into(), s_tx);
+        hub2.bind_actor("admin-s", actor_of_uid("us", true));
+        hub2.handle(
+            Envelope {
+                from: "admin-s".into(),
+                to: None,
+                ts: 200,
+                payload: Message::ConnectRequest {
+                    mode: Mode::A,
+                    target: "ep-old".into(),
+                    password: None,
+                    force: true,
+                },
+            },
+            200,
+        )
+        .await;
+        assert_eq!(
+            hub2.sessions.active_sessions().len(),
+            1,
+            "superadmin 可控无归属旧端"
+        );
     }
 }

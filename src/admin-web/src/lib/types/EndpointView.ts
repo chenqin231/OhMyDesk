@@ -4,4 +4,9 @@ import type { EndpointInfo } from "./EndpointInfo";
 /**
  * 推给管理端的精简视图（含在线态 + 信创标签，不含密码）
  */
-export type EndpointView = { info: EndpointInfo, online: boolean, last_seen: bigint, xinchuang: string, };
+export type EndpointView = { info: EndpointInfo, online: boolean, last_seen: bigint, xinchuang: string, 
+/**
+ * 归属账号 user_id（服务端从连接 JWT 派生，非客户端自报）。
+ * `Option` 兜底旧端 serde：旧 JSON 缺此键反序列化为 None，不破坏兼容。
+ */
+owner_id: string | null, };
