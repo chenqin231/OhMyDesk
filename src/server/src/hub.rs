@@ -278,8 +278,11 @@ impl Hub {
         match &env.payload {
             // ── 注册（W0-1：回发 RegisterAck；刷新注册表 + 广播列表）──────────
             Message::Register { info, password } => {
-                // T005 Foundational：暂传 None 保持行为不变；T009 改为从连接 JWT 注入 owner。
-                self.reg.upsert(*info.clone(), password.clone(), now, None);
+                // 归属绑定（反自报伪造）：owner_id 由服务端从连接绑定身份（WS token→JWT 派生）注入，
+                // **忽略 info 内任何自报归属**——EndpointInfo 结构上无 owner 字段，且此处只读连接身份。
+                // 无 token 旧端 actor_of=None → owner=None（仅 superadmin 可见），不破坏现网。
+                let owner = self.actor_of(&env.from).map(|a| a.user_id);
+                self.reg.upsert(*info.clone(), password.clone(), now, owner);
                 self.send_ack(&env.from, now);
                 self.push_list(now);
             }
@@ -1162,5 +1165,48 @@ mod tests {
             Message::Frame { seq, .. } => assert_eq!(seq, 1, "drop-stale：应保留最新 seq=1"),
             other => panic!("应为 Frame，实际 {other:?}"),
         }
+    }
+
+    /// T006【RED】归属绑定 + 反伪造（AC-002-H1 / AC-002-E1）：
+    /// token=A 的被控端连接（conn_id=终端 id）发 Register → owner_id 由服务端从连接绑定身份
+    /// （JWT 派生）注入为 A.id，**与 info 内容无关**（EndpointInfo 结构上无 owner 字段，客户端无从自报）。
+    /// A 视图可见该端、B 视图不可见——越权归属被结构性阻断。
+    #[tokio::test]
+    async fn register_从连接身份派生_owner_忽略自报() {
+        let hub = test_hub();
+        // 模拟 token=A 的被控端连接：连接 id = 终端 id = ep-001，绑定操作人身份 A(ua)。
+        hub.bind_actor(
+            "ep-001",
+            ActorIdentity {
+                user_id: "ua".into(),
+                username: "alice".into(),
+                role: "user".into(),
+                permissions: crate::users::PermissionSet::default(),
+                is_superadmin: false,
+            },
+        );
+
+        let env = Envelope {
+            from: "ep-001".into(),
+            to: None,
+            ts: 100,
+            payload: Message::Register {
+                info: Box::new(protocol::EndpointInfo::sample()), // id=ep-001
+                password: "123456".into(),
+            },
+        };
+        hub.handle(env, 100).await;
+
+        // owner_id 落库为连接身份 ua，而非任何 info 自报值。
+        let sup = hub.reg.views_visible_to(100, None, true);
+        assert_eq!(sup.len(), 1);
+        assert_eq!(
+            sup[0].owner_id.as_deref(),
+            Some("ua"),
+            "owner 必须源自连接 JWT 身份，而非客户端自报"
+        );
+        // 反越权：A 可见、B 不可见。
+        assert_eq!(hub.reg.views_visible_to(100, Some("ua"), false).len(), 1);
+        assert_eq!(hub.reg.views_visible_to(100, Some("ub"), false).len(), 0);
     }
 }

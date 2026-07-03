@@ -70,6 +70,8 @@ pub enum ToUi {
     SessionEnded { session_id: String },
     /// 连接断开（UI 可提示"重连中…"）。
     Disconnected,
+    /// token 失效/过期（服务端 close 1008）：UI 回登录页 + inline「登录已过期，请重新登录」。
+    AuthExpired,
     /// 主控端收被控回执的命令执行结果（远程命令标签渲染）。
     /// 下行不带 command 原文：主控发命令时已在 UI 本地回显命令，回执仅追加结果块。
     ExecResult {
@@ -216,11 +218,33 @@ pub async fn run(
     to_ui: mpsc::UnboundedSender<ToUi>,
     mut from_ui: mpsc::UnboundedReceiver<FromUi>,
     telemetry_tx: mpsc::UnboundedSender<crate::telemetry::TelemetryMsg>,
+    mut token_rx: tokio::sync::watch::Receiver<Option<String>>,
 ) {
     // 密码用 Arc<Mutex> 共享：刷新时 connect_once 内就地更新，重连后续轮沿用最新值。
     let password = std::sync::Arc::new(std::sync::Mutex::new(format!("{:06}", rand_6())));
     loop {
-        match conn::connect_once(&server_url, &info, &password, &to_ui, &mut from_ui, &telemetry_tx).await {
+        // 登录门（D10）：未登录（token=None）时阻塞在此，绝不裸连——WS 必须携带 token 上线，
+        // 服务端据此派生 owner。注销后 token 置 None，下一轮回落到这里等待重新登录。
+        let token = loop {
+            if let Some(t) = token_rx.borrow().clone() {
+                break t;
+            }
+            if token_rx.changed().await.is_err() {
+                return; // Sender 已 drop（应用退出）→ 结束 run
+            }
+        };
+        match conn::connect_once(
+            &server_url,
+            &info,
+            &password,
+            &to_ui,
+            &mut from_ui,
+            &telemetry_tx,
+            &token,
+            &mut token_rx,
+        )
+        .await
+        {
             Ok(()) => tracing::warn!("连接正常关闭，3s 后重连"),
             Err(e) => tracing::warn!("连接异常：{e}，3s 后重连"),
         }
