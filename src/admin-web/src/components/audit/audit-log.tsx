@@ -242,7 +242,7 @@ export function AuditLog() {
             {rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
                 <TableCell colSpan={7} className="h-32 text-center text-sm text-muted-foreground">
-                  未找到匹配的审计记录
+                  {records.length === 0 ? "暂无记录" : "未找到匹配的审计记录"}
                 </TableCell>
               </TableRow>
             )}

@@ -1014,6 +1014,7 @@ async fn login(
             StatusCode::OK,
             Json(json!({
                 "token": token,
+                "id": user.id,
                 "user": user.username,
                 "tier": user.tier(),
                 "permissions": user.permissions.keys(),
@@ -1037,6 +1038,7 @@ async fn login(
 /// GET /api/me（需登录）→ 回请求 token 对应的用户 tier + 权限集。
 async fn me(State(_s): State<HttpState>, user: AuthUser) -> impl IntoResponse {
     Json(json!({
+        "id": user.id,
         "user": user.username,
         "tier": user.tier(),
         "permissions": user.permissions.keys(),
@@ -1250,7 +1252,13 @@ async fn list_sessions(State(s): State<HttpState>, user: AuthUser) -> impl IntoR
         return err.into_response();
     }
 
-    let sessions = s.audit.query_sessions().await;
+    // 归属隔离：普通账号仅见自己负责终端的会话；superadmin 全量（None=不过滤）。
+    let owner_scope = if user.is_superadmin() {
+        None
+    } else {
+        Some(user.id.as_str())
+    };
+    let sessions = s.audit.query_sessions(owner_scope).await;
     Json(sessions).into_response()
 }
 
@@ -1270,9 +1278,15 @@ async fn query_audit(
         return err.into_response();
     }
 
+    // 归属隔离：普通账号仅见自己负责终端相关审计（经 session.to_id→owner）；superadmin 全量。
+    let owner_scope = if user.is_superadmin() {
+        None
+    } else {
+        Some(user.id.as_str())
+    };
     let logs = s
         .audit
-        .query_audit(q.endpoint.as_deref(), q.from, q.to)
+        .query_audit(q.endpoint.as_deref(), q.from, q.to, owner_scope)
         .await;
     (StatusCode::OK, Json(logs)).into_response()
 }
@@ -1293,9 +1307,15 @@ async fn query_login_logs(
         return err.into_response();
     }
 
+    // 归属隔离：登录日志无终端归属，普通账号只看自己（按 username）；superadmin 全量。
+    let name_scope = if user.is_superadmin() {
+        None
+    } else {
+        Some(user.username.as_str())
+    };
     let logs = s
         .login_log
-        .query(q.limit.unwrap_or(100), q.offset.unwrap_or(0))
+        .query(q.limit.unwrap_or(100), q.offset.unwrap_or(0), name_scope)
         .await;
     (StatusCode::OK, Json(logs)).into_response()
 }

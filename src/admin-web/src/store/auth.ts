@@ -46,6 +46,8 @@ export type AdminUser = {
 
 type AuthState = {
   token: string | null;
+  // 当前登录账号 user_id（= server users.id）。支撑 superadmin 视图按 owner_id 归属展示终端。
+  userId: string | null;
   user: string | null;
   tier: Tier | null;
   permissions: Permission[] | null;
@@ -84,6 +86,7 @@ type AuthState = {
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   token: getToken(),
+  userId: null,
   user: null,
   tier: null,
   permissions: null,
@@ -106,6 +109,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     const data = (await res.json()) as {
       token: string;
+      id: string;
       user: string;
       tier: Tier;
       permissions: Permission[];
@@ -114,6 +118,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // 登录直接带回身份：标记已加载、清错误，避免守卫再走一次 loadMe 加载态
     set({
       token: data.token,
+      userId: data.id,
       user: data.user,
       tier: data.tier,
       permissions: data.permissions,
@@ -127,6 +132,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     setStoredToken(null);
     set({
       token: null,
+      userId: null,
       user: null,
       tier: null,
       permissions: null,
@@ -175,11 +181,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return;
       }
       const data = (await res.json()) as {
+        id: string;
         user: string;
         tier: Tier;
         permissions: Permission[];
       };
       set({
+        userId: data.id,
         user: data.user,
         tier: data.tier,
         permissions: data.permissions,

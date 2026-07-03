@@ -55,21 +55,32 @@ impl LoginLogStore {
     }
 
     /// 分页查询（按 ts 倒序）。limit 钳制 [1,200]，offset >=0。
-    pub async fn query(&self, limit: i64, offset: i64) -> Vec<LoginLogEntry> {
+    /// `username_scope`：None=superadmin 全量；Some(name)=仅该账号自己的登录记录
+    /// （登录日志无终端归属，按 username 过滤——普通账号只看自己的登录历史）。
+    pub async fn query(
+        &self,
+        limit: i64,
+        offset: i64,
+        username_scope: Option<&str>,
+    ) -> Vec<LoginLogEntry> {
         let Some(db) = &self.db else {
             return vec![];
         };
         let limit = limit.clamp(1, 200);
         let offset = offset.max(0);
-        match sqlx::query_as::<_, LoginLogRow>(
-            "SELECT id, ts, username, ip, user_agent, success, reason \
-             FROM login_log ORDER BY ts DESC LIMIT ? OFFSET ?",
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(db)
-        .await
-        {
+        let mut sql = String::from(
+            "SELECT id, ts, username, ip, user_agent, success, reason FROM login_log",
+        );
+        if username_scope.is_some() {
+            sql.push_str(" WHERE username = ?");
+        }
+        sql.push_str(" ORDER BY ts DESC LIMIT ? OFFSET ?");
+
+        let mut q = sqlx::query_as::<_, LoginLogRow>(&sql);
+        if let Some(u) = username_scope {
+            q = q.bind(u);
+        }
+        match q.bind(limit).bind(offset).fetch_all(db).await {
             Ok(rows) => rows.into_iter().map(LoginLogEntry::from).collect(),
             Err(e) => {
                 tracing::warn!("查询 login_log 失败: {e}");
@@ -143,7 +154,38 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(store.record("admin", Some("1.1.1.1"), None, true, None));
         rt.block_on(async {
-            assert!(store.query(50, 0).await.is_empty());
+            assert!(store.query(50, 0, None).await.is_empty());
         });
+    }
+
+    /// T018：登录日志按 username 隔离——普通账号只看自己的登录记录；superadmin 全量。
+    #[tokio::test]
+    async fn query_按username隔离() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE login_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, \
+             username TEXT NOT NULL, ip TEXT, user_agent TEXT, success INTEGER NOT NULL, reason TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let store = LoginLogStore::new(Some(pool));
+        store.record("alice", Some("1.1.1.1"), None, true, None).await;
+        store
+            .record("alice", Some("1.1.1.1"), None, false, Some("密码错"))
+            .await;
+        store.record("bob", Some("2.2.2.2"), None, true, None).await;
+
+        // alice 仅见自己 2 条。
+        let a = store.query(50, 0, Some("alice")).await;
+        assert_eq!(a.len(), 2, "普通账号只看自己登录记录");
+        assert!(a.iter().all(|e| e.username == "alice"));
+        // superadmin 全量 3 条。
+        assert_eq!(store.query(50, 0, None).await.len(), 3);
     }
 }

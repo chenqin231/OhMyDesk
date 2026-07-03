@@ -160,6 +160,11 @@ impl Registry {
         self.map.get(id).map(|e| e.info.clone())
     }
 
+    /// 查某终端归属账号 user_id（远控范围闸判定用）。终端不存在或无归属均返回 None。
+    pub fn owner_of(&self, id: &str) -> Option<String> {
+        self.map.get(id).and_then(|e| e.owner.clone())
+    }
+
     /// 删除终端记录（管理端手动清理离线/冗余）。返回是否存在并删除。
     /// 注意：删除在线 agent 后，其心跳 touch 不会重建（仅刷新已存在项）；下次重连 Register 才会重新出现。
     pub fn remove(&self, id: &str) -> bool {
