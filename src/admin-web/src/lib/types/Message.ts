@@ -12,11 +12,11 @@ import type { RamInfo } from "./RamInfo";
  * WS 统一消息体；`#[serde(tag="type")]` **内部 tag**——type 在 payload 对象内（非信封顶层），
  * 前端按 `env.payload.type` 判别，Rust 按枚举变体匹配（裁决 W0-3）。
  */
-export type Message = { "type": "register", info: EndpointInfo, password: string, } | { "type": "register_ack", id: string, } | { "type": "heartbeat", id: string, ram: RamInfo, } | { "type": "endpoint_list", endpoints: Array<EndpointView>, } | { "type": "connect_request", mode: Mode, target: string, password: string | null,
+export type Message = { "type": "register", info: EndpointInfo, password: string, } | { "type": "register_ack", id: string, } | { "type": "heartbeat", id: string, ram: RamInfo, } | { "type": "endpoint_list", endpoints: Array<EndpointView>, } | { "type": "connect_request", mode: Mode, target: string, password: string | null, 
 /**
  * WEB 强制远程：免被控端同意直连（仅 admin- 发起方有效，server 端硬校验）。
  */
-force: boolean, } | { "type": "cancel_request", target: string, } | { "type": "incoming_control", session_id: string, from: string, operator_username: string | null, mode: Mode,
+force: boolean, } | { "type": "cancel_request", target: string, } | { "type": "incoming_control", session_id: string, from: string, operator_username: string | null, mode: Mode, 
 /**
  * true=免同意直连（密码正确/强制），被控端跳过弹框直接进被控态；false=弹框等用户同意。
  */
