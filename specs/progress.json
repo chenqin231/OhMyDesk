@@ -3,17 +3,17 @@
   "branch": "001-client-auth-owner-scope",
   "specsDir": "specs/001-client-auth-owner-scope",
   "worktreePath": "",
-  "stage": "tasks",
-  "stageLabel": "任务分解阶段",
+  "stage": "develop",
+  "stageLabel": "开发阶段",
   "stages": {
     "research": "skipped",
     "requirements": "completed",
     "plan": "completed",
-    "tasks": "in_progress",
-    "develop": "pending"
+    "tasks": "completed",
+    "develop": "in_progress"
   },
   "currentTask": null,
   "totalTasks": 0,
   "completedTasks": 0,
-  "updatedAt": "2026-07-03T03:46:05Z"
+  "updatedAt": "2026-07-03T04:17:49Z"
 }
