@@ -140,15 +140,6 @@ impl Hub {
         }
     }
 
-    /// 广播给所有以 "admin-" 开头的连接
-    pub fn broadcast_admins(&self, json: &str) {
-        for kv in self.clients.iter() {
-            if kv.key().starts_with("admin-") {
-                let _ = kv.value().send(json.to_string());
-            }
-        }
-    }
-
     /// 向所有在线 agent（非 admin）广播截图指令
     pub fn broadcast_agents(&self, json: &str) {
         for kv in self.clients.iter() {
@@ -163,8 +154,10 @@ impl Hub {
     /// 从「全量广播」改为「逐 admin 序列化」：他人终端上线触发 push 时，普通 admin 通道任何一帧
     /// 都不含他人终端（推送级隔离，AC-005-E2）。now 为秒级时间戳。
     pub fn push_list(&self, now: i64) {
+        // 全量视图**只算一次**，逐 admin 从 all 过滤（仅克隆命中子集），避免每 admin 重算 views(now)。
         // 注：遍历 clients（DashMap）时对每个 admin 查 actors（另一 map）+ 直接 send，
         // 不复用 send_to（会二次锁 clients），避免同 map 重入。
+        let all = self.reg.views(now);
         for kv in self.clients.iter() {
             let conn_id = kv.key();
             if !conn_id.starts_with("admin-") {
@@ -174,9 +167,7 @@ impl Hub {
                 Some(a) => (Some(a.user_id), a.is_superadmin),
                 None => (None, false), // 无身份 admin（不应出现）→ 空集，绝不泄露
             };
-            let endpoints = self
-                .reg
-                .views_visible_to(now, viewer.as_deref(), is_super);
+            let endpoints = Registry::filter_visible(&all, viewer.as_deref(), is_super);
             let env = Envelope {
                 from: "server".into(),
                 to: Some(conn_id.clone()),

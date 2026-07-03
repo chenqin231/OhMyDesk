@@ -142,15 +142,29 @@ impl Registry {
     /// - 否则仅返回 `owner == Some(viewer)` 的终端；owner=None 旧端对普通账号不可见。
     ///
     /// 安全不变量：viewer=None 且非 superadmin（异常连接）→ 返回空集，绝不泄露。
+    /// 单次「某用户可见视图」查询（= views + filter_visible）。生产热路径 push_list 走
+    /// [`Registry::filter_visible`]（复用预算 all）；本方法保留为直查 API + 隔离单测入口。
+    #[allow(dead_code)]
     pub fn views_visible_to(
         &self,
         now: i64,
         viewer: Option<&str>,
         is_superadmin: bool,
     ) -> Vec<EndpointView> {
-        self.views(now)
-            .into_iter()
+        Self::filter_visible(&self.views(now), viewer, is_superadmin)
+    }
+
+    /// 从**已算好的全量视图** `all` 按归属过滤（纯函数）。
+    /// `push_list` 逐 admin 推送时复用同一份 `all`，避免每个 admin 都重算 `views(now)`
+    /// （否则大 fleet × 多 admin × 每心跳 → O(A×N) 全量 clone，CPU/分配爆炸）。
+    pub fn filter_visible(
+        all: &[EndpointView],
+        viewer: Option<&str>,
+        is_superadmin: bool,
+    ) -> Vec<EndpointView> {
+        all.iter()
             .filter(|v| is_superadmin || (viewer.is_some() && v.owner_id.as_deref() == viewer))
+            .cloned()
             .collect()
     }
 
