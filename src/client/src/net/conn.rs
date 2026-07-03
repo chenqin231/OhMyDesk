@@ -17,11 +17,24 @@ pub(super) struct SessionCtx {
     pub(super) controlling: Option<String>,
     /// 被控态：本端被控制的会话 id（收 Input 注入用）。
     pub(super) controlled: Option<String>,
+    /// 等待/已进入被控态的对端展示名。优先为操作者登录账号名，旧协议回退连接 id。
+    pub(super) controlled_peer_name: Option<String>,
     /// 主控已取消/超时本次申请:收到迟到的 ConnectAck 时据此发 SessionEnd 收尾、不进主控态。
     pub(super) initiate_cancelled: bool,
 }
 
+/// WS 连接地址拼 `?token=<jwt>`（服务端 ws_handler 据此派生 owner + 鉴权）。
+/// token 为 JWT（base64url + '.'，query 安全，无需转义）。空 token 不拼（不应发生，登录门已挡）。
+fn with_token(url: &str, token: &str) -> String {
+    if token.is_empty() {
+        return url.to_string();
+    }
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}token={token}")
+}
+
 /// 单次连接生命周期：连接 → 注册 → 起出站泵/心跳 → 收下行 + 处理 UI 上行。
+/// `token` 拼入 WS URL 携带上线；`token_rx` 监听注销（token→None）以主动断开（换绑语义）。
 pub(super) async fn connect_once(
     server_url: &str,
     info: &EndpointInfo,
@@ -29,8 +42,10 @@ pub(super) async fn connect_once(
     to_ui: &mpsc::UnboundedSender<ToUi>,
     from_ui: &mut mpsc::UnboundedReceiver<FromUi>,
     telemetry_tx: &mpsc::UnboundedSender<crate::telemetry::TelemetryMsg>,
+    token: &str,
+    token_rx: &mut tokio::sync::watch::Receiver<Option<String>>,
 ) -> anyhow::Result<()> {
-    let (ws, _) = connect_async(server_url).await?;
+    let (ws, _) = connect_async(&with_token(server_url, token)).await?;
     let (mut write, mut read) = ws.split();
     let id = info.id.clone();
     let cur_pw = || password.lock().unwrap().clone();
@@ -134,9 +149,24 @@ pub(super) async fn connect_once(
                             tracing::debug!("处理下行失败：{e}");
                         }
                     }
-                    Some(Ok(WsMsg::Close(_))) | None => break Ok(()),
+                    // 服务端 close 1008(Policy)=token 无效/过期 → 通知 UI 回登录页；其余正常关闭走重连。
+                    Some(Ok(WsMsg::Close(frame))) => {
+                        if frame.as_ref().map(|f| u16::from(f.code) == 1008).unwrap_or(false) {
+                            tracing::warn!("服务端以 1008 关闭：token 无效/过期，回登录页");
+                            let _ = to_ui.send(ToUi::AuthExpired);
+                        }
+                        break Ok(());
+                    }
+                    None => break Ok(()),
                     Some(Ok(_)) => {} // ping/pong/binary 忽略
                     Some(Err(e)) => break Err(anyhow::anyhow!(e)),
+                }
+            }
+            // token 变化：注销（→None）→ 主动断开，交 run 回登录门等待重新登录/换绑。
+            changed = token_rx.changed() => {
+                if changed.is_ok() && token_rx.borrow().is_none() {
+                    tracing::info!("token 清除(注销)，主动断开 WS");
+                    break Ok(());
                 }
             }
             // 上行：UI 动作

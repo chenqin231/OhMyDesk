@@ -62,6 +62,7 @@ const OS_LABELS: Record<OsFilter, string> = {
 
 export function TerminalAssets() {
   const endpoints = useStore((s) => s.endpoints);
+  const endpointsLoaded = useStore((s) => s.endpointsLoaded);
   const startRemote = useStore((s) => s.startRemote);
   const deleteEndpoints = useStore((s) => s.deleteEndpoints);
   // 删除终端后端闸 ManageAssets，operator 仅 view_assets → 隐藏删除 UI，避免点了 403 静默无反应
@@ -350,7 +351,11 @@ export function TerminalAssets() {
             {rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
                 <TableCell colSpan={canManage ? 11 : 10} className="h-32 text-center text-sm text-muted-foreground">
-                  {endpoints.length === 0 ? "正在加载终端列表…" : "未找到匹配的终端"}
+                  {!endpointsLoaded
+                    ? "正在加载终端列表…"
+                    : endpoints.length === 0
+                      ? "暂无你负责的终端"
+                      : "未找到匹配的终端"}
                 </TableCell>
               </TableRow>
             )}

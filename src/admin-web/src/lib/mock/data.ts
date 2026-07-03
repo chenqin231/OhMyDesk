@@ -27,6 +27,7 @@ export function makeEndpoints(nowSec: number): EndpointView[] {
       online: true,
       last_seen: BigInt(nowSec - 10),
       xinchuang: "信创·麒麟·龙芯",
+      owner_id: null,
     },
     {
       info: {
@@ -44,6 +45,7 @@ export function makeEndpoints(nowSec: number): EndpointView[] {
       online: true,
       last_seen: BigInt(nowSec - 25),
       xinchuang: "信创·统信·鲲鹏",
+      owner_id: null,
     },
     {
       info: {
@@ -61,6 +63,7 @@ export function makeEndpoints(nowSec: number): EndpointView[] {
       online: true,
       last_seen: BigInt(nowSec - 5),
       xinchuang: "非信创·Windows·x86_64",
+      owner_id: null,
     },
     {
       info: {
@@ -78,6 +81,7 @@ export function makeEndpoints(nowSec: number): EndpointView[] {
       online: true,
       last_seen: BigInt(nowSec - 80),
       xinchuang: "信创·麒麟·鲲鹏",
+      owner_id: null,
     },
     {
       info: {
@@ -95,6 +99,7 @@ export function makeEndpoints(nowSec: number): EndpointView[] {
       online: false,
       last_seen: BigInt(nowSec - 3600 * 5),
       xinchuang: "信创·统信·龙芯",
+      owner_id: null,
     },
     {
       info: {
@@ -112,6 +117,7 @@ export function makeEndpoints(nowSec: number): EndpointView[] {
       online: false,
       last_seen: BigInt(nowSec - 3600 * 18),
       xinchuang: "非信创·Windows·x86_64",
+      owner_id: null,
     },
   ];
 }

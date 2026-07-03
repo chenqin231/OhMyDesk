@@ -285,22 +285,26 @@ async fn handle_socket(
             if let Some(ftx) = frame_tx.take() {
                 hub.add_frame_client(id.clone(), ftx, frame_enqueued.clone());
             }
-            // admin 连上：绑定操作人身份（供远控 RBAC 闸 + 审计归属）+ 立即推一次终端列表。
+            // 任何带有效 token 的连接（admin 主控 或 agent 被控端登录后）都绑定操作人身份：
+            //   - admin → 远控 RBAC 闸 + 审计归属（原有语义）
+            //   - agent（被控端登录后）→ Register 臂据此派生 owner_id 盖章终端归属（反自报伪造）
+            // 无 token 连接（旧端）不绑定 → owner=None，仅 superadmin 可见，现网不受影响。
+            if let Some(u) = &auth_user {
+                // 远控闸判定来源：账户权限集 + superadmin 隐式全权（不再靠 role 字符串反解旧角色）。
+                // operator_role 落 tier 字符串（superadmin/user）。
+                hub.bind_actor(
+                    &id,
+                    ActorIdentity {
+                        user_id: u.id.clone(),
+                        username: u.username.clone(),
+                        role: u.tier().to_string(),
+                        permissions: u.permissions.clone(),
+                        is_superadmin: u.is_superadmin(),
+                    },
+                );
+            }
+            // 终端列表仅推给 admin 主控（agent 不消费列表）。
             if id.starts_with("admin-") {
-                if let Some(u) = &auth_user {
-                    // 远控闸判定来源：账户权限集 + superadmin 隐式全权（不再靠 role 字符串反解旧角色）。
-                    // operator_role 落 tier 字符串（superadmin/user）。
-                    hub.bind_actor(
-                        &id,
-                        ActorIdentity {
-                            user_id: u.id.clone(),
-                            username: u.username.clone(),
-                            role: u.tier().to_string(),
-                            permissions: u.permissions.clone(),
-                            is_superadmin: u.is_superadmin(),
-                        },
-                    );
-                }
                 hub.push_list(now_sec());
             }
             tracing::info!("客户端连接: {id}");

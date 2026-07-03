@@ -7,6 +7,8 @@ use uuid::Uuid;
 use crate::hub::Hub;
 
 const SELF_REMOTE_REJECT_REASON: &str = "您不能远程自己！";
+/// 越权远控（非自己归属终端）拒连 reason，供 web `remoteRejectReason`→RejectedCard 渲染。
+const NO_REMOTE_SCOPE_REASON: &str = "无权远控该终端";
 
 /// 把绑定的人员身份拆成会话 operator_* 三列（无身份则三列皆 None）。
 fn actor_fields(
@@ -88,6 +90,27 @@ pub async fn handle_connect_request(
         return;
     }
 
+    // 归属范围闸（T020）：非 superadmin 只能远控 owner==自己 的终端；owner=None 旧端对普通账号一律拒绝。
+    // 权限位 ≠ 范围——UseRemote 已在 hub 前置校验，这里只判「该终端归不归我」。admin- 来源才判
+    // （agent 不发 ConnectRequest）。拒绝时回带 reason，供 web RejectedCard 渲染 + 落 Reject 审计。
+    if from_id.starts_with("admin-") {
+        let is_super = actor.map(|a| a.is_superadmin).unwrap_or(false);
+        if !is_super {
+            let uid = actor.map(|a| a.user_id.as_str());
+            let target_owner = hub.reg.owner_of(target);
+            let allowed = uid.is_some() && target_owner.as_deref() == uid;
+            if !allowed {
+                let session_id = Uuid::new_v4().to_string();
+                hub.audit
+                    .log(&session_id, from_id, AuditType::Reject, NO_REMOTE_SCOPE_REASON, actor)
+                    .await;
+                send_reject(hub, from_id, session_id, NO_REMOTE_SCOPE_REASON, now);
+                tracing::warn!("拒绝越权远控(非自己归属终端): from={from_id} target={target}");
+                return;
+            }
+        }
+    }
+
     // 模式 A 越权闸：仅已认证 admin 可发起（同时拦截非 admin 的 force，满足强制远程仅 admin）。
     if *mode == Mode::A && !from_id.starts_with("admin-") {
         tracing::warn!("拒绝非 admin 的模式A远控发起: from={from_id}");
@@ -141,7 +164,16 @@ pub async fn handle_connect_request(
                 .log(&session_id, from_id, AuditType::Connect, how, actor)
                 .await;
 
-            send_incoming(hub, target, session_id, from_id, *mode, true, now);
+            send_incoming(
+                hub,
+                target,
+                session_id,
+                from_id,
+                actor.map(|a| a.username.as_str()),
+                *mode,
+                true,
+                now,
+            );
         }
         ConnectDecision::Consent => {
             let session_id = Uuid::new_v4().to_string();
@@ -161,13 +193,31 @@ pub async fn handle_connect_request(
             hub.audit.insert_session(&session).await;
             hub.sessions.insert(session);
 
-            send_incoming(hub, target, session_id, from_id, *mode, false, now);
+            send_incoming(
+                hub,
+                target,
+                session_id,
+                from_id,
+                actor.map(|a| a.username.as_str()),
+                *mode,
+                false,
+                now,
+            );
         }
     }
 }
 
 /// 发 IncomingControl 给被控端（携带 server 生成的 session_id 与 auto_accept 标记）。
-fn send_incoming(hub: &Hub, target: &str, session_id: String, from_id: &str, mode: Mode, auto_accept: bool, now: i64) {
+fn send_incoming(
+    hub: &Hub,
+    target: &str,
+    session_id: String,
+    from_id: &str,
+    operator_username: Option<&str>,
+    mode: Mode,
+    auto_accept: bool,
+    now: i64,
+) {
     let incoming = Envelope {
         from: "server".into(),
         to: Some(target.to_string()),
@@ -175,6 +225,7 @@ fn send_incoming(hub: &Hub, target: &str, session_id: String, from_id: &str, mod
         payload: Message::IncomingControl {
             session_id,
             from: from_id.to_string(),
+            operator_username: operator_username.map(str::to_string),
             mode,
             auto_accept,
         },
@@ -358,7 +409,7 @@ mod tests {
         let hub = test_hub();
         let mut info = EndpointInfo::sample();
         info.id = "ep-self".into();
-        hub.reg.upsert(info, "123456".into(), 100);
+        hub.reg.upsert(info, "123456".into(), 100, None);
 
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         hub.add_client("ep-self".into(), tx);

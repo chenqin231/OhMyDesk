@@ -217,6 +217,10 @@ component FieldInput inherits Rectangle {
         font-size: 15px;
         vertical-alignment: center;
     }
+    // 供登录页空值校验后把焦点定位到首个空框（AC-001-E4）。
+    public function focus-input() {
+        ti.focus();
+    }
 }
 
 // 一行「值框」：小标题 + 大号等宽值 + 右侧动作
@@ -472,6 +476,83 @@ component FilePane inherits Rectangle {
     }
 }
 
+export component ChatNoticeWindow inherits Window {
+    title: "OhMyDesk 新消息";
+    icon: @image-url("../icons/app-icon.png");
+    preferred-width: 340px;
+    preferred-height: 148px;
+    min-width: 340px;
+    min-height: 148px;
+    max-width: 340px;
+    max-height: 148px;
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    default-font-size: 14px;
+
+    in property <string> peer_name;
+    in property <string> message_text;
+    callback open_chat();
+    callback dismiss();
+
+    Rectangle {
+        border-radius: 12px;
+        background: #131316;
+        border-width: 1px;
+        border-color: Theme.primary;
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+            HorizontalLayout {
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: Theme.primary;
+                    }
+                }
+                Text {
+                    text: root.peer_name == "" ? "OhMyDesk 新消息" : "来自 " + root.peer_name + " 的消息";
+                    color: Theme.fg;
+                    font-size: 13px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                GhostButton {
+                    label: "忽略";
+                    clicked => {
+                        root.dismiss();
+                    }
+                }
+            }
+            Text {
+                text: root.message_text;
+                color: Theme.fg;
+                font-size: 14px;
+                wrap: word-wrap;
+                max-height: 42px;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Rectangle { horizontal-stretch: 1; }
+                PrimaryButton {
+                    width: 104px;
+                    height: 34px;
+                    label: "打开聊天";
+                    clicked => {
+                        root.open_chat();
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── 主窗口 ─────────────────────────────────────────────────
 export component AppWindow inherits Window {
     // 版本号由 Rust 侧 env!("CARGO_PKG_VERSION") 注入，标题随发版自动更新。
@@ -510,9 +591,7 @@ export component AppWindow inherits Window {
     in-out property <string> controlled_chat_log;     // 被控侧聊天记录累积
     in-out property <string> controlled_chat_input;   // 被控侧输入
     callback send_controlled_chat(string /*text*/);   // 被控发送（复用 SendChat，session=被控会话）
-    // 被控端右下角新消息弹卡：对端发来且聊天面板未打开时弹出，醒目提醒（修复消息藏在顶部看不到）
-    in-out property <bool> controlled_toast_visible: false;
-    in property <string> controlled_toast_text;       // 弹卡内最新消息预览（Rust 侧 set）
+    callback controlled_chat_panel_opened();          // 主窗口手动打开抽屉 → 隐藏桌面自绘通知
 
     // ── 主控端状态（模式 B：client→client 发起）──
     in property <bool> remote_active: false;      // 已进入主控画面态
@@ -605,8 +684,59 @@ export component AppWindow inherits Window {
             : t;
     }
 
-    // ① 空闲态：被控提示条 + 居中卡片
-    if !root.remote_active: VerticalLayout {
+    // ── 登录认证（客户端账号登录 + 归属绑定）──
+    in-out property <bool> logged_in: false;           // 已登录门控（false → 显示 S1 登录页）
+    in property <string> logged_user;                  // 已登录用户名（S2 顶栏展示）
+    in-out property <string> login_user;               // S1 账号输入
+    in-out property <string> login_pass;               // S1 密码输入
+    in-out property <string> login_server;             // S1 服务器地址（高级项）
+    in-out property <bool> login_advanced_open: false; // 服务器地址折叠区
+    in property <bool> login_loading: false;           // 登录请求进行中（按钮转「登录中…」禁用）
+    in-out property <string> login_error;              // 登录错误 inline 文案（红字，空值校验本地写）
+    in-out property <bool> logout_confirm_open: false; // S3 注销确认 Modal
+    callback do_login(string /*user*/, string /*pass*/, string /*server*/);
+    callback do_logout();                              // S3 确定 → 断连清凭据回登录页
+
+    // ① 空闲态：被控提示条 + 居中卡片（登录后才显示）
+    if !root.remote_active && root.logged_in: VerticalLayout {
+        // 账号条（S2）：已登录用户 + 在线状态点 + 注销入口
+        Rectangle {
+            height: 36px;
+            background: #141417;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 10px;
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 4px;
+                        background: root.connected ? Theme.emerald : Theme.fg-muted;
+                    }
+                }
+                Text {
+                    text: "已登录: " + root.logged_user;
+                    color: Theme.fg-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.connected ? "在线" : "离线";
+                    color: root.connected ? Theme.emerald : Theme.fg-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                GhostButton {
+                    label: "注销";
+                    clicked => { root.logout_confirm_open = true; }
+                }
+            }
+        }
         // 更新横幅（常驻顶部，仅发现新版时显示）
         if root.update_available: Rectangle {
             height: root.update_notes != "" ? 62px : 46px;
@@ -666,6 +796,7 @@ export component AppWindow inherits Window {
                         root.chat_panel_open = !root.chat_panel_open;
                         if (root.chat_panel_open) {
                             root.controlled_chat_unread = false;
+                            root.controlled_chat_panel_opened();
                         }
                     }
                 }
@@ -897,8 +1028,8 @@ export component AppWindow inherits Window {
         }
     }
 
-    // ⑤ 主控工作台：顶部 4 标签 + 整页内容（同窗同页切换）
-    if root.remote_active: Rectangle {
+    // ⑤ 主控工作台：顶部 4 标签 + 整页内容（同窗同页切换）（登录后才显示）
+    if root.remote_active && root.logged_in: Rectangle {
         background: #050506;
 
         VerticalLayout {
@@ -1595,7 +1726,7 @@ export component AppWindow inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: 10px;
                     FieldInput {
                         horizontal-stretch: 1;
                         placeholder: "回复…";
@@ -1608,6 +1739,8 @@ export component AppWindow inherits Window {
                         }
                     }
                     PrimaryButton {
+                        width: 76px;
+                        height: 38px;
                         label: "发送";
                         enabled: root.controlled_chat_input != "";
                         clicked => {
@@ -1620,103 +1753,9 @@ export component AppWindow inherits Window {
         }
     }
 
-    // 被控端右下角即时消息弹卡（非模态：不吃背景点击，被控用户仍可正常操作电脑）。
-    // 仅 being_controlled 且 controlled_toast_visible 时出现，醒目提醒被控用户有新消息。
-    if root.being_controlled && root.controlled_toast_visible: Rectangle {
-        // 占满窗口仅用于把弹卡定位到右下角；不放任何 TouchArea，避免遮挡背景交互。
-        VerticalLayout {
-            alignment: end;
-            HorizontalLayout {
-                alignment: end;
-                padding: 16px;
-                Rectangle {
-                    width: 300px;
-                    border-radius: 12px;
-                    background: #1b2030f7;
-                    border-width: 1px;
-                    border-color: Theme.primary;
-                    VerticalLayout {
-                        padding: 14px;
-                        spacing: 9px;
-                        // 标题：圆点 + 发送方
-                        HorizontalLayout {
-                            spacing: 8px;
-                            VerticalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    width: 8px;
-                                    height: 8px;
-                                    border-radius: 4px;
-                                    background: Theme.primary;
-                                }
-                            }
-                            Text {
-                                text: "新消息 · " + root.peer_name;
-                                color: Theme.fg;
-                                font-size: 13px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                        }
-                        // 消息预览
-                        Text {
-                            text: root.controlled_toast_text;
-                            color: Theme.fg;
-                            font-size: 14px;
-                            wrap: word-wrap;
-                        }
-                        // 操作行
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Rectangle { } // 撑开，按钮靠右
-                            GhostButton {
-                                label: "忽略";
-                                clicked => {
-                                    root.controlled_toast_visible = false;
-                                }
-                            }
-                            Rectangle {
-                                width: 72px;
-                                height: 30px;
-                                border-radius: 8px;
-                                background: rta.has-hover ? Theme.primary-hover : Theme.primary;
-                                animate background { duration: 120ms; }
-                                Text {
-                                    text: "回复";
-                                    color: white;
-                                    font-size: 13px;
-                                    font-weight: 600;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                rta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.chat_panel_open = true;
-                                        root.controlled_chat_unread = false;
-                                        root.controlled_toast_visible = false;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // 10s 自动收起（顶部「聊天 ●」红点仍在，用户可再打开），避免长期遮挡。
-        Timer {
-            interval: 10s;
-            running: root.controlled_toast_visible;
-            triggered => {
-                root.controlled_toast_visible = false;
-            }
-        }
-    }
-
     // 被控端右下角「AI助手」悬浮按钮:仅 idle 面板 + Windows 显示。
     // 占满窗口仅为把按钮定位到右下角;TouchArea 只在按钮 Rectangle 内,不遮挡背景。
-    if !root.remote_active && root.suwen_supported: Rectangle {
+    if !root.remote_active && root.logged_in && root.suwen_supported && !root.chat_panel_open: Rectangle {
         VerticalLayout {
             alignment: end;
             HorizontalLayout {
@@ -1747,6 +1786,162 @@ export component AppWindow inherits Window {
                         // 进行中(1/2/3)禁用防重入;空闲(0)或失败(4)可点
                         enabled: root.suwen_phase == 0 || root.suwen_phase == 4;
                         clicked => { root.launch_suwen(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // S1 登录页（全屏门控，未登录时覆盖一切）
+    if !root.logged_in: Rectangle {
+        background: Theme.bg;
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+                Card {
+                    width: 380px;
+                    background: #18181c;
+                    VerticalLayout {
+                        padding: 26px;
+                        spacing: 13px;
+                        Text {
+                            text: "登录 OhMyDesk";
+                            color: Theme.fg;
+                            font-size: 18px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "使用管理后台账号登录，本机将归属该账号";
+                            color: Theme.fg-muted;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Rectangle { height: 2px; }
+                        login-account := FieldInput {
+                            placeholder: "账号";
+                            text <=> root.login_user;
+                            accepted => { login-pass.focus-input(); }
+                        }
+                        login-pass := FieldInput {
+                            placeholder: "密码";
+                            password: true;
+                            text <=> root.login_pass;
+                            accepted => {
+                                if (root.login_user == "") {
+                                    root.login_error = "请输入账号";
+                                    login-account.focus-input();
+                                } else if (root.login_pass == "") {
+                                    root.login_error = "请输入密码";
+                                    login-pass.focus-input();
+                                } else {
+                                    root.login_error = "";
+                                    root.do_login(root.login_user, root.login_pass, root.login_server);
+                                }
+                            }
+                        }
+                        // inline 错误（红字）
+                        if root.login_error != "": Text {
+                            text: root.login_error;
+                            color: Theme.danger;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        PrimaryButton {
+                            label: root.login_loading ? "登录中…" : "登录";
+                            enabled: !root.login_loading;
+                            clicked => {
+                                if (root.login_user == "") {
+                                    root.login_error = "请输入账号";
+                                    login-account.focus-input();
+                                } else if (root.login_pass == "") {
+                                    root.login_error = "请输入密码";
+                                    login-pass.focus-input();
+                                } else {
+                                    root.login_error = "";
+                                    root.do_login(root.login_user, root.login_pass, root.login_server);
+                                }
+                            }
+                        }
+                        // 服务器地址（默认折叠在「高级」）
+                        GhostButton {
+                            label: root.login_advanced_open ? "收起高级" : "高级";
+                            clicked => { root.login_advanced_open = !root.login_advanced_open; }
+                        }
+                        if root.login_advanced_open: FieldInput {
+                            placeholder: "服务器地址（如 wss://host/ws）";
+                            text <=> root.login_server;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // S3 注销确认 Modal（复用授权弹窗遮罩 + Card 范式）
+    if root.logout_confirm_open: Rectangle {
+        background: #000000bb;
+        TouchArea { } // 吃掉背景点击
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+                Card {
+                    width: 340px;
+                    background: #18181c;
+                    VerticalLayout {
+                        padding: 22px;
+                        spacing: 10px;
+                        Text {
+                            text: "注销登录";
+                            color: Theme.fg;
+                            font-size: 16px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "注销后本机将下线，确定?";
+                            color: Theme.fg-muted;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Rectangle { height: 8px; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            // 取消
+                            Rectangle {
+                                height: 42px;
+                                horizontal-stretch: 1;
+                                border-radius: 9px;
+                                background: logout-cancel.has-hover ? Theme.muted : Theme.inset;
+                                border-width: 1px;
+                                border-color: Theme.card-border;
+                                Text {
+                                    text: "取消";
+                                    color: Theme.fg;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                logout-cancel := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.logout_confirm_open = false; }
+                                }
+                            }
+                            // 确定（高亮）
+                            PrimaryButton {
+                                label: "确定";
+                                horizontal-stretch: 1;
+                                clicked => {
+                                    root.logout_confirm_open = false;
+                                    root.do_logout();
+                                }
+                            }
+                        }
                     }
                 }
             }

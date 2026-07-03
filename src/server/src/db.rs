@@ -105,6 +105,14 @@ async fn ensure_identity_columns(pool: &Db) -> sqlx::Result<()> {
         "actor_role",
         "ALTER TABLE audit_logs ADD COLUMN actor_role TEXT",
     )
+    .await?;
+    // 归属维度：存量终端置 NULL（仅 superadmin 可见），新端上线时由服务端从 JWT 派生写入。
+    add_column_if_missing(
+        pool,
+        "endpoint_registry",
+        "owner_id",
+        "ALTER TABLE endpoint_registry ADD COLUMN owner_id TEXT",
+    )
     .await
 }
 
@@ -117,6 +125,11 @@ async fn add_column_if_missing(
     let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
         .fetch_all(pool)
         .await?;
+    // 表不存在时 PRAGMA 返回空 → 无列可加，直接跳过（建表由 schema.sqlite.sql 负责，
+    // 且 connect() 保证 schema 先于本迁移执行）。避免对缺失表 ALTER 报错，保迁移幂等健壮。
+    if rows.is_empty() {
+        return Ok(());
+    }
     let exists = rows
         .iter()
         .any(|row| row.get::<String, _>("name") == column);
@@ -427,6 +440,47 @@ CREATE TABLE users (
         assert!(audit_columns.contains("actor_role"));
 
         ensure_identity_columns(&pool).await.unwrap();
+    }
+
+    /// T004（TC-S09）：endpoint_registry 旧库（无 owner_id）迁移加列，且幂等、保留存量行。
+    #[tokio::test]
+    async fn ensure_identity_columns_adds_endpoint_registry_owner_id_idempotently() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // 旧 schema：endpoint_registry 无 owner_id 列，且预置一行存量数据。
+        sqlx::raw_sql(
+            "CREATE TABLE endpoint_registry (
+                id TEXT PRIMARY KEY,
+                info TEXT NOT NULL,
+                last_seen INTEGER NOT NULL
+            );
+            INSERT INTO endpoint_registry(id, info, last_seen) VALUES('ep-old','{}',1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        ensure_identity_columns(&pool).await.unwrap();
+        assert!(
+            table_columns(&pool, "endpoint_registry")
+                .await
+                .contains("owner_id"),
+            "迁移应补齐 endpoint_registry.owner_id 列"
+        );
+
+        // 幂等：再跑一次不报错、不重复加列。
+        ensure_identity_columns(&pool).await.unwrap();
+
+        // 存量行仍在，owner_id 为 NULL（旧端归属未知）。
+        let owner: Option<String> =
+            sqlx::query_scalar("SELECT owner_id FROM endpoint_registry WHERE id='ep-old'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(owner, None, "存量旧端迁移后 owner_id 应为 NULL");
     }
 
     async fn table_columns(pool: &Db, table: &str) -> HashSet<String> {

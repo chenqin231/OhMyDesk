@@ -128,6 +128,7 @@ fn incoming_control_tagged() {
         payload: Message::IncomingControl {
             session_id: "s-1".into(),
             from: "ep-1".into(),
+            operator_username: Some("caodan".into()),
             mode: Mode::B,
             auto_accept: false,
         },
@@ -135,8 +136,41 @@ fn incoming_control_tagged() {
     let json = serde_json::to_string(&env).unwrap();
     assert!(json.contains("\"type\":\"incoming_control\""));
     assert!(json.contains("\"session_id\":\"s-1\""));
+    assert!(json.contains("\"operator_username\":\"caodan\""));
     let back: Envelope = serde_json::from_str(&json).unwrap();
-    assert!(matches!(back.payload, Message::IncomingControl { .. }));
+    assert!(matches!(
+        back.payload,
+        Message::IncomingControl {
+            operator_username: Some(name),
+            ..
+        } if name == "caodan"
+    ));
+}
+
+#[test]
+fn incoming_control_旧json无_operator_username_兼容() {
+    let old_json = r#"{
+        "from":"server",
+        "to":"ep-2",
+        "ts":0,
+        "payload":{
+            "type":"incoming_control",
+            "session_id":"s-1",
+            "from":"admin-vazkcy",
+            "mode":"b",
+            "auto_accept":true
+        }
+    }"#;
+
+    let back: Envelope = serde_json::from_str(old_json).unwrap();
+    assert!(matches!(
+        back.payload,
+        Message::IncomingControl {
+            from,
+            operator_username: None,
+            ..
+        } if from == "admin-vazkcy"
+    ));
 }
 
 #[test]
@@ -187,4 +221,22 @@ fn export_all() {
     AuditLog::export_all_to(dir).unwrap(); // 审计页/mock 需要（不在 Envelope 链上，须显式）
     Session::export_all_to(dir).unwrap(); // 同上（带出 SessionStatus）
     LoginLogEntry::export_all_to(dir).unwrap(); // 功能②：登录日志类型
+}
+
+/// T026（AC-008-E1）：旧端 EndpointView JSON（无 owner_id 键）反序列化 → owner_id=None，
+/// 其余字段完整，不报错不丢消息。owner_id: Option 兜底旧端 serde（历史教训：加字段破坏兼容）。
+#[test]
+fn endpoint_view_旧json无owner_id_兼容() {
+    let info_json = serde_json::to_string(&EndpointInfo::sample()).unwrap();
+    // 模拟旧端序列化：不含 owner_id 键。
+    let old_json = format!(
+        r#"{{"info":{info_json},"online":true,"last_seen":123,"xinchuang":"信创·麒麟·龙芯"}}"#
+    );
+    let view: EndpointView =
+        serde_json::from_str(&old_json).expect("旧 JSON（缺 owner_id）应能反序列化");
+    assert_eq!(view.owner_id, None, "缺 owner_id 键 → None");
+    assert_eq!(view.info.id, "ep-001", "其余字段完整");
+    assert_eq!(view.xinchuang, "信创·麒麟·龙芯");
+    assert!(view.online);
+    assert_eq!(view.last_seen, 123);
 }
