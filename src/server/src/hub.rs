@@ -1059,8 +1059,18 @@ mod tests {
             .expect("含 use_remote，被控端应收到 IncomingControl");
         let got_env: Envelope = serde_json::from_str(&got).unwrap();
         assert!(
-            matches!(got_env.payload, Message::IncomingControl { auto_accept: true, .. }),
+            matches!(&got_env.payload, Message::IncomingControl { auto_accept: true, .. }),
             "force 直连应 auto_accept=true"
+        );
+        assert!(
+            matches!(
+                &got_env.payload,
+                Message::IncomingControl {
+                    operator_username: Some(name),
+                    ..
+                } if name == "operator1"
+            ),
+            "被控端应收到操作者账号名而不是 admin 连接 id"
         );
 
         // 会话写入操作人身份（operator_*，tier 写 user）

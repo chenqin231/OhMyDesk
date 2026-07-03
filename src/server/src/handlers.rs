@@ -164,7 +164,16 @@ pub async fn handle_connect_request(
                 .log(&session_id, from_id, AuditType::Connect, how, actor)
                 .await;
 
-            send_incoming(hub, target, session_id, from_id, *mode, true, now);
+            send_incoming(
+                hub,
+                target,
+                session_id,
+                from_id,
+                actor.map(|a| a.username.as_str()),
+                *mode,
+                true,
+                now,
+            );
         }
         ConnectDecision::Consent => {
             let session_id = Uuid::new_v4().to_string();
@@ -184,13 +193,31 @@ pub async fn handle_connect_request(
             hub.audit.insert_session(&session).await;
             hub.sessions.insert(session);
 
-            send_incoming(hub, target, session_id, from_id, *mode, false, now);
+            send_incoming(
+                hub,
+                target,
+                session_id,
+                from_id,
+                actor.map(|a| a.username.as_str()),
+                *mode,
+                false,
+                now,
+            );
         }
     }
 }
 
 /// 发 IncomingControl 给被控端（携带 server 生成的 session_id 与 auto_accept 标记）。
-fn send_incoming(hub: &Hub, target: &str, session_id: String, from_id: &str, mode: Mode, auto_accept: bool, now: i64) {
+fn send_incoming(
+    hub: &Hub,
+    target: &str,
+    session_id: String,
+    from_id: &str,
+    operator_username: Option<&str>,
+    mode: Mode,
+    auto_accept: bool,
+    now: i64,
+) {
     let incoming = Envelope {
         from: "server".into(),
         to: Some(target.to_string()),
@@ -198,6 +225,7 @@ fn send_incoming(hub: &Hub, target: &str, session_id: String, from_id: &str, mod
         payload: Message::IncomingControl {
             session_id,
             from: from_id.to_string(),
+            operator_username: operator_username.map(str::to_string),
             mode,
             auto_accept,
         },

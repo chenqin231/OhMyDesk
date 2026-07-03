@@ -476,6 +476,83 @@ component FilePane inherits Rectangle {
     }
 }
 
+export component ChatNoticeWindow inherits Window {
+    title: "OhMyDesk 新消息";
+    icon: @image-url("../icons/app-icon.png");
+    preferred-width: 340px;
+    preferred-height: 148px;
+    min-width: 340px;
+    min-height: 148px;
+    max-width: 340px;
+    max-height: 148px;
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    default-font-size: 14px;
+
+    in property <string> peer_name;
+    in property <string> message_text;
+    callback open_chat();
+    callback dismiss();
+
+    Rectangle {
+        border-radius: 12px;
+        background: #131316;
+        border-width: 1px;
+        border-color: Theme.primary;
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+            HorizontalLayout {
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: Theme.primary;
+                    }
+                }
+                Text {
+                    text: root.peer_name == "" ? "OhMyDesk 新消息" : "来自 " + root.peer_name + " 的消息";
+                    color: Theme.fg;
+                    font-size: 13px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                GhostButton {
+                    label: "忽略";
+                    clicked => {
+                        root.dismiss();
+                    }
+                }
+            }
+            Text {
+                text: root.message_text;
+                color: Theme.fg;
+                font-size: 14px;
+                wrap: word-wrap;
+                max-height: 42px;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Rectangle { horizontal-stretch: 1; }
+                PrimaryButton {
+                    width: 104px;
+                    height: 34px;
+                    label: "打开聊天";
+                    clicked => {
+                        root.open_chat();
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── 主窗口 ─────────────────────────────────────────────────
 export component AppWindow inherits Window {
     // 版本号由 Rust 侧 env!("CARGO_PKG_VERSION") 注入，标题随发版自动更新。
@@ -514,9 +591,7 @@ export component AppWindow inherits Window {
     in-out property <string> controlled_chat_log;     // 被控侧聊天记录累积
     in-out property <string> controlled_chat_input;   // 被控侧输入
     callback send_controlled_chat(string /*text*/);   // 被控发送（复用 SendChat，session=被控会话）
-    // 被控端右下角新消息弹卡：对端发来且聊天面板未打开时弹出，醒目提醒（修复消息藏在顶部看不到）
-    in-out property <bool> controlled_toast_visible: false;
-    in property <string> controlled_toast_text;       // 弹卡内最新消息预览（Rust 侧 set）
+    callback controlled_chat_panel_opened();          // 主窗口手动打开抽屉 → 隐藏桌面自绘通知
 
     // ── 主控端状态（模式 B：client→client 发起）──
     in property <bool> remote_active: false;      // 已进入主控画面态
@@ -721,6 +796,7 @@ export component AppWindow inherits Window {
                         root.chat_panel_open = !root.chat_panel_open;
                         if (root.chat_panel_open) {
                             root.controlled_chat_unread = false;
+                            root.controlled_chat_panel_opened();
                         }
                     }
                 }
@@ -1650,7 +1726,7 @@ export component AppWindow inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: 10px;
                     FieldInput {
                         horizontal-stretch: 1;
                         placeholder: "回复…";
@@ -1663,6 +1739,8 @@ export component AppWindow inherits Window {
                         }
                     }
                     PrimaryButton {
+                        width: 76px;
+                        height: 38px;
                         label: "发送";
                         enabled: root.controlled_chat_input != "";
                         clicked => {
@@ -1675,103 +1753,9 @@ export component AppWindow inherits Window {
         }
     }
 
-    // 被控端右下角即时消息弹卡（非模态：不吃背景点击，被控用户仍可正常操作电脑）。
-    // 仅 being_controlled 且 controlled_toast_visible 时出现，醒目提醒被控用户有新消息。
-    if root.being_controlled && root.controlled_toast_visible: Rectangle {
-        // 占满窗口仅用于把弹卡定位到右下角；不放任何 TouchArea，避免遮挡背景交互。
-        VerticalLayout {
-            alignment: end;
-            HorizontalLayout {
-                alignment: end;
-                padding: 16px;
-                Rectangle {
-                    width: 300px;
-                    border-radius: 12px;
-                    background: #1b2030f7;
-                    border-width: 1px;
-                    border-color: Theme.primary;
-                    VerticalLayout {
-                        padding: 14px;
-                        spacing: 9px;
-                        // 标题：圆点 + 发送方
-                        HorizontalLayout {
-                            spacing: 8px;
-                            VerticalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    width: 8px;
-                                    height: 8px;
-                                    border-radius: 4px;
-                                    background: Theme.primary;
-                                }
-                            }
-                            Text {
-                                text: "新消息 · " + root.peer_name;
-                                color: Theme.fg;
-                                font-size: 13px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                        }
-                        // 消息预览
-                        Text {
-                            text: root.controlled_toast_text;
-                            color: Theme.fg;
-                            font-size: 14px;
-                            wrap: word-wrap;
-                        }
-                        // 操作行
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Rectangle { } // 撑开，按钮靠右
-                            GhostButton {
-                                label: "忽略";
-                                clicked => {
-                                    root.controlled_toast_visible = false;
-                                }
-                            }
-                            Rectangle {
-                                width: 72px;
-                                height: 30px;
-                                border-radius: 8px;
-                                background: rta.has-hover ? Theme.primary-hover : Theme.primary;
-                                animate background { duration: 120ms; }
-                                Text {
-                                    text: "回复";
-                                    color: white;
-                                    font-size: 13px;
-                                    font-weight: 600;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                rta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.chat_panel_open = true;
-                                        root.controlled_chat_unread = false;
-                                        root.controlled_toast_visible = false;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // 10s 自动收起（顶部「聊天 ●」红点仍在，用户可再打开），避免长期遮挡。
-        Timer {
-            interval: 10s;
-            running: root.controlled_toast_visible;
-            triggered => {
-                root.controlled_toast_visible = false;
-            }
-        }
-    }
-
     // 被控端右下角「AI助手」悬浮按钮:仅 idle 面板 + Windows 显示。
     // 占满窗口仅为把按钮定位到右下角;TouchArea 只在按钮 Rectangle 内,不遮挡背景。
-    if !root.remote_active && root.logged_in && root.suwen_supported: Rectangle {
+    if !root.remote_active && root.logged_in && root.suwen_supported && !root.chat_panel_open: Rectangle {
         VerticalLayout {
             alignment: end;
             HorizontalLayout {

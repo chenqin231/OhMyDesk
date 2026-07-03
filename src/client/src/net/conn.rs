@@ -17,6 +17,8 @@ pub(super) struct SessionCtx {
     pub(super) controlling: Option<String>,
     /// 被控态：本端被控制的会话 id（收 Input 注入用）。
     pub(super) controlled: Option<String>,
+    /// 等待/已进入被控态的对端展示名。优先为操作者登录账号名，旧协议回退连接 id。
+    pub(super) controlled_peer_name: Option<String>,
     /// 主控已取消/超时本次申请:收到迟到的 ConnectAck 时据此发 SessionEnd 收尾、不进主控态。
     pub(super) initiate_cancelled: bool,
 }

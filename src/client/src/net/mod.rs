@@ -213,7 +213,7 @@ pub fn cur_ram() -> RamInfo {
 /// `info` 每轮 clone（id/密码保持稳定，硬件信息不变）；`to_ui` 投递下行给 UI；
 /// `from_ui` 是 UI 上行的接收端（**注意**：单消费者，重连时复用同一接收端）。
 pub async fn run(
-    server_url: String,
+    server_url: crate::SharedServerUrl,
     info: EndpointInfo,
     to_ui: mpsc::UnboundedSender<ToUi>,
     mut from_ui: mpsc::UnboundedReceiver<FromUi>,
@@ -233,8 +233,9 @@ pub async fn run(
                 return; // Sender 已 drop（应用退出）→ 结束 run
             }
         };
+        let current_server_url = server_url.lock().unwrap().clone();
         match conn::connect_once(
-            &server_url,
+            &current_server_url,
             &info,
             &password,
             &to_ui,

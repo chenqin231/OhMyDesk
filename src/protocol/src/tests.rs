@@ -128,6 +128,7 @@ fn incoming_control_tagged() {
         payload: Message::IncomingControl {
             session_id: "s-1".into(),
             from: "ep-1".into(),
+            operator_username: Some("caodan".into()),
             mode: Mode::B,
             auto_accept: false,
         },
@@ -135,8 +136,41 @@ fn incoming_control_tagged() {
     let json = serde_json::to_string(&env).unwrap();
     assert!(json.contains("\"type\":\"incoming_control\""));
     assert!(json.contains("\"session_id\":\"s-1\""));
+    assert!(json.contains("\"operator_username\":\"caodan\""));
     let back: Envelope = serde_json::from_str(&json).unwrap();
-    assert!(matches!(back.payload, Message::IncomingControl { .. }));
+    assert!(matches!(
+        back.payload,
+        Message::IncomingControl {
+            operator_username: Some(name),
+            ..
+        } if name == "caodan"
+    ));
+}
+
+#[test]
+fn incoming_control_旧json无_operator_username_兼容() {
+    let old_json = r#"{
+        "from":"server",
+        "to":"ep-2",
+        "ts":0,
+        "payload":{
+            "type":"incoming_control",
+            "session_id":"s-1",
+            "from":"admin-vazkcy",
+            "mode":"b",
+            "auto_accept":true
+        }
+    }"#;
+
+    let back: Envelope = serde_json::from_str(old_json).unwrap();
+    assert!(matches!(
+        back.payload,
+        Message::IncomingControl {
+            from,
+            operator_username: None,
+            ..
+        } if from == "admin-vazkcy"
+    ));
 }
 
 #[test]
