@@ -118,7 +118,9 @@ check_existing_branches() {
     local specs_dir="$1"
 
     # Fetch all remotes to get latest branch info (suppress errors if no remotes)
-    git fetch --all --prune 2>/dev/null || true
+    # NOTE: 必须同时重定向 stdout——中文 locale 的 git fetch 会把「正在获取 origin」写到 stdout，
+    # 若只 2>/dev/null 会污染本函数的返回值（BRANCH_NUMBER 带中文 → 后续 10# 解析失败）。
+    git fetch --all --prune >/dev/null 2>&1 || true
 
     # Get highest number from ALL branches (not just matching short name)
     local highest_branch=$(get_highest_from_branches)
