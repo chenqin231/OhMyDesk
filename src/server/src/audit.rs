@@ -117,12 +117,16 @@ impl AuditStore {
 
     // ── HTTP 查询接口（/api/audit, /api/sessions）────────────────────────────
 
-    /// 查询审计日志（供 http.rs `/api/audit`）
+    /// 查询审计日志（供 http.rs `/api/audit`）。
+    /// `owner_scope`：None=superadmin 全量；Some(uid)=仅该账号归属终端的审计
+    /// （经 `session_id → sessions.to_id → endpoint_registry.owner_id` 关联；C1 修正：
+    /// 按目标终端归属过滤，非 actor_id——actor 是发起方 admin，不代表被控终端归属）。
     pub async fn query_audit(
         &self,
         endpoint: Option<&str>,
         from_ts: Option<i64>,
         to_ts: Option<i64>,
+        owner_scope: Option<&str>,
     ) -> Vec<AuditLog> {
         let Some(db) = &self.db else {
             return vec![];
@@ -140,6 +144,12 @@ impl AuditStore {
         if to_ts.is_some() {
             sql.push_str(" AND ts <= ?");
         }
+        if owner_scope.is_some() {
+            sql.push_str(
+                " AND session_id IN (SELECT id FROM sessions WHERE to_id IN \
+                 (SELECT id FROM endpoint_registry WHERE owner_id = ?))",
+            );
+        }
         sql.push_str(" ORDER BY ts DESC LIMIT 500");
 
         let mut q = sqlx::query_as::<_, AuditLogRow>(&sql);
@@ -152,6 +162,9 @@ impl AuditStore {
         if let Some(tt) = to_ts {
             q = q.bind(tt);
         }
+        if let Some(o) = owner_scope {
+            q = q.bind(o);
+        }
 
         match q.fetch_all(db).await {
             Ok(rows) => rows.into_iter().map(AuditLog::from).collect(),
@@ -162,17 +175,27 @@ impl AuditStore {
         }
     }
 
-    /// 查询历史会话（供 http.rs `/api/sessions`）
-    pub async fn query_sessions(&self) -> Vec<Session> {
+    /// 查询历史会话（供 http.rs `/api/sessions`）。
+    /// `owner_scope`：None=superadmin 全量；Some(uid)=仅 `to_id` 归属该账号的会话。
+    pub async fn query_sessions(&self, owner_scope: Option<&str>) -> Vec<Session> {
         let Some(db) = &self.db else {
             return vec![];
         };
-        match sqlx::query_as::<_, SessionRow>(
-            "SELECT id, mode, from_id, to_id, start_at, end_at, status, operator_user_id, operator_username, operator_role FROM sessions ORDER BY start_at DESC LIMIT 200",
-        )
-        .fetch_all(db)
-        .await
-        {
+        let mut sql = String::from(
+            "SELECT id, mode, from_id, to_id, start_at, end_at, status, operator_user_id, operator_username, operator_role FROM sessions",
+        );
+        if owner_scope.is_some() {
+            sql.push_str(
+                " WHERE to_id IN (SELECT id FROM endpoint_registry WHERE owner_id = ?)",
+            );
+        }
+        sql.push_str(" ORDER BY start_at DESC LIMIT 200");
+
+        let mut q = sqlx::query_as::<_, SessionRow>(&sql);
+        if let Some(o) = owner_scope {
+            q = q.bind(o);
+        }
+        match q.fetch_all(db).await {
             Ok(rows) => rows.into_iter().filter_map(session_from_row).collect(),
             Err(e) => {
                 tracing::warn!("查询 sessions 失败: {e}");
@@ -340,7 +363,7 @@ CREATE TABLE audit_logs (
             .log("sess-1", "admin-1", AuditType::Connect, "会话建立", Some(&actor))
             .await;
 
-        let logs = store.query_audit(None, None, None).await;
+        let logs = store.query_audit(None, None, None, None).await;
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].actor_user_id.as_deref(), Some("u-1"));
         assert_eq!(logs[0].actor_username.as_deref(), Some("alice"));
@@ -355,7 +378,7 @@ CREATE TABLE audit_logs (
             .log("sess-2", "ep-9", AuditType::Chat, "hi", None)
             .await;
 
-        let logs = store.query_audit(None, None, None).await;
+        let logs = store.query_audit(None, None, None, None).await;
         assert_eq!(logs.len(), 1);
         assert!(logs[0].actor_user_id.is_none());
         assert!(logs[0].actor_username.is_none());
@@ -381,5 +404,61 @@ CREATE TABLE audit_logs (
         let log = AuditLog::from(row);
         assert!(matches!(log.kind, AuditType::Chat));
         assert_eq!(log.text, "你好");
+    }
+
+    /// T018：审计/会话按 `session.to_id → owner` 隔离（C1 修正）——普通账号仅见自己负责终端相关，
+    /// 无对应 session 的审计不呈现（无泄露）；superadmin 全量。
+    #[tokio::test]
+    async fn query_audit_sessions_按owner隔离() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(AUDIT_DDL).execute(&pool).await.unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, mode TEXT, from_id TEXT, to_id TEXT, \
+             start_at INTEGER, end_at INTEGER, status TEXT, operator_user_id TEXT, \
+             operator_username TEXT, operator_role TEXT);\
+             CREATE TABLE endpoint_registry (id TEXT PRIMARY KEY, info TEXT NOT NULL, \
+             last_seen INTEGER NOT NULL, owner_id TEXT);\
+             INSERT INTO endpoint_registry(id,info,last_seen,owner_id) \
+             VALUES('ep-a','{}',1,'ua'),('ep-b','{}',1,'ub');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let store = AuditStore::new(Some(pool));
+
+        let sess = |id: &str, to: &str| Session {
+            id: id.into(),
+            mode: protocol::Mode::A,
+            from_id: "admin-x".into(),
+            to_id: to.into(),
+            start_at: 100,
+            end_at: None,
+            status: SessionStatus::Active,
+            operator_user_id: None,
+            operator_username: None,
+            operator_role: None,
+        };
+        store.insert_session(&sess("s1", "ep-a")).await;
+        store.insert_session(&sess("s2", "ep-b")).await;
+        store.log("s1", "admin-x", AuditType::Connect, "到 A", None).await;
+        store.log("s2", "admin-x", AuditType::Connect, "到 B", None).await;
+        // 无对应 session 的审计（如截图 req_id）：普通账号视角应不呈现（验证无泄露）。
+        store.log("s-none", "admin-x", AuditType::Screenshot, "无会话截图", None).await;
+
+        // A(ua) 审计仅 s1；不含 s2；不含无 session 的 a3。
+        let a_logs = store.query_audit(None, None, None, Some("ua")).await;
+        assert_eq!(a_logs.len(), 1, "A 仅见自己终端相关审计");
+        assert_eq!(a_logs[0].session_id, "s1");
+        // A 会话仅 s1。
+        let a_sess = store.query_sessions(Some("ua")).await;
+        assert_eq!(a_sess.len(), 1);
+        assert_eq!(a_sess[0].id, "s1");
+        // superadmin 全量：审计 3 条、会话 2 条。
+        assert_eq!(store.query_audit(None, None, None, None).await.len(), 3);
+        assert_eq!(store.query_sessions(None).await.len(), 2);
     }
 }

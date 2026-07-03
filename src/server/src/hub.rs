@@ -158,18 +158,34 @@ impl Hub {
         }
     }
 
-    /// 推送最新 endpoint_list 给所有 admin 连接；now 为秒级时间戳
+    /// 推送最新 endpoint_list 给每个 admin 连接——**逐连接按归属过滤**（行级隔离核心，T019）。
+    /// 每个 admin 只收到 owner==自己 的终端；superadmin 收全量（含 owner=None 旧端）。
+    /// 从「全量广播」改为「逐 admin 序列化」：他人终端上线触发 push 时，普通 admin 通道任何一帧
+    /// 都不含他人终端（推送级隔离，AC-005-E2）。now 为秒级时间戳。
     pub fn push_list(&self, now: i64) {
-        let env = Envelope {
-            from: "server".into(),
-            to: None,
-            ts: now,
-            payload: Message::EndpointList {
-                endpoints: self.reg.views(now),
-            },
-        };
-        if let Ok(json) = serde_json::to_string(&env) {
-            self.broadcast_admins(&json);
+        // 注：遍历 clients（DashMap）时对每个 admin 查 actors（另一 map）+ 直接 send，
+        // 不复用 send_to（会二次锁 clients），避免同 map 重入。
+        for kv in self.clients.iter() {
+            let conn_id = kv.key();
+            if !conn_id.starts_with("admin-") {
+                continue;
+            }
+            let (viewer, is_super) = match self.actor_of(conn_id) {
+                Some(a) => (Some(a.user_id), a.is_superadmin),
+                None => (None, false), // 无身份 admin（不应出现）→ 空集，绝不泄露
+            };
+            let endpoints = self
+                .reg
+                .views_visible_to(now, viewer.as_deref(), is_super);
+            let env = Envelope {
+                from: "server".into(),
+                to: Some(conn_id.clone()),
+                ts: now,
+                payload: Message::EndpointList { endpoints },
+            };
+            if let Ok(json) = serde_json::to_string(&env) {
+                let _ = kv.value().send(json);
+            }
         }
     }
 
@@ -1019,6 +1035,9 @@ mod tests {
         let (victim_tx, mut victim_rx) = mpsc::unbounded_channel::<String>();
         hub.add_client("admin-x".into(), admin_tx);
         hub.add_client("ep-victim".into(), victim_tx);
+        // 归属范围闸（T020）：ep-victim 须归属该操作人（u-op）才可被其远控；
+        // 否则即便持 use_remote 也越权被拒（见 connect_request_归属范围闸）。
+        hub.reg.upsert(ep_owned("ep-victim"), "pw".into(), 200, Some("u-op".into()));
         hub.bind_actor(
             "admin-x",
             ActorIdentity {
@@ -1208,5 +1227,149 @@ mod tests {
         // 反越权：A 可见、B 不可见。
         assert_eq!(hub.reg.views_visible_to(100, Some("ua"), false).len(), 1);
         assert_eq!(hub.reg.views_visible_to(100, Some("ub"), false).len(), 0);
+    }
+
+    // ── US2 测试辅助 ────────────────────────────────────────────────────
+    fn ep_owned(id: &str) -> protocol::EndpointInfo {
+        let mut e = protocol::EndpointInfo::sample();
+        e.id = id.to_string();
+        e
+    }
+    fn actor_of_uid(uid: &str, is_super: bool) -> ActorIdentity {
+        ActorIdentity {
+            user_id: uid.to_string(),
+            username: uid.to_string(),
+            role: if is_super { "superadmin" } else { "user" }.to_string(),
+            permissions: crate::users::PermissionSet::parse("view_assets,view_grid,use_remote"),
+            is_superadmin: is_super,
+        }
+    }
+    /// 抽取某通道收到的最后一条 EndpointList 的 id 集合（排序）。
+    fn list_ids(rx: &mut mpsc::UnboundedReceiver<String>) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        while let Ok(s) = rx.try_recv() {
+            let env: Envelope = serde_json::from_str(&s).unwrap();
+            if let Message::EndpointList { endpoints } = env.payload {
+                out = endpoints.into_iter().map(|v| v.info.id).collect();
+                out.sort();
+            }
+        }
+        out
+    }
+
+    /// T016【RED】push_list 逐 admin 按 owner 过滤；superadmin 全量；推送级隔离（AC-005-H1/H2/E2）。
+    #[tokio::test]
+    async fn push_list_每admin按owner过滤() {
+        let hub = test_hub();
+        hub.reg.upsert(ep_owned("ep-a"), "pw".into(), 100, Some("ua".into()));
+        hub.reg.upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
+
+        let (a_tx, mut a_rx) = mpsc::unbounded_channel::<String>();
+        let (b_tx, mut b_rx) = mpsc::unbounded_channel::<String>();
+        let (s_tx, mut s_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-a".into(), a_tx);
+        hub.add_client("admin-b".into(), b_tx);
+        hub.add_client("admin-s".into(), s_tx);
+        hub.bind_actor("admin-a", actor_of_uid("ua", false));
+        hub.bind_actor("admin-b", actor_of_uid("ub", false));
+        hub.bind_actor("admin-s", actor_of_uid("us", true));
+
+        hub.push_list(100);
+        assert_eq!(list_ids(&mut a_rx), vec!["ep-a"], "admin-A 仅见自己归属");
+        assert_eq!(list_ids(&mut b_rx), vec!["ep-b"], "admin-B 仅见自己归属");
+        assert_eq!(list_ids(&mut s_rx), vec!["ep-a", "ep-b"], "superadmin 全量");
+
+        // AC-005-E2 推送级：ep-b 再触发 push，admin-A 通道任何帧都不含 ep-b。
+        hub.reg.upsert(ep_owned("ep-b"), "pw".into(), 101, Some("ub".into()));
+        hub.push_list(101);
+        assert_eq!(list_ids(&mut a_rx), vec!["ep-a"], "推送级隔离：admin-A 永不含他人终端");
+    }
+
+    /// T017【RED】ConnectRequest 归属范围闸（AC-006-H1/E1/E2）：
+    /// A 控他人/NULL 终端→拒绝(不建会话)+回带 reason；A 控自有→放行；superadmin→放行。
+    #[tokio::test]
+    async fn connect_request_归属范围闸() {
+        let hub = test_hub();
+        hub.reg.upsert(ep_owned("ep-a"), "pw".into(), 100, Some("ua".into()));
+        hub.reg.upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
+        hub.reg.upsert(ep_owned("ep-n"), "pw".into(), 100, None);
+        for id in ["ep-a", "ep-b", "ep-n"] {
+            let (t, _r) = mpsc::unbounded_channel::<String>();
+            hub.add_client(id.into(), t);
+        }
+
+        // 发起方 A（use_remote 权限，归属 ua）
+        let (a_tx, mut a_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-a".into(), a_tx);
+        hub.bind_actor("admin-a", actor_of_uid("ua", false));
+
+        let req = |target: &str| Envelope {
+            from: "admin-a".into(),
+            to: None,
+            ts: 200,
+            payload: Message::ConnectRequest {
+                mode: Mode::A,
+                target: target.into(),
+                password: None,
+                force: true,
+            },
+        };
+
+        // A 控他人终端 ep-b → 拒绝：不建会话 + 回 Reject「无权远控该终端」
+        hub.handle(req("ep-b"), 200).await;
+        assert!(
+            hub.sessions.active_sessions().is_empty(),
+            "越权远控不应建会话"
+        );
+        let reject = a_rx.try_recv().expect("越权应回拒连消息");
+        let env: Envelope = serde_json::from_str(&reject).unwrap();
+        match env.payload {
+            Message::Reject { reason, .. } => {
+                assert_eq!(reason, "无权远控该终端", "拒连 reason 供 web RejectedCard 渲染")
+            }
+            other => panic!("应为 Reject，实际 {other:?}"),
+        }
+
+        // A 控 owner=None 旧端 → 同样拒绝（非 superadmin）
+        hub.handle(req("ep-n"), 200).await;
+        assert!(hub.sessions.active_sessions().is_empty(), "控 NULL 端不应建会话");
+        assert!(a_rx.try_recv().is_ok(), "控 NULL 端应回拒连");
+
+        // A 控自有终端 ep-a → 放行（mode A force → 建 Active 会话）
+        hub.handle(req("ep-a"), 200).await;
+        assert_eq!(
+            hub.sessions.active_sessions().len(),
+            1,
+            "控自有终端应建会话"
+        );
+
+        // superadmin 控他人终端 → 放行
+        let hub2 = test_hub();
+        hub2.reg.upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
+        let (tb, _rb) = mpsc::unbounded_channel::<String>();
+        hub2.add_client("ep-b".into(), tb);
+        let (sa_tx, _sa_rx) = mpsc::unbounded_channel::<String>();
+        hub2.add_client("admin-s".into(), sa_tx);
+        hub2.bind_actor("admin-s", actor_of_uid("us", true));
+        hub2.handle(
+            Envelope {
+                from: "admin-s".into(),
+                to: None,
+                ts: 200,
+                payload: Message::ConnectRequest {
+                    mode: Mode::A,
+                    target: "ep-b".into(),
+                    password: None,
+                    force: true,
+                },
+            },
+            200,
+        )
+        .await;
+        assert_eq!(
+            hub2.sessions.active_sessions().len(),
+            1,
+            "superadmin 控任意终端放行"
+        );
     }
 }
