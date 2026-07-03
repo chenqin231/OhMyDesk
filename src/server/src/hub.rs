@@ -1372,4 +1372,95 @@ mod tests {
             "superadmin 控任意终端放行"
         );
     }
+
+    /// T025（AC-008-H1）：无 token 旧端 Register → 上线成功、owner=NULL；
+    /// 普通账号不可见、superadmin 可见（不因缺 token 被拒——gate 只拦 admin- 前缀）。
+    #[tokio::test]
+    async fn register_无token旧端_owner_null_仅superadmin可见() {
+        let hub = test_hub();
+        // 不 bind_actor（模拟无 token 旧端连接）→ actor_of=None → owner=None。
+        let env = Envelope {
+            from: "ep-old".into(),
+            to: None,
+            ts: 100,
+            payload: Message::Register {
+                info: Box::new(ep_owned("ep-old")),
+                password: "pw".into(),
+            },
+        };
+        hub.handle(env, 100).await;
+
+        // 上线成功、owner=NULL。
+        let sup = hub.reg.views_visible_to(100, None, true);
+        assert_eq!(sup.len(), 1, "无 token 旧端应正常上线");
+        assert_eq!(sup[0].owner_id, None, "无 token 旧端 owner=NULL");
+        // 普通账号不可见（b）。
+        assert!(
+            hub.reg.views_visible_to(100, Some("ua"), false).is_empty(),
+            "普通账号不可见无归属旧端"
+        );
+    }
+
+    /// T027（AC-008-H1/E1 · c 点）：owner=None 旧端远控守卫——普通账号控旧端被拒（不建会话），
+    /// superadmin 控旧端放行。与 T025（a/b）合起来坐实旧端「仅 superadmin 可见/可控」。
+    #[tokio::test]
+    async fn owner_none_旧端_远控守卫() {
+        // 普通账号 A 控 owner=None 旧端 → 拒绝。
+        let hub = test_hub();
+        hub.reg.upsert(ep_owned("ep-old"), "pw".into(), 100, None);
+        let (t, _r) = mpsc::unbounded_channel::<String>();
+        hub.add_client("ep-old".into(), t);
+        let (a_tx, mut a_rx) = mpsc::unbounded_channel::<String>();
+        hub.add_client("admin-a".into(), a_tx);
+        hub.bind_actor("admin-a", actor_of_uid("ua", false));
+        hub.handle(
+            Envelope {
+                from: "admin-a".into(),
+                to: None,
+                ts: 200,
+                payload: Message::ConnectRequest {
+                    mode: Mode::A,
+                    target: "ep-old".into(),
+                    password: None,
+                    force: true,
+                },
+            },
+            200,
+        )
+        .await;
+        assert!(
+            hub.sessions.active_sessions().is_empty(),
+            "普通账号控无归属旧端不应建会话"
+        );
+        assert!(a_rx.try_recv().is_ok(), "应回拒连消息");
+
+        // superadmin 控同一 owner=None 旧端 → 放行。
+        let hub2 = test_hub();
+        hub2.reg.upsert(ep_owned("ep-old"), "pw".into(), 100, None);
+        let (t2, _r2) = mpsc::unbounded_channel::<String>();
+        hub2.add_client("ep-old".into(), t2);
+        let (s_tx, _s_rx) = mpsc::unbounded_channel::<String>();
+        hub2.add_client("admin-s".into(), s_tx);
+        hub2.bind_actor("admin-s", actor_of_uid("us", true));
+        hub2.handle(
+            Envelope {
+                from: "admin-s".into(),
+                to: None,
+                ts: 200,
+                payload: Message::ConnectRequest {
+                    mode: Mode::A,
+                    target: "ep-old".into(),
+                    password: None,
+                    force: true,
+                },
+            },
+            200,
+        )
+        .await;
+        assert_eq!(
+            hub2.sessions.active_sessions().len(),
+            1,
+            "superadmin 可控无归属旧端"
+        );
+    }
 }

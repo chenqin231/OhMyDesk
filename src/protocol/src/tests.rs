@@ -188,3 +188,21 @@ fn export_all() {
     Session::export_all_to(dir).unwrap(); // 同上（带出 SessionStatus）
     LoginLogEntry::export_all_to(dir).unwrap(); // 功能②：登录日志类型
 }
+
+/// T026（AC-008-E1）：旧端 EndpointView JSON（无 owner_id 键）反序列化 → owner_id=None，
+/// 其余字段完整，不报错不丢消息。owner_id: Option 兜底旧端 serde（历史教训：加字段破坏兼容）。
+#[test]
+fn endpoint_view_旧json无owner_id_兼容() {
+    let info_json = serde_json::to_string(&EndpointInfo::sample()).unwrap();
+    // 模拟旧端序列化：不含 owner_id 键。
+    let old_json = format!(
+        r#"{{"info":{info_json},"online":true,"last_seen":123,"xinchuang":"信创·麒麟·龙芯"}}"#
+    );
+    let view: EndpointView =
+        serde_json::from_str(&old_json).expect("旧 JSON（缺 owner_id）应能反序列化");
+    assert_eq!(view.owner_id, None, "缺 owner_id 键 → None");
+    assert_eq!(view.info.id, "ep-001", "其余字段完整");
+    assert_eq!(view.xinchuang, "信创·麒麟·龙芯");
+    assert!(view.online);
+    assert_eq!(view.last_seen, 123);
+}
