@@ -393,6 +393,9 @@ pub struct EndpointView {
     pub online: bool,
     pub last_seen: i64,
     pub xinchuang: String,
+    /// 归属账号 user_id（服务端从连接 JWT 派生，非客户端自报）。
+    /// `Option` 兜底旧端 serde：旧 JSON 缺此键反序列化为 None，不破坏兼容。
+    pub owner_id: Option<String>,
 }
 
 // ── 会话与审计实体（ts-rs 导出给前端审计页 + mock；裁决 C-1 audit type 统一）──

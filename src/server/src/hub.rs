@@ -278,7 +278,8 @@ impl Hub {
         match &env.payload {
             // ── 注册（W0-1：回发 RegisterAck；刷新注册表 + 广播列表）──────────
             Message::Register { info, password } => {
-                self.reg.upsert(*info.clone(), password.clone(), now);
+                // T005 Foundational：暂传 None 保持行为不变；T009 改为从连接 JWT 注入 owner。
+                self.reg.upsert(*info.clone(), password.clone(), now, None);
                 self.send_ack(&env.from, now);
                 self.push_list(now);
             }
