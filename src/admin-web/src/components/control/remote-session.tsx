@@ -37,6 +37,23 @@ function MetaItem({ label, value }: { label: string; value: string }) {
   );
 }
 
+// 三轴档位选项（模块级常量：RemoteSession 每帧随 remoteFrame 重渲染，避免逐帧新建数组）
+const RES_OPTS: { v: ResolutionTier; label: string }[] = [
+  { v: "r720p", label: "720" },
+  { v: "r900p", label: "900" },
+  { v: "r1080p", label: "1080" },
+  { v: "native", label: "原生" },
+];
+const CLARITY_OPTS: { v: ClarityTier; label: string }[] = [
+  { v: "standard", label: "标准" },
+  { v: "high", label: "高清" },
+];
+const FPS_OPTS: { v: FpsTier; label: string }[] = [
+  { v: "smooth", label: "流畅" },
+  { v: "standard", label: "标准" },
+  { v: "saver", label: "省流" },
+];
+
 /** 分段按钮组：三轴显示参数共用（样式与原「流畅/高清」一致） */
 function SegGroup<T extends string>({
   label,
@@ -278,31 +295,19 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
             <div className="flex flex-wrap items-center gap-1.5">
               <SegGroup<ResolutionTier>
                 label="分辨率"
-                options={[
-                  { v: "r720p", label: "720" },
-                  { v: "r900p", label: "900" },
-                  { v: "r1080p", label: "1080" },
-                  { v: "native", label: "原生" },
-                ]}
+                options={RES_OPTS}
                 value={remoteResolution}
                 onChange={(v) => setRemoteDisplayParams({ resolution: v })}
               />
               <SegGroup<ClarityTier>
                 label="清晰度"
-                options={[
-                  { v: "standard", label: "标准" },
-                  { v: "high", label: "高清" },
-                ]}
+                options={CLARITY_OPTS}
                 value={remoteClarity}
                 onChange={(v) => setRemoteDisplayParams({ clarity: v })}
               />
               <SegGroup<FpsTier>
                 label="帧率"
-                options={[
-                  { v: "smooth", label: "流畅" },
-                  { v: "standard", label: "标准" },
-                  { v: "saver", label: "省流" },
-                ]}
+                options={FPS_OPTS}
                 value={remoteFps}
                 onChange={(v) => setRemoteDisplayParams({ fps: v })}
               />

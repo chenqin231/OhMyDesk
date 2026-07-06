@@ -153,7 +153,7 @@ pub fn params_for_tiers(res, clarity, fps) -> QualityParams {
 ## 8. 测试计划
 
 1. **单元**（cargo test -p client）：
-   - `params_for_tiers` 全 4×2×3=24 组合快照；Native 不放大（小屏 800×600 原样发）。
+   - `params_for_tiers` 参数合成测试；Native 不放大（小屏 800×600 原样发）。实现注：因三轴映射相互独立，参数值改为按轴抽样断言，24 全组合覆盖由 pack/unpack 往返测试承担。
    - 旧 `params_for(mode)` 兜底映射：分辨率/jpeg_q 与旧值一致；interval 按 §3.3 调整（Smooth=40ms 不变，HighQuality 100→66ms）。
    - TIERS 打包/解包往返。
 2. **协议契约**（cargo test -p protocol）：
