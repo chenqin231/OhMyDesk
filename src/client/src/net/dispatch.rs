@@ -208,15 +208,23 @@ pub(super) async fn handle_downlink(
                 INJECT_TX.with_send(session_id, event);
             }
         }
-        // 被控端收主控切换的画质档位 → 更新采集参数（仅本会话被控态时生效）
-        Message::SetQuality { session_id, mode } => {
+        // 被控端收主控切换的显示参数 → 更新采集三轴（仅本会话被控态时生效）
+        Message::SetQuality {
+            session_id,
+            mode,
+            resolution,
+            clarity,
+            fps,
+        } => {
             let controlled =
                 session.lock().await.controlled.as_deref() == Some(session_id.as_str());
             tracing::info!(
-                "被控收到画质切换 mode={mode:?} controlled={controlled} session={session_id}"
+                "被控收到画质切换 mode={mode:?} res={resolution:?} clarity={clarity:?} fps={fps:?} controlled={controlled} session={session_id}"
             );
             if controlled {
-                crate::capture::set_quality(mode);
+                let (r, c, f) =
+                    crate::capture::tiers_from_set_quality(mode, resolution, clarity, fps);
+                crate::capture::set_tiers(r, c, f);
                 // 手动切档立即重置自适应降档，让用户选择先生效（弱机上避免被 adaptive 立即拉回）。
                 crate::adaptive::request_reset();
                 let p = crate::capture::current_params();
@@ -260,7 +268,7 @@ pub(super) async fn handle_downlink(
             }
             CLIPBOARD_TX.send(ClipboardMsg::Stop);
             crate::transfer::clear_pull_targets(); // 清理本会话残留的取回目标登记
-            // 携结束的 session_id 上抛，UI 侧据此门控清理被控会话副本（对齐上方 controlled 的按 id 清理）。
+                                                   // 携结束的 session_id 上抛，UI 侧据此门控清理被控会话副本（对齐上方 controlled 的按 id 清理）。
             let _ = to_ui.send(ToUi::SessionEnded { session_id });
         }
 
@@ -682,11 +690,23 @@ pub(super) async fn handle_uplink(
             ts: now(),
             payload: Message::RemoteNotice { session_id, text },
         },
-        FromUi::SetQuality { session_id, mode } => Envelope {
+        FromUi::SetQuality {
+            session_id,
+            mode,
+            resolution,
+            clarity,
+            fps,
+        } => Envelope {
             from: self_id.to_string(),
             to: None, // server 按 session_id 路由给被控端
             ts: now(),
-            payload: Message::SetQuality { session_id, mode },
+            payload: Message::SetQuality {
+                session_id,
+                mode,
+                resolution,
+                clarity,
+                fps,
+            },
         },
         FromUi::ClipboardSync { session_id, text } => Envelope {
             from: self_id.to_string(),
@@ -1270,8 +1290,14 @@ mod tests {
 
     #[test]
     fn 控制方显示名_缺账号名时回退连接id() {
-        assert_eq!(control_peer_name(Some(" caodan "), "admin-vazkcy"), "caodan");
-        assert_eq!(control_peer_name(Some("   "), "admin-vazkcy"), "admin-vazkcy");
+        assert_eq!(
+            control_peer_name(Some(" caodan "), "admin-vazkcy"),
+            "caodan"
+        );
+        assert_eq!(
+            control_peer_name(Some("   "), "admin-vazkcy"),
+            "admin-vazkcy"
+        );
         assert_eq!(control_peer_name(None, "admin-vazkcy"), "admin-vazkcy");
     }
 

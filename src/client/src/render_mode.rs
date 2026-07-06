@@ -1,4 +1,4 @@
-//! 渲染/推帧运行模式（spec §3.6）。5 档 + 原子组，运行期热切复用 capture.rs QUALITY 范式。
+//! 渲染/推帧运行模式（spec §3.6）。5 档 + 原子组，运行期热切复用 capture.rs TIERS 范式。
 
 use crate::capture::QualityParams;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -59,7 +59,7 @@ pub fn parse_mode(s: &str) -> Option<RenderMode> {
     }
 }
 
-/// 低带宽档对 QualityParams 设地板（不写 QUALITY，与 SetQuality 正交）。
+/// 低带宽档对 QualityParams 设地板（不写 TIERS，与 SetQuality 正交）。
 pub const LOW_BW_INTERVAL_MS: u64 = 150;
 pub fn clamp_params(p: QualityParams, mode: RenderMode) -> QualityParams {
     if mode == RenderMode::LowBandwidth {
@@ -104,7 +104,11 @@ pub fn set_telemetry(on: bool) {
 
 /// 优先级解析：env mode > 启动参数 > 配置文件 > 默认 Frameskip。
 /// 再用 OHMYDESK_FRAMESKIP/OHMYDESK_DIRTY_TELEMETRY 单独覆盖两开关（最高）。
-pub fn resolve(env_mode: Option<&str>, arg_mode: Option<&str>, config_mode: Option<&str>) -> RenderMode {
+pub fn resolve(
+    env_mode: Option<&str>,
+    arg_mode: Option<&str>,
+    config_mode: Option<&str>,
+) -> RenderMode {
     env_mode
         .and_then(parse_mode)
         .or_else(|| arg_mode.and_then(parse_mode))
@@ -118,14 +122,23 @@ mod tests {
 
     #[test]
     fn parse往返与未知() {
-        assert_eq!(parse_mode("legacy-full-frame"), Some(RenderMode::LegacyFullFrame));
+        assert_eq!(
+            parse_mode("legacy-full-frame"),
+            Some(RenderMode::LegacyFullFrame)
+        );
         assert_eq!(parse_mode("Frameskip"), Some(RenderMode::Frameskip));
         assert_eq!(parse_mode("xxx"), None);
     }
 
     #[test]
     fn u8往返() {
-        for m in [RenderMode::LegacyFullFrame, RenderMode::Frameskip, RenderMode::FullFrameWithTelemetry, RenderMode::LowBandwidth, RenderMode::Diagnostic] {
+        for m in [
+            RenderMode::LegacyFullFrame,
+            RenderMode::Frameskip,
+            RenderMode::FullFrameWithTelemetry,
+            RenderMode::LowBandwidth,
+            RenderMode::Diagnostic,
+        ] {
             assert_eq!(RenderMode::from_u8(m.as_u8()), m);
         }
     }
@@ -140,11 +153,24 @@ mod tests {
     #[test]
     fn resolve优先级() {
         // env 最高
-        assert_eq!(resolve(Some("legacy-full-frame"), Some("frameskip"), Some("diagnostic")), RenderMode::LegacyFullFrame);
+        assert_eq!(
+            resolve(
+                Some("legacy-full-frame"),
+                Some("frameskip"),
+                Some("diagnostic")
+            ),
+            RenderMode::LegacyFullFrame
+        );
         // env 缺→arg
-        assert_eq!(resolve(None, Some("low-bandwidth"), Some("diagnostic")), RenderMode::LowBandwidth);
+        assert_eq!(
+            resolve(None, Some("low-bandwidth"), Some("diagnostic")),
+            RenderMode::LowBandwidth
+        );
         // 都缺→config
-        assert_eq!(resolve(None, None, Some("diagnostic")), RenderMode::Diagnostic);
+        assert_eq!(
+            resolve(None, None, Some("diagnostic")),
+            RenderMode::Diagnostic
+        );
         // 全缺→默认
         assert_eq!(resolve(None, None, None), RenderMode::Frameskip);
     }
@@ -160,13 +186,30 @@ mod tests {
 
     #[test]
     fn low_bandwidth_clamp设地板() {
-        let hq = QualityParams { max_w: 1920, max_h: 1080, jpeg_q: 88, interval_ms: 100 };
+        let hq = QualityParams {
+            max_w: 1920,
+            max_h: 1080,
+            jpeg_q: 88,
+            interval_ms: 100,
+        };
         let c = clamp_params(hq, RenderMode::LowBandwidth);
-        assert_eq!((c.max_w, c.max_h, c.jpeg_q), (1280, 720, 80), "强制 smooth 上限");
+        assert_eq!(
+            (c.max_w, c.max_h, c.jpeg_q),
+            (1280, 720, 80),
+            "强制 smooth 上限"
+        );
         assert_eq!(c.interval_ms, LOW_BW_INTERVAL_MS, "间隔地板 150ms");
         // 非 low-bandwidth 不改
-        let hq2 = QualityParams { max_w: 1920, max_h: 1080, jpeg_q: 88, interval_ms: 100 };
+        let hq2 = QualityParams {
+            max_w: 1920,
+            max_h: 1080,
+            jpeg_q: 88,
+            interval_ms: 100,
+        };
         let p = clamp_params(hq2, RenderMode::Frameskip);
-        assert_eq!((p.max_w, p.max_h, p.jpeg_q, p.interval_ms), (1920, 1080, 88, 100));
+        assert_eq!(
+            (p.max_w, p.max_h, p.jpeg_q, p.interval_ms),
+            (1920, 1080, 88, 100)
+        );
     }
 }

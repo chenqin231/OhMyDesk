@@ -29,10 +29,10 @@ use crate::asset;
 /// net → UI：下行事件（UI 据此更新提示条/弹窗/贴帧）。
 /// 更新状态阶段：UI 的颜色/脉冲只依赖此量，不匹配中文文案（文案可变、阶段稳定）。
 pub mod update_phase {
-    pub const IDLE: u8 = 0;        // 空闲/已最新
-    pub const CHECKING: u8 = 1;    // 检查中
+    pub const IDLE: u8 = 0; // 空闲/已最新
+    pub const CHECKING: u8 = 1; // 检查中
     pub const DOWNLOADING: u8 = 2; // 下载中
-    pub const FAILED: u8 = 3;      // 失败/会话延迟
+    pub const FAILED: u8 = 3; // 失败/会话延迟
 }
 
 #[derive(Debug, Clone)]
@@ -114,7 +114,11 @@ pub enum ToUi {
         text: String,
     },
     /// 发现新版：UI 弹更新横幅（version/url/notes）。
-    UpdateAvailable { version: String, url: String, notes: Option<String> },
+    UpdateAvailable {
+        version: String,
+        url: String,
+        notes: Option<String>,
+    },
     /// 更新流程状态文本（始终可见的状态行：检查中/已是最新/下载中/失败等）。
     UpdateStatus { text: String, phase: u8 },
 }
@@ -150,10 +154,14 @@ pub enum FromUi {
     },
     /// 被控端会话内提示回流（如 Wayland 无法截屏）→ 主控端展示，替代「无限等待第一帧」。
     Notice { session_id: String, text: String },
-    /// 主控端切换画质档位（高清/流畅）→ 发 SetQuality 给被控端。
+    /// 主控端切换三轴显示参数（分辨率/清晰度/帧率）→ 发 SetQuality 给被控端。
+    /// mode 为旧被控端兜底字段（按清晰度映射）；三轴 None 时对端回退 mode 旧映射。
     SetQuality {
         session_id: String,
         mode: protocol::QualityMode,
+        resolution: Option<protocol::ResolutionTier>,
+        clarity: Option<protocol::ClarityTier>,
+        fps: Option<protocol::FpsTier>,
     },
     /// 主动断开当前会话。
     Disconnect { session_id: String },
@@ -406,14 +414,22 @@ mod update_phase_tests {
     #[test]
     fn phase常量取值() {
         assert_eq!(
-            (update_phase::IDLE, update_phase::CHECKING, update_phase::DOWNLOADING, update_phase::FAILED),
+            (
+                update_phase::IDLE,
+                update_phase::CHECKING,
+                update_phase::DOWNLOADING,
+                update_phase::FAILED
+            ),
             (0u8, 1u8, 2u8, 3u8)
         );
     }
 
     #[test]
     fn update_status_携带_phase() {
-        let m = ToUi::UpdateStatus { text: "检查中".into(), phase: update_phase::CHECKING };
+        let m = ToUi::UpdateStatus {
+            text: "检查中".into(),
+            phase: update_phase::CHECKING,
+        };
         match m {
             ToUi::UpdateStatus { phase, .. } => assert_eq!(phase, 1),
             _ => panic!("变体不符"),

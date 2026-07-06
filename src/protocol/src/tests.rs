@@ -223,6 +223,59 @@ fn export_all() {
     LoginLogEntry::export_all_to(dir).unwrap(); // 功能②：登录日志类型
 }
 
+#[test]
+fn set_quality_旧json_三轴字段缺省为none() {
+    // 旧主控(≤0.5.0)只发 mode:新被控必须能解析且三轴为 None(回退 mode 旧映射)。
+    let json = r#"{"from":"admin-1","to":null,"ts":1719500000,"payload":{"type":"set_quality","session_id":"s-1","mode":"high_quality"}}"#;
+    let env: Envelope = serde_json::from_str(json).unwrap();
+    match env.payload {
+        Message::SetQuality {
+            mode,
+            resolution,
+            clarity,
+            fps,
+            ..
+        } => {
+            assert_eq!(mode, QualityMode::HighQuality);
+            assert!(resolution.is_none() && clarity.is_none() && fps.is_none());
+        }
+        _ => panic!("应判别为 SetQuality"),
+    }
+}
+
+#[test]
+fn set_quality_三轴字段_序列化往返() {
+    let env = Envelope {
+        from: "admin-1".into(),
+        to: None,
+        ts: 1719500000,
+        payload: Message::SetQuality {
+            session_id: "s-1".into(),
+            mode: QualityMode::Smooth,
+            resolution: Some(ResolutionTier::Native),
+            clarity: Some(ClarityTier::High),
+            fps: Some(FpsTier::Saver),
+        },
+    };
+    let json = serde_json::to_string(&env).unwrap();
+    assert!(
+        json.contains("\"resolution\":\"native\""),
+        "snake_case 序列化: {json}"
+    );
+    assert!(json.contains("\"clarity\":\"high\""));
+    assert!(json.contains("\"fps\":\"saver\""));
+    let back: Envelope = serde_json::from_str(&json).unwrap();
+    assert!(matches!(
+        back.payload,
+        Message::SetQuality {
+            resolution: Some(ResolutionTier::Native),
+            clarity: Some(ClarityTier::High),
+            fps: Some(FpsTier::Saver),
+            ..
+        }
+    ));
+}
+
 /// T026（AC-008-E1）：旧端 EndpointView JSON（无 owner_id 键）反序列化 → owner_id=None，
 /// 其余字段完整，不报错不丢消息。owner_id: Option 兜底旧端 serde（历史教训：加字段破坏兼容）。
 #[test]

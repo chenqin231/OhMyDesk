@@ -125,7 +125,9 @@ pub fn wire_ui_callbacks(
         let ui_weak = ui.as_weak();
         let activity = activity.clone();
         let cb = move || {
-            if accept && activity.is_updating() { return; } // 替换窗口内拒绝被控接入
+            if accept && activity.is_updating() {
+                return;
+            } // 替换窗口内拒绝被控接入
             let sid = sess.lock().unwrap().clone().unwrap_or_default();
             let _ = tx.send(net::FromUi::AuthDecision {
                 session_id: sid,
@@ -156,7 +158,9 @@ pub fn wire_ui_callbacks(
         ui.on_connect_b(move || {
             // 更新中门控
             if activity.is_updating() {
-                if let Some(ui) = ui_weak.upgrade() { ui.set_remote_status("正在更新，请稍后".into()); }
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_remote_status("正在更新，请稍后".into());
+                }
                 return;
             }
             // 新连接意图：清掉「已断开会话」标记，否则若复用同一 id 会话，帧会被误丢。
@@ -212,13 +216,30 @@ pub fn wire_ui_callbacks(
             }
         });
     }
-    // 主控切换画质档位（高清优先 / 流畅优先）→ 发 SetQuality 给被控端
+    // int 档位语义与 app.slint res_tier/clarity_tier/fps_tier 注释及数组顺序一一对应,改动需两侧同步
+    // 主控切换三轴显示参数（分辨率/清晰度/帧率）→ 发 SetQuality 给被控端
     {
         let tx = from_ui_tx.clone();
         let sess = cur_session.clone();
-        ui.on_set_quality(move |high| {
+        ui.on_set_display_params(move |res, clarity, fps| {
             if let Some(sid) = sess.lock().unwrap().clone() {
-                let mode = if high {
+                let resolution = match res {
+                    1 => protocol::ResolutionTier::R900p,
+                    2 => protocol::ResolutionTier::R1080p,
+                    3 => protocol::ResolutionTier::Native,
+                    _ => protocol::ResolutionTier::R720p,
+                };
+                let clarity_t = match clarity {
+                    1 => protocol::ClarityTier::High,
+                    _ => protocol::ClarityTier::Standard,
+                };
+                let fps_t = match fps {
+                    1 => protocol::FpsTier::Standard,
+                    2 => protocol::FpsTier::Saver,
+                    _ => protocol::FpsTier::Smooth,
+                };
+                // 旧被控端（≤0.5.0）兜底：mode 按清晰度映射
+                let mode = if matches!(clarity_t, protocol::ClarityTier::High) {
                     protocol::QualityMode::HighQuality
                 } else {
                     protocol::QualityMode::Smooth
@@ -226,6 +247,9 @@ pub fn wire_ui_callbacks(
                 let _ = tx.send(net::FromUi::SetQuality {
                     session_id: sid,
                     mode,
+                    resolution: Some(resolution),
+                    clarity: Some(clarity_t),
+                    fps: Some(fps_t),
                 });
             }
         });
@@ -766,7 +790,10 @@ pub async fn consume_to_ui(
         let mut dropped = 0u32;
         while matches!(ev, net::ToUi::Frame { .. }) {
             match rx.try_recv() {
-                Ok(next) => { ev = next; dropped += 1; }
+                Ok(next) => {
+                    ev = next;
+                    dropped += 1;
+                }
                 Err(_) => break,
             }
         }
@@ -1120,7 +1147,11 @@ pub async fn consume_to_ui(
                     }
                 });
             }
-            net::ToUi::UpdateAvailable { version, url, notes } => {
+            net::ToUi::UpdateAvailable {
+                version,
+                url,
+                notes,
+            } => {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_update_available(true);
