@@ -125,7 +125,9 @@ pub fn wire_ui_callbacks(
         let ui_weak = ui.as_weak();
         let activity = activity.clone();
         let cb = move || {
-            if accept && activity.is_updating() { return; } // 替换窗口内拒绝被控接入
+            if accept && activity.is_updating() {
+                return;
+            } // 替换窗口内拒绝被控接入
             let sid = sess.lock().unwrap().clone().unwrap_or_default();
             let _ = tx.send(net::FromUi::AuthDecision {
                 session_id: sid,
@@ -156,7 +158,9 @@ pub fn wire_ui_callbacks(
         ui.on_connect_b(move || {
             // 更新中门控
             if activity.is_updating() {
-                if let Some(ui) = ui_weak.upgrade() { ui.set_remote_status("正在更新，请稍后".into()); }
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_remote_status("正在更新，请稍后".into());
+                }
                 return;
             }
             // 新连接意图：清掉「已断开会话」标记，否则若复用同一 id 会话，帧会被误丢。
@@ -226,6 +230,9 @@ pub fn wire_ui_callbacks(
                 let _ = tx.send(net::FromUi::SetQuality {
                     session_id: sid,
                     mode,
+                    resolution: None,
+                    clarity: None,
+                    fps: None,
                 });
             }
         });
@@ -766,7 +773,10 @@ pub async fn consume_to_ui(
         let mut dropped = 0u32;
         while matches!(ev, net::ToUi::Frame { .. }) {
             match rx.try_recv() {
-                Ok(next) => { ev = next; dropped += 1; }
+                Ok(next) => {
+                    ev = next;
+                    dropped += 1;
+                }
                 Err(_) => break,
             }
         }
@@ -1120,7 +1130,11 @@ pub async fn consume_to_ui(
                     }
                 });
             }
-            net::ToUi::UpdateAvailable { version, url, notes } => {
+            net::ToUi::UpdateAvailable {
+                version,
+                url,
+                notes,
+            } => {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_update_available(true);

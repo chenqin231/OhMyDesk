@@ -99,6 +99,7 @@ pub fn set_tiers(
 }
 
 /// 旧入口(mode 两档):保留供旧主控兜底路径与既有测试;内部展开为三轴。
+#[allow(dead_code)]
 pub fn set_quality(mode: protocol::QualityMode) {
     let (r, c, f) = tiers_for_mode(mode);
     set_tiers(r, c, f);
@@ -134,8 +135,6 @@ pub fn tiers_for_mode(
 }
 
 /// SetQuality 消息 → 最终三轴:新字段优先,缺失轴按 mode 兜底映射逐轴回退。
-// TODO(Task 4): dispatch 接线后删除此 allow
-#[allow(dead_code)]
 pub fn tiers_from_set_quality(
     mode: protocol::QualityMode,
     resolution: Option<protocol::ResolutionTier>,
