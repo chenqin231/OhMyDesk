@@ -7,6 +7,9 @@ import type { Session } from "@/lib/types/Session";
 import type { Message } from "@/lib/types/Message";
 import type { FileEntry } from "@/lib/types/FileEntry";
 import type { QualityMode } from "@/lib/types/QualityMode";
+import type { ResolutionTier } from "@/lib/types/ResolutionTier";
+import type { ClarityTier } from "@/lib/types/ClarityTier";
+import type { FpsTier } from "@/lib/types/FpsTier";
 import { transport } from "@/lib/transport";
 import {
   bytesToB64,
@@ -79,8 +82,10 @@ type State = {
   remoteEntries: FileEntry[];
   remoteListLoading: boolean;
   remoteListError: string | null;
-  // 画质档位（高清/流畅）——主控选择，发 set_quality 给被控端
-  remoteQuality: QualityMode;
+  // 三轴显示参数（分辨率/清晰度/帧率）——主控选择，发 set_quality 给被控端
+  remoteResolution: ResolutionTier;
+  remoteClarity: ClarityTier;
+  remoteFps: FpsTier;
 
   // 会话内即时消息（时间正序，最新在末尾）
   chatMessages: ChatEntry[];
@@ -104,7 +109,7 @@ type State = {
   pushFile: (file: File, dest?: string) => Promise<void>;
   pullFile: (path: string) => void;
   listRemote: (path: string) => void;
-  setRemoteQuality: (mode: QualityMode) => void;
+  setRemoteDisplayParams: (p: { resolution?: ResolutionTier; clarity?: ClarityTier; fps?: FpsTier }) => void;
   // 远控会话内：发送一条即时消息
   sendChat: (text: string) => void;
 };
@@ -130,7 +135,9 @@ export const useStore = create<State>((set, get) => ({
   remoteEntries: [],
   remoteListLoading: false,
   remoteListError: null,
-  remoteQuality: "smooth",
+  remoteResolution: "r720p",
+  remoteClarity: "standard",
+  remoteFps: "smooth",
   chatMessages: [],
   fileProgress: {},
   diagRing: [],
@@ -380,7 +387,9 @@ export const useStore = create<State>((set, get) => ({
       remoteNotice: null,
       remotePath: "",
       remoteEntries: [],
-      remoteQuality: "smooth",
+      remoteResolution: "r720p",
+      remoteClarity: "standard",
+      remoteFps: "smooth",
       remoteListLoading: false,
       remoteListError: null,
       chatMessages: [],
@@ -496,12 +505,16 @@ export const useStore = create<State>((set, get) => ({
     });
   },
 
-  // 切换画质档位（高清/流畅）→ 发 set_quality 给被控端
-  setRemoteQuality(mode) {
+  // 切换三轴显示参数 → 合并当前值后发 set_quality 给被控端（mode 按清晰度映射兜底旧被控端）
+  setRemoteDisplayParams(p) {
     const sessionId = get().remoteSessionId;
-    set({ remoteQuality: mode });
+    const resolution = p.resolution ?? get().remoteResolution;
+    const clarity = p.clarity ?? get().remoteClarity;
+    const fps = p.fps ?? get().remoteFps;
+    set({ remoteResolution: resolution, remoteClarity: clarity, remoteFps: fps });
     if (!sessionId) return;
-    get().sendEnvelope({ type: "set_quality", session_id: sessionId, mode });
+    const mode: QualityMode = clarity === "high" ? "high_quality" : "smooth";
+    get().sendEnvelope({ type: "set_quality", session_id: sessionId, mode, resolution, clarity, fps });
   },
 
   // 在已授权远控会话内发送一条即时消息：乐观本地追加（mine=true）+ 发 chat_message。
