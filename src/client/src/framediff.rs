@@ -59,7 +59,7 @@ pub struct Decision {
 pub struct SkipState {
     last_tiles: Option<Vec<u64>>,
     last_sent_ms: u64,
-    last_quality: u8,
+    last_quality: u32,
     prev_sid: Option<String>,
     pub consecutive_skips: u32,
 }
@@ -72,7 +72,7 @@ impl SkipState {
         &mut self,
         now_ms: u64,
         cur_tiles: Vec<u64>,
-        quality: u8,
+        quality: u32,
         sid: &str,
         frameskip_on: bool,
     ) -> Decision {
@@ -87,7 +87,11 @@ impl SkipState {
             Some(prev) => changed_tiles(prev, &cur_tiles),
             None => total, // 基准为空=全量
         };
-        let dirty_ratio = if total > 0 { changed as f32 / total as f32 } else { 0.0 };
+        let dirty_ratio = if total > 0 {
+            changed as f32 / total as f32
+        } else {
+            0.0
+        };
 
         let keyframe_due = now_ms.saturating_sub(self.last_sent_ms) >= KEYFRAME_INTERVAL_MS;
         let quality_changed = quality != self.last_quality;
@@ -99,7 +103,11 @@ impl SkipState {
         if !send {
             self.consecutive_skips += 1;
             self.last_tiles = Some(cur_tiles); // changed==0 即 cur==last，赋值无害
-            return Decision { send: false, keyframe_forced: false, dirty_ratio };
+            return Decision {
+                send: false,
+                keyframe_forced: false,
+                dirty_ratio,
+            };
         }
         // 发送
         self.last_tiles = Some(cur_tiles);
@@ -107,7 +115,11 @@ impl SkipState {
         self.last_quality = quality;
         self.consecutive_skips = 0;
         // keyframe_forced = 由强制触发而发（非内容变化驱动）。
-        Decision { send: true, keyframe_forced: force, dirty_ratio }
+        Decision {
+            send: true,
+            keyframe_forced: force,
+            dirty_ratio,
+        }
     }
 }
 
@@ -167,7 +179,11 @@ mod tests {
         assert_eq!(changed_tiles(&[1, 2, 3, 4], &[1, 2, 3, 4]), 0, "全同=0");
         assert_eq!(changed_tiles(&[1, 2, 3, 4], &[9, 9, 9, 9]), 4, "全异=total");
         assert_eq!(changed_tiles(&[1, 2, 3, 4], &[1, 9, 3, 4]), 1, "改1块=1");
-        assert_eq!(changed_tiles(&[1, 2, 3, 4], &[1, 2, 3]), 3, "维度不一致=cur.len(全变)");
+        assert_eq!(
+            changed_tiles(&[1, 2, 3, 4], &[1, 2, 3]),
+            3,
+            "维度不一致=cur.len(全变)"
+        );
     }
 
     #[test]
@@ -232,7 +248,10 @@ mod tests {
         // 未达阈值：用基准间隔
         assert_eq!(relaxed_interval(5, 40, false), 40);
         // 达阈值且无输入：放宽
-        assert_eq!(relaxed_interval(IDLE_SKIPS_THRESHOLD, 40, false), IDLE_INTERVAL_MS);
+        assert_eq!(
+            relaxed_interval(IDLE_SKIPS_THRESHOLD, 40, false),
+            IDLE_INTERVAL_MS
+        );
         // 达阈值但有近期输入：立即恢复基准
         assert_eq!(relaxed_interval(IDLE_SKIPS_THRESHOLD, 40, true), 40);
     }

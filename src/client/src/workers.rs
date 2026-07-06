@@ -3,8 +3,8 @@
 //! enigo（注入）与 xcap（截屏）都是阻塞 X11 调用且句柄非 Send，故各自留在专用 `std::thread`
 //! 内独占持有，不混进 async select；与 tokio 侧用 mpsc 通道交互（mpsc 的 send 同步非阻塞）。
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::{capture, geom, inject, net};
 
@@ -102,10 +102,16 @@ mod coalesce_tests {
         // down 后两 move 再 up：down/up 之间的 move 必须全保留（拖拽保真）
         let out = coalesce_inputs(
             vec![
-                MouseButton { button: 0, down: true },
+                MouseButton {
+                    button: 0,
+                    down: true,
+                },
                 MouseMove { x: 1, y: 1 },
                 MouseMove { x: 2, y: 2 },
-                MouseButton { button: 0, down: false },
+                MouseButton {
+                    button: 0,
+                    down: false,
+                },
             ],
             &mut b,
         );
@@ -121,7 +127,10 @@ mod coalesce_tests {
             vec![
                 MouseMove { x: 5, y: 5 },
                 MouseMove { x: 9, y: 9 }, // 悬停合并到 9,9
-                MouseButton { button: 0, down: true },
+                MouseButton {
+                    button: 0,
+                    down: true,
+                },
             ],
             &mut b,
         );
@@ -135,10 +144,19 @@ mod coalesce_tests {
     fn 跨批次保持按键状态() {
         let mut b = 0;
         // 批1：按下
-        let _ = coalesce_inputs(vec![MouseButton { button: 0, down: true }], &mut b);
+        let _ = coalesce_inputs(
+            vec![MouseButton {
+                button: 0,
+                down: true,
+            }],
+            &mut b,
+        );
         assert_eq!(b, 1);
         // 批2：仅 move——此时仍在拖拽，应保留
-        let out = coalesce_inputs(vec![MouseMove { x: 1, y: 1 }, MouseMove { x: 2, y: 2 }], &mut b);
+        let out = coalesce_inputs(
+            vec![MouseMove { x: 1, y: 1 }, MouseMove { x: 2, y: 2 }],
+            &mut b,
+        );
         assert_eq!(out.len(), 2, "跨批次拖拽中 move 应全保留");
     }
 
@@ -146,7 +164,13 @@ mod coalesce_tests {
     fn key事件前也flush悬停move() {
         let mut b = 0;
         let out = coalesce_inputs(
-            vec![MouseMove { x: 7, y: 7 }, Key { code: "a".into(), down: true }],
+            vec![
+                MouseMove { x: 7, y: 7 },
+                Key {
+                    code: "a".into(),
+                    down: true,
+                },
+            ],
             &mut b,
         );
         assert_eq!(out.len(), 2);
@@ -264,13 +288,21 @@ pub async fn consume_capture(
             let mut skip = crate::framediff::SkipState::default();
             let mut notified_for: Option<String> = None;
             let mut last_cap_ms: u64 = 0;
+            let mut last_real: Option<(u32, u32)> = None; // 上一帧真实屏尺寸:Native 档钳 ceiling 用
             const TICK_MS: u64 = 16;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
                 let mode = crate::render_mode::current_mode();
-                let qp = crate::render_mode::clamp_params(capture::current_params(), mode);
-                // adaptive 仅作用于 frameskip 新路径：LegacyFullFrame/FullFrameWithTelemetry 是整帧基准，
-                // 且 telemetry 关时 collector 不 observe→level 无法恢复，故不叠加，防状态泄漏。
+                let mut qp = crate::render_mode::clamp_params(capture::current_params(), mode);
+                // Native 档 ceiling=u32::MAX:先用真实屏尺寸钳到实际基数,adaptive 的 res_ratio
+                // 才能在原生档继续降分辨率(否则 ratio×u32::MAX 恒大于屏,降级失效)。
+                // 非 Native 档 min() 后不大于原 ceiling,fit_scale 不放大语义不变。
+                if let Some((rw0, rh0)) = last_real {
+                    qp.max_w = qp.max_w.min(rw0);
+                    qp.max_h = qp.max_h.min(rh0);
+                }
+                // adaptive 仅作用于 frameskip 新路径:LegacyFullFrame/FullFrameWithTelemetry 是整帧基准,
+                // 且 telemetry 关时 collector 不 observe→level 无法恢复,故不叠加,防状态泄漏。
                 let qp = if crate::render_mode::frameskip_on() {
                     crate::adaptive::clamp(qp, crate::adaptive::level())
                 } else {
@@ -279,8 +311,11 @@ pub async fn consume_capture(
                 let now = now_ms();
                 let input_driven = last_input_after(last_cap_ms);
                 // 空闲降采（spec §3.5）：连续静止且无近期输入时放宽截帧间隔。
-                let eff_interval =
-                    crate::framediff::relaxed_interval(skip.consecutive_skips, qp.interval_ms, input_driven);
+                let eff_interval = crate::framediff::relaxed_interval(
+                    skip.consecutive_skips,
+                    qp.interval_ms,
+                    input_driven,
+                );
                 let due = now.saturating_sub(last_cap_ms) >= eff_interval;
                 if !due && !input_driven {
                     continue;
@@ -297,7 +332,13 @@ pub async fn consume_capture(
                     if let Ok((data, w, h)) = capture::placeholder_frame(seq) {
                         capture::set_last_frame_dims(w, h); // 注入坐标还原用实际发出尺寸
                         if from_ui_tx
-                            .send(net::FromUi::Frame { session_id: sid, data, w, h, seq })
+                            .send(net::FromUi::Frame {
+                                session_id: sid,
+                                data,
+                                w,
+                                h,
+                                seq,
+                            })
                             .is_err()
                         {
                             break;
@@ -309,7 +350,9 @@ pub async fn consume_capture(
                 // Wayland 无法截屏：回执并停推（原逻辑）。
                 if capture::is_wayland_session() {
                     if notified_for.as_deref() != Some(sid.as_str()) {
-                        tracing::warn!("Wayland 会话无法截屏，已通知主控端；请切换 X11（UKUI 兼容）会话");
+                        tracing::warn!(
+                            "Wayland 会话无法截屏，已通知主控端；请切换 X11（UKUI 兼容）会话"
+                        );
                         let _ = from_ui_tx.send(net::FromUi::Notice {
                             session_id: sid.clone(),
                             text: "被控端为 Wayland 会话，无法截屏。请在登录界面切换到 X11（UKUI 兼容）会话后重新连接。".into(),
@@ -332,7 +375,9 @@ pub async fn consume_capture(
                             if notified_for.as_deref() != Some(sid.as_str()) {
                                 let _ = from_ui_tx.send(net::FromUi::Notice {
                                     session_id: sid.clone(),
-                                    text: format!("被控端截屏不可用：{e}。请确认在 X11 桌面会话下运行。"),
+                                    text: format!(
+                                        "被控端截屏不可用：{e}。请确认在 X11 桌面会话下运行。"
+                                    ),
                                 });
                                 notified_for = Some(sid.clone());
                             }
@@ -351,7 +396,13 @@ pub async fn consume_capture(
                             seq += 1;
                             capture::set_last_frame_dims(w, h); // 注入坐标还原用实际发出尺寸
                             if from_ui_tx
-                                .send(net::FromUi::Frame { session_id: sid, data, w, h, seq })
+                                .send(net::FromUi::Frame {
+                                    session_id: sid,
+                                    data,
+                                    w,
+                                    h,
+                                    seq,
+                                })
                                 .is_err()
                             {
                                 break;
@@ -370,34 +421,39 @@ pub async fn consume_capture(
                     Ok(img) => img,
                     Err(e) => {
                         tracing::debug!("capture_raw 失败：{e}");
-                        let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Event(format!("capture_fail {e}")));
+                        let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Event(format!(
+                            "capture_fail {e}"
+                        )));
                         continue;
                     }
                 };
                 let capture_ms = now_ms().saturating_sub(t_cap) as u32;
                 let (rw, rh) = (raw.width(), raw.height());
+                last_real = Some((rw, rh));
                 let (_c, _r, cur_tiles) = crate::framediff::tile_hashes(&raw, 64);
-                let quality = capture::quality_u8();
+                let quality = capture::tiers_u32();
                 let frameskip = crate::render_mode::frameskip_on();
                 let tele_on = crate::render_mode::telemetry_on();
                 let d = skip.decide(tick_now, cur_tiles, quality, &sid, frameskip);
 
                 if !d.send {
                     if tele_on {
-                        let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Frame(crate::telemetry::FrameSample {
-                            ts_ms: tick_now,
-                            seq, // 跳过帧沿用最后发送的 seq（seq 仅在发送时 +1）
-                            capture_ms,
-                            skipped: true,
-                            dirty_ratio: d.dirty_ratio,
-                            keyframe_forced: false,
-                            encode_ms: 0,
-                            resize_ms: 0,
-                            jpeg_ms: 0,
-                            encoded_bytes: 0,
-                            w: rw,
-                            h: rh,
-                        }));
+                        let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Frame(
+                            crate::telemetry::FrameSample {
+                                ts_ms: tick_now,
+                                seq, // 跳过帧沿用最后发送的 seq（seq 仅在发送时 +1）
+                                capture_ms,
+                                skipped: true,
+                                dirty_ratio: d.dirty_ratio,
+                                keyframe_forced: false,
+                                encode_ms: 0,
+                                resize_ms: 0,
+                                jpeg_ms: 0,
+                                encoded_bytes: 0,
+                                w: rw,
+                                h: rh,
+                            },
+                        ));
                     }
                     continue;
                 }
@@ -413,23 +469,31 @@ pub async fn consume_capture(
                         seq += 1;
                         capture::set_last_frame_dims(w, h); // 注入坐标还原用实际发出(含 adaptive 降档)尺寸
                         if tele_on {
-                            let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Frame(crate::telemetry::FrameSample {
-                                ts_ms: tick_now,
-                                seq,
-                                capture_ms,
-                                skipped: false,
-                                dirty_ratio: d.dirty_ratio,
-                                keyframe_forced: d.keyframe_forced,
-                                encode_ms,
-                                resize_ms: rms,
-                                jpeg_ms: jms,
-                                encoded_bytes,
-                                w,
-                                h,
-                            }));
+                            let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Frame(
+                                crate::telemetry::FrameSample {
+                                    ts_ms: tick_now,
+                                    seq,
+                                    capture_ms,
+                                    skipped: false,
+                                    dirty_ratio: d.dirty_ratio,
+                                    keyframe_forced: d.keyframe_forced,
+                                    encode_ms,
+                                    resize_ms: rms,
+                                    jpeg_ms: jms,
+                                    encoded_bytes,
+                                    w,
+                                    h,
+                                },
+                            ));
                         }
                         if from_ui_tx
-                            .send(net::FromUi::Frame { session_id: sid, data, w, h, seq })
+                            .send(net::FromUi::Frame {
+                                session_id: sid,
+                                data,
+                                w,
+                                h,
+                                seq,
+                            })
                             .is_err()
                         {
                             break;
@@ -513,7 +577,10 @@ pub async fn consume_clipboard(
                 if should_push_clipboard(&cur, &last_synced) {
                     last_synced = cur.clone();
                     if from_ui_tx
-                        .send(net::FromUi::ClipboardSync { session_id: sid, text: cur })
+                        .send(net::FromUi::ClipboardSync {
+                            session_id: sid,
+                            text: cur,
+                        })
                         .is_err()
                     {
                         break; // net 已退出
