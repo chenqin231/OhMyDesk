@@ -92,7 +92,11 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("ohmydesk-cred-{}-{}.json", std::process::id(), name))
+        std::env::temp_dir().join(format!(
+            "ohmydesk-cred-{}-{}.json",
+            std::process::id(),
+            name
+        ))
     }
 
     /// T007：save→load 往返一致；clear 后 load 得 None；Unix 权限 0600。

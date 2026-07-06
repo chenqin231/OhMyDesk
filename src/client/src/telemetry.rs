@@ -5,7 +5,7 @@
 #[derive(Debug, Clone)]
 pub struct FrameSample {
     pub ts_ms: u64,
-    pub seq: u64,           // 发送帧 seq；跳过 tick 记 last_sent_seq 且 skipped=true
+    pub seq: u64, // 发送帧 seq；跳过 tick 记 last_sent_seq 且 skipped=true
     pub capture_ms: u32,
     pub skipped: bool,
     pub dirty_ratio: f32,
@@ -37,7 +37,7 @@ pub struct WindowStats {
     pub skip_pct: f32,
     pub dirty_p50: f32,
     pub dirty_p95: f32,
-    pub enc_bps: u64,         // Σencoded_bytes / 窗秒
+    pub enc_bps: u64, // Σencoded_bytes / 窗秒
     pub bytes_avg: usize,
     pub bytes_p95: usize,
     pub cap_p95_ms: u32,
@@ -48,7 +48,7 @@ pub struct WindowStats {
     pub jpeg_avg_ms: u32,
     pub jpeg_p95_ms: u32,
     pub stall_p95_ms: u32,
-    pub egress_drop: usize,   // sent(非跳过) − egress_writes，clamp≥0
+    pub egress_drop: usize, // sent(非跳过) − egress_writes，clamp≥0
 }
 
 /// 异常类型（spec §4.5）。
@@ -71,11 +71,7 @@ fn percentile<T: Copy + Default>(sorted: &[T], p: f32) -> T {
 }
 
 /// 对一窗的合并样本聚合（window_ms = 窗口时长，用于算速率/fps）。
-pub fn aggregate(
-    frames: &[FrameSample],
-    egress: &[EgressSample],
-    window_ms: u64,
-) -> WindowStats {
+pub fn aggregate(frames: &[FrameSample], egress: &[EgressSample], window_ms: u64) -> WindowStats {
     let total = frames.len();
     let sent_frames: Vec<&FrameSample> = frames.iter().filter(|f| !f.skipped).collect();
     let sent = sent_frames.len();
@@ -106,15 +102,27 @@ pub fn aggregate(
     resize_v.sort_unstable();
     let mut jpeg_v: Vec<u32> = sent_frames.iter().map(|f| f.jpeg_ms).collect();
     jpeg_v.sort_unstable();
-    let resize_avg_ms = if sent > 0 { resize_v.iter().sum::<u32>() / sent as u32 } else { 0 };
-    let jpeg_avg_ms = if sent > 0 { jpeg_v.iter().sum::<u32>() / sent as u32 } else { 0 };
+    let resize_avg_ms = if sent > 0 {
+        resize_v.iter().sum::<u32>() / sent as u32
+    } else {
+        0
+    };
+    let jpeg_avg_ms = if sent > 0 {
+        jpeg_v.iter().sum::<u32>() / sent as u32
+    } else {
+        0
+    };
 
     WindowStats {
         frames: total,
         sent,
         egress_writes,
         effective_fps: sent as f32 / window_s,
-        skip_pct: if total > 0 { skipped as f32 / total as f32 } else { 0.0 },
+        skip_pct: if total > 0 {
+            skipped as f32 / total as f32
+        } else {
+            0.0
+        },
         dirty_p50: percentile(&dirty, 0.5),
         dirty_p95: percentile(&dirty, 0.95),
         enc_bps: (total_bytes as f32 / window_s) as u64,
@@ -136,7 +144,11 @@ pub fn aggregate(
 pub fn classify(s: &WindowStats) -> Vec<Anomaly> {
     let mut out = vec![];
     // 出网阻塞：stall 高 或 单窗 egress_drop 占已发比 > 50%
-    let drop_ratio = if s.sent > 0 { s.egress_drop as f32 / s.sent as f32 } else { 0.0 };
+    let drop_ratio = if s.sent > 0 {
+        s.egress_drop as f32 / s.sent as f32
+    } else {
+        0.0
+    };
     if s.stall_p95_ms > 1000 || drop_ratio > 0.5 {
         out.push(Anomaly::Egress阻塞);
     }
@@ -195,8 +207,15 @@ impl Collector {
     /// 收到一条帧样本：合并已到的 egress（乱序容忍），入环并按时长裁剪。
     pub fn on_frame(&mut self, f: FrameSample) {
         let now = f.ts_ms;
-        let stall = if f.skipped { None } else { self.pending_egress.remove(&f.seq) };
-        self.ring.push_back(MergedSample { frame: f, send_stall_ms: stall });
+        let stall = if f.skipped {
+            None
+        } else {
+            self.pending_egress.remove(&f.seq)
+        };
+        self.ring.push_back(MergedSample {
+            frame: f,
+            send_stall_ms: stall,
+        });
         // 按时长裁剪环（保留最近 RING_RETAIN_MS）
         while let Some(front) = self.ring.front() {
             if now.saturating_sub(front.frame.ts_ms) > RING_RETAIN_MS {
@@ -210,7 +229,12 @@ impl Collector {
     /// 收到一条出网样本：若对应帧已在环则贴回，否则暂存等待。
     pub fn on_egress(&mut self, e: EgressSample) {
         // 若对应帧已在环（多数情况 egress 紧随 frame），就地贴回；否则暂存等待。
-        if let Some(m) = self.ring.iter_mut().rev().find(|m| m.frame.seq == e.seq && !m.frame.skipped) {
+        if let Some(m) = self
+            .ring
+            .iter_mut()
+            .rev()
+            .find(|m| m.frame.seq == e.seq && !m.frame.skipped)
+        {
             m.send_stall_ms = Some(e.send_stall_ms);
         } else {
             self.pending_egress.insert(e.seq, e.send_stall_ms);
@@ -280,7 +304,14 @@ pub fn format_log(s: &WindowStats, sid: &str, adapt_level: u8) -> String {
 mod tests {
     use super::*;
 
-    fn fs(seq: u64, skipped: bool, dirty: f32, enc_ms: u32, bytes: usize, cap_ms: u32) -> FrameSample {
+    fn fs(
+        seq: u64,
+        skipped: bool,
+        dirty: f32,
+        enc_ms: u32,
+        bytes: usize,
+        cap_ms: u32,
+    ) -> FrameSample {
         FrameSample {
             ts_ms: seq * 50,
             seq,
@@ -307,8 +338,18 @@ mod tests {
         frames.push(fs(1, false, 0.2, 30, 60_000, 12));
         frames.push(fs(2, false, 0.1, 30, 60_000, 12));
         let egress = vec![
-            EgressSample { seq: 1, send_stall_ms: 100, sent_ok: true, ws_error: false },
-            EgressSample { seq: 2, send_stall_ms: 180, sent_ok: true, ws_error: false },
+            EgressSample {
+                seq: 1,
+                send_stall_ms: 100,
+                sent_ok: true,
+                ws_error: false,
+            },
+            EgressSample {
+                seq: 2,
+                send_stall_ms: 180,
+                sent_ok: true,
+                ws_error: false,
+            },
         ];
         let s = aggregate(&frames, &egress, 10_000);
         assert_eq!(s.frames, 10);
@@ -325,8 +366,17 @@ mod tests {
     #[test]
     fn 聚合_egress丢帧() {
         // 发送 3 帧但 conn 只写出 1（watch 覆盖）→ drop=2
-        let frames = vec![fs(1, false, 0.3, 30, 50_000, 12), fs(2, false, 0.3, 30, 50_000, 12), fs(3, false, 0.3, 30, 50_000, 12)];
-        let egress = vec![EgressSample { seq: 3, send_stall_ms: 1200, sent_ok: true, ws_error: false }];
+        let frames = vec![
+            fs(1, false, 0.3, 30, 50_000, 12),
+            fs(2, false, 0.3, 30, 50_000, 12),
+            fs(3, false, 0.3, 30, 50_000, 12),
+        ];
+        let egress = vec![EgressSample {
+            seq: 3,
+            send_stall_ms: 1200,
+            sent_ok: true,
+            ws_error: false,
+        }];
         let s = aggregate(&frames, &egress, 10_000);
         assert_eq!(s.sent, 3);
         assert_eq!(s.egress_writes, 1);
@@ -335,36 +385,76 @@ mod tests {
 
     #[test]
     fn 分类_出网阻塞() {
-        let s = WindowStats { sent: 10, egress_writes: 3, egress_drop: 7, stall_p95_ms: 1200, ..Default::default() };
+        let s = WindowStats {
+            sent: 10,
+            egress_writes: 3,
+            egress_drop: 7,
+            stall_p95_ms: 1200,
+            ..Default::default()
+        };
         assert!(classify(&s).contains(&Anomaly::Egress阻塞));
     }
 
     #[test]
     fn 分类_投递饥饿() {
-        let s = WindowStats { effective_fps: 0.5, dirty_p95: 0.3, ..Default::default() };
+        let s = WindowStats {
+            effective_fps: 0.5,
+            dirty_p95: 0.3,
+            ..Default::default()
+        };
         assert!(classify(&s).contains(&Anomaly::投递饥饿));
     }
 
     #[test]
     fn 分类_编码过载() {
-        let s = WindowStats { enc_p95_ms: 250, ..Default::default() };
+        let s = WindowStats {
+            enc_p95_ms: 250,
+            ..Default::default()
+        };
         assert!(classify(&s).contains(&Anomaly::编码过载));
     }
 
     #[test]
     fn 分类_frameskip失效() {
-        let s = WindowStats { skip_pct: 0.1, dirty_p95: 0.02, ..Default::default() };
+        let s = WindowStats {
+            skip_pct: 0.1,
+            dirty_p95: 0.02,
+            ..Default::default()
+        };
         assert!(classify(&s).contains(&Anomaly::FrameSkip失效));
     }
 
     #[test]
     fn 分类_正常窗不误报() {
-        let s = WindowStats { frames: 100, sent: 20, egress_writes: 20, effective_fps: 2.0, skip_pct: 0.8, dirty_p95: 0.2, enc_p95_ms: 60, stall_p95_ms: 150, ..Default::default() };
+        let s = WindowStats {
+            frames: 100,
+            sent: 20,
+            egress_writes: 20,
+            effective_fps: 2.0,
+            skip_pct: 0.8,
+            dirty_p95: 0.2,
+            enc_p95_ms: 60,
+            stall_p95_ms: 150,
+            ..Default::default()
+        };
         assert!(classify(&s).is_empty(), "健康窗口不应报异常");
     }
 
     fn frame_at(seq: u64, ts: u64) -> FrameSample {
-        FrameSample { ts_ms: ts, seq, capture_ms: 10, skipped: false, dirty_ratio: 0.2, keyframe_forced: false, encode_ms: 30, resize_ms: 0, jpeg_ms: 0, encoded_bytes: 50_000, w: 1280, h: 720 }
+        FrameSample {
+            ts_ms: ts,
+            seq,
+            capture_ms: 10,
+            skipped: false,
+            dirty_ratio: 0.2,
+            keyframe_forced: false,
+            encode_ms: 30,
+            resize_ms: 0,
+            jpeg_ms: 0,
+            encoded_bytes: 50_000,
+            w: 1280,
+            h: 720,
+        }
     }
 
     #[test]
@@ -372,10 +462,20 @@ mod tests {
         let mut c = Collector::new("s1".into());
         // 帧先到，egress 后到
         c.on_frame(frame_at(1, 1000));
-        c.on_egress(EgressSample { seq: 1, send_stall_ms: 120, sent_ok: true, ws_error: false });
+        c.on_egress(EgressSample {
+            seq: 1,
+            send_stall_ms: 120,
+            sent_ok: true,
+            ws_error: false,
+        });
         assert_eq!(c.last_stall(), Some(120), "帧先到→egress 贴回");
         // egress 先到，帧后到
-        c.on_egress(EgressSample { seq: 2, send_stall_ms: 200, sent_ok: true, ws_error: false });
+        c.on_egress(EgressSample {
+            seq: 2,
+            send_stall_ms: 200,
+            sent_ok: true,
+            ws_error: false,
+        });
         c.on_frame(frame_at(2, 1050));
         assert_eq!(c.last_stall(), Some(200), "egress 先到→暂存待帧到贴回");
     }
@@ -405,13 +505,25 @@ mod tests {
         let anomalies = vec![Anomaly::Egress阻塞];
         assert!(c.should_dump(10_000, &anomalies), "首次命中→dump");
         assert!(!c.should_dump(10_000 + 1000, &anomalies), "去抖窗内不重复");
-        assert!(c.should_dump(10_000 + DUMP_DEBOUNCE_MS + 1, &anomalies), "过去抖窗→再 dump");
+        assert!(
+            c.should_dump(10_000 + DUMP_DEBOUNCE_MS + 1, &anomalies),
+            "过去抖窗→再 dump"
+        );
         assert!(!c.should_dump(99_999_999, &[]), "无异常→不 dump");
     }
 
     #[test]
     fn format_log含关键字段() {
-        let s = WindowStats { sent: 2, egress_writes: 2, egress_drop: 0, skip_pct: 0.8, effective_fps: 0.2, enc_bps: 12_000, stall_p95_ms: 180, ..Default::default() };
+        let s = WindowStats {
+            sent: 2,
+            egress_writes: 2,
+            egress_drop: 0,
+            skip_pct: 0.8,
+            effective_fps: 0.2,
+            enc_bps: 12_000,
+            stall_p95_ms: 180,
+            ..Default::default()
+        };
         let line = format_log(&s, "ab12", 0);
         assert!(line.contains("sid=ab12"));
         assert!(line.contains("skip_pct=0.80"));
@@ -425,9 +537,12 @@ mod tests {
         assert_eq!(s.on_frame(1, 20, 1000), None);
         assert_eq!(s.on_frame(2, 20, 1100), None); // 连续，无 gap
         assert_eq!(s.on_frame(5, 20, 1200), None); // 跳 3,4 → gap+2
-        // 窗满触发日志
+                                                   // 窗满触发日志
         let line = s.on_frame(6, 20, 12_000).expect("窗满应出日志");
-        assert!(line.contains("seq_gap=2"), "缺 3、4 两帧 → seq_gap=2: {line}");
+        assert!(
+            line.contains("seq_gap=2"),
+            "缺 3、4 两帧 → seq_gap=2: {line}"
+        );
         assert!(line.contains("recv_fps=0.4"), "4 帧/10s");
     }
 
@@ -443,9 +558,18 @@ mod tests {
     #[test]
     fn aggregate拆分resize_jpeg() {
         let mk = |resize_ms, jpeg_ms| FrameSample {
-            ts_ms: 0, seq: 1, capture_ms: 5, skipped: false, dirty_ratio: 0.2,
-            keyframe_forced: false, encode_ms: resize_ms + jpeg_ms, resize_ms, jpeg_ms,
-            encoded_bytes: 1000, w: 100, h: 100,
+            ts_ms: 0,
+            seq: 1,
+            capture_ms: 5,
+            skipped: false,
+            dirty_ratio: 0.2,
+            keyframe_forced: false,
+            encode_ms: resize_ms + jpeg_ms,
+            resize_ms,
+            jpeg_ms,
+            encoded_bytes: 1000,
+            w: 100,
+            h: 100,
         };
         let frames = vec![mk(10, 100), mk(30, 200)];
         let s = aggregate(&frames, &[], 10_000);
@@ -455,7 +579,11 @@ mod tests {
 
     #[test]
     fn format_log含resize_jpeg_adapt字段() {
-        let s = WindowStats { resize_avg_ms: 12, jpeg_avg_ms: 340, ..Default::default() };
+        let s = WindowStats {
+            resize_avg_ms: 12,
+            jpeg_avg_ms: 340,
+            ..Default::default()
+        };
         let out = format_log(&s, "sid1", 2);
         assert!(out.contains("resize_avg_ms=12"), "含 resize_avg_ms");
         assert!(out.contains("jpeg_avg_ms=340"), "含 jpeg_avg_ms");
@@ -555,7 +683,14 @@ pub struct MainRecvStats {
 
 impl Default for MainRecvStats {
     fn default() -> Self {
-        MainRecvStats { window_start_ms: 0, frames: 0, decode_ms_sum: 0, drop_stale: 0, last_seq: None, seq_gap: 0 }
+        MainRecvStats {
+            window_start_ms: 0,
+            frames: 0,
+            decode_ms_sum: 0,
+            drop_stale: 0,
+            last_seq: None,
+            seq_gap: 0,
+        }
     }
 }
 
@@ -578,10 +713,17 @@ impl MainRecvStats {
         self.frames += 1;
         self.decode_ms_sum += decode_ms as u64;
         if now_ms.saturating_sub(self.window_start_ms) >= 10_000 {
-            let decode_avg = if self.frames > 0 { self.decode_ms_sum / self.frames as u64 } else { 0 };
+            let decode_avg = if self.frames > 0 {
+                self.decode_ms_sum / self.frames as u64
+            } else {
+                0
+            };
             let line = format!(
                 "主控遥测 recv_fps={:.1} decode_avg_ms={} drop_stale={} seq_gap={}",
-                self.frames as f32 / 10.0, decode_avg, self.drop_stale, self.seq_gap
+                self.frames as f32 / 10.0,
+                decode_avg,
+                self.drop_stale,
+                self.seq_gap
             );
             let keep_seq = self.last_seq;
             *self = MainRecvStats::default();

@@ -51,17 +51,30 @@ pub enum ConnectDecision {
 }
 
 /// 纯决策：`password_ok` 由调用方对模式 B 有密码场景预先 `check_password` 求值。
-pub fn decide_connect(mode: Mode, has_password: bool, password_ok: bool, force: bool) -> ConnectDecision {
+pub fn decide_connect(
+    mode: Mode,
+    has_password: bool,
+    password_ok: bool,
+    force: bool,
+) -> ConnectDecision {
     match mode {
         Mode::B => {
             if has_password {
-                if password_ok { ConnectDecision::AutoAccept } else { ConnectDecision::RejectBadPassword }
+                if password_ok {
+                    ConnectDecision::AutoAccept
+                } else {
+                    ConnectDecision::RejectBadPassword
+                }
             } else {
                 ConnectDecision::Consent
             }
         }
         Mode::A => {
-            if force { ConnectDecision::AutoAccept } else { ConnectDecision::Consent }
+            if force {
+                ConnectDecision::AutoAccept
+            } else {
+                ConnectDecision::Consent
+            }
         }
     }
 }
@@ -84,7 +97,13 @@ pub async fn handle_connect_request(
     if from_id == target {
         let session_id = Uuid::new_v4().to_string();
         hub.audit
-            .log(&session_id, from_id, AuditType::Reject, SELF_REMOTE_REJECT_REASON, actor)
+            .log(
+                &session_id,
+                from_id,
+                AuditType::Reject,
+                SELF_REMOTE_REJECT_REASON,
+                actor,
+            )
             .await;
         send_reject(hub, from_id, session_id, SELF_REMOTE_REJECT_REASON, now);
         return;
@@ -102,7 +121,13 @@ pub async fn handle_connect_request(
             if !allowed {
                 let session_id = Uuid::new_v4().to_string();
                 hub.audit
-                    .log(&session_id, from_id, AuditType::Reject, NO_REMOTE_SCOPE_REASON, actor)
+                    .log(
+                        &session_id,
+                        from_id,
+                        AuditType::Reject,
+                        NO_REMOTE_SCOPE_REASON,
+                        actor,
+                    )
                     .await;
                 send_reject(hub, from_id, session_id, NO_REMOTE_SCOPE_REASON, now);
                 tracing::warn!("拒绝越权远控(非自己归属终端): from={from_id} target={target}");
@@ -119,7 +144,8 @@ pub async fn handle_connect_request(
 
     // 模式 B 有密码时预先校验，供 decide_connect 决策。
     let has_pw = password.map(|p| !p.is_empty()).unwrap_or(false);
-    let pw_ok = *mode == Mode::B && has_pw && hub.reg.check_password(target, password.unwrap_or(""));
+    let pw_ok =
+        *mode == Mode::B && has_pw && hub.reg.check_password(target, password.unwrap_or(""));
 
     match decide_connect(*mode, has_pw, pw_ok, force) {
         ConnectDecision::RejectBadPassword => {
@@ -154,12 +180,18 @@ pub async fn handle_connect_request(
                 from: "server".into(),
                 to: Some(from_id.to_string()),
                 ts: now,
-                payload: Message::ConnectAck { session_id: session_id.clone() },
+                payload: Message::ConnectAck {
+                    session_id: session_id.clone(),
+                },
             };
             if let Ok(json) = serde_json::to_string(&ack) {
                 hub.send_to(from_id, &json);
             }
-            let how = if force { "强制远程(免同意)" } else { "密码连接(免同意)" };
+            let how = if force {
+                "强制远程(免同意)"
+            } else {
+                "密码连接(免同意)"
+            };
             hub.audit
                 .log(&session_id, from_id, AuditType::Connect, how, actor)
                 .await;
@@ -259,7 +291,13 @@ pub async fn handle_cancel_request(hub: &Hub, from_id: &str, target: &str, now: 
     hub.sessions
         .end_session(&session_id, now, SessionStatus::Ended);
     hub.audit
-        .log(&session_id, from_id, AuditType::Disconnect, "主控取消申请", actor.as_ref())
+        .log(
+            &session_id,
+            from_id,
+            AuditType::Disconnect,
+            "主控取消申请",
+            actor.as_ref(),
+        )
         .await;
 }
 
@@ -295,7 +333,13 @@ pub async fn handle_auth_result(
             hub.send_to(&from_id, &json);
         }
         hub.audit
-            .log(session_id, &from_id, AuditType::Connect, "会话建立", actor.as_ref())
+            .log(
+                session_id,
+                &from_id,
+                AuditType::Connect,
+                "会话建立",
+                actor.as_ref(),
+            )
             .await;
     } else {
         let reason_text = reason.unwrap_or("被拒绝");
@@ -315,7 +359,13 @@ pub async fn handle_auth_result(
         hub.sessions
             .end_session(session_id, now, SessionStatus::Rejected);
         hub.audit
-            .log(session_id, &from_id, AuditType::Reject, reason_text, actor.as_ref())
+            .log(
+                session_id,
+                &from_id,
+                AuditType::Reject,
+                reason_text,
+                actor.as_ref(),
+            )
             .await;
     }
 }
@@ -373,27 +423,45 @@ mod tests {
 
     #[test]
     fn 模式b_有密码且正确_免同意() {
-        assert_eq!(decide_connect(Mode::B, true, true, false), ConnectDecision::AutoAccept);
+        assert_eq!(
+            decide_connect(Mode::B, true, true, false),
+            ConnectDecision::AutoAccept
+        );
     }
     #[test]
     fn 模式b_有密码但错_拒绝() {
-        assert_eq!(decide_connect(Mode::B, true, false, false), ConnectDecision::RejectBadPassword);
+        assert_eq!(
+            decide_connect(Mode::B, true, false, false),
+            ConnectDecision::RejectBadPassword
+        );
     }
     #[test]
     fn 模式b_无密码_需同意() {
-        assert_eq!(decide_connect(Mode::B, false, false, false), ConnectDecision::Consent);
+        assert_eq!(
+            decide_connect(Mode::B, false, false, false),
+            ConnectDecision::Consent
+        );
     }
     #[test]
     fn 模式a_强制_免同意() {
-        assert_eq!(decide_connect(Mode::A, false, false, true), ConnectDecision::AutoAccept);
+        assert_eq!(
+            decide_connect(Mode::A, false, false, true),
+            ConnectDecision::AutoAccept
+        );
     }
     #[test]
     fn 模式a_非强制_需同意() {
-        assert_eq!(decide_connect(Mode::A, false, false, false), ConnectDecision::Consent);
+        assert_eq!(
+            decide_connect(Mode::A, false, false, false),
+            ConnectDecision::Consent
+        );
     }
     #[test]
     fn 模式a_强制忽略密码态() {
-        assert_eq!(decide_connect(Mode::A, true, false, true), ConnectDecision::AutoAccept);
+        assert_eq!(
+            decide_connect(Mode::A, true, false, true),
+            ConnectDecision::AutoAccept
+        );
     }
 
     fn test_hub() -> Hub {
@@ -414,7 +482,17 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         hub.add_client("ep-self".into(), tx);
 
-        handle_connect_request(&hub, "ep-self", &Mode::B, "ep-self", Some("123456"), false, 100, None).await;
+        handle_connect_request(
+            &hub,
+            "ep-self",
+            &Mode::B,
+            "ep-self",
+            Some("123456"),
+            false,
+            100,
+            None,
+        )
+        .await;
 
         let sent = rx.recv().await.expect("自连应向发起方返回拒绝消息");
         let env: Envelope = serde_json::from_str(&sent).unwrap();

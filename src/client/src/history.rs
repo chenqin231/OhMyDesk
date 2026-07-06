@@ -69,7 +69,13 @@ pub fn normalize_id(raw: &str) -> String {
 /// 抽出独立函数以便单测（不碰文件系统）。
 fn merge(mut list: Vec<RecentConn>, id: &str, ts: i64) -> Vec<RecentConn> {
     list.retain(|c| c.id != id);
-    list.insert(0, RecentConn { id: id.to_string(), ts });
+    list.insert(
+        0,
+        RecentConn {
+            id: id.to_string(),
+            ts,
+        },
+    );
     list.sort_by_key(|c| std::cmp::Reverse(c.ts));
     list.truncate(MAX_ITEMS);
     list
@@ -87,7 +93,10 @@ mod tests {
 
     #[test]
     fn 合并_同id覆盖为最新且去重() {
-        let list = vec![RecentConn { id: "111".into(), ts: 100 }];
+        let list = vec![RecentConn {
+            id: "111".into(),
+            ts: 100,
+        }];
         let merged = merge(list, "111", 200);
         assert_eq!(merged.len(), 1, "同 id 不应重复");
         assert_eq!(merged[0].ts, 200, "应覆盖为最新时间");
@@ -95,7 +104,10 @@ mod tests {
 
     #[test]
     fn 合并_倒序且最新置顶() {
-        let mut list = vec![RecentConn { id: "a".into(), ts: 100 }];
+        let mut list = vec![RecentConn {
+            id: "a".into(),
+            ts: 100,
+        }];
         list = merge(list, "b", 300);
         assert_eq!(list[0].id, "b", "最新连接应置顶");
         assert_eq!(list[1].id, "a");
@@ -108,6 +120,10 @@ mod tests {
             list = merge(list, &format!("id{i}"), i * 10);
         }
         assert_eq!(list.len(), MAX_ITEMS, "应截断到上限");
-        assert_eq!(list[0].id, format!("id{}", MAX_ITEMS as i64 + 2), "最新在顶");
+        assert_eq!(
+            list[0].id,
+            format!("id{}", MAX_ITEMS as i64 + 2),
+            "最新在顶"
+        );
     }
 }

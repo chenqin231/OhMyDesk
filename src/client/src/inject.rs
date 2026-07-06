@@ -51,9 +51,11 @@ impl Injector {
             InputEvent::MouseMove { x, y } => {
                 // 帧内坐标 → 真实屏坐标。帧尺寸优先取「最近实际发出帧」的真实尺寸（含 adaptive
                 // 降档结果），尚无帧发出时回退当前档位标称尺寸。记录映射快照供点击诊断日志。
-                let (frame_w, frame_h) = crate::capture::last_frame_dims()
-                    .unwrap_or_else(|| crate::capture::current_frame_dims(self.real_w, self.real_h));
-                let (rx, ry) = map_frame_to_real(*x, *y, frame_w, frame_h, self.real_w, self.real_h);
+                let (frame_w, frame_h) = crate::capture::last_frame_dims().unwrap_or_else(|| {
+                    crate::capture::current_frame_dims(self.real_w, self.real_h)
+                });
+                let (rx, ry) =
+                    map_frame_to_real(*x, *y, frame_w, frame_h, self.real_w, self.real_h);
                 self.last_click_dbg = (*x, *y, frame_w, frame_h, rx, ry);
                 self.enigo.move_mouse(rx, ry, Abs)?;
             }
@@ -98,8 +100,7 @@ impl Injector {
                     }
                 }
                 if let Some(key) = resolve_key_with_mods(code, self.mods_held) {
-                    self.enigo
-                        .key(key, if *down { Press } else { Release })?;
+                    self.enigo.key(key, if *down { Press } else { Release })?;
                 }
             }
             InputEvent::Text { text } => {
@@ -273,15 +274,42 @@ pub fn resolve_key_with_mods(code: &str, mods_held: u8) -> Option<Key> {
 #[cfg(target_os = "windows")]
 fn vk_key_for_char(c: char) -> Option<Key> {
     let key = match c.to_ascii_lowercase() {
-        'a' => Key::A, 'b' => Key::B, 'c' => Key::C, 'd' => Key::D, 'e' => Key::E,
-        'f' => Key::F, 'g' => Key::G, 'h' => Key::H, 'i' => Key::I, 'j' => Key::J,
-        'k' => Key::K, 'l' => Key::L, 'm' => Key::M, 'n' => Key::N, 'o' => Key::O,
-        'p' => Key::P, 'q' => Key::Q, 'r' => Key::R, 's' => Key::S, 't' => Key::T,
-        'u' => Key::U, 'v' => Key::V, 'w' => Key::W, 'x' => Key::X, 'y' => Key::Y,
+        'a' => Key::A,
+        'b' => Key::B,
+        'c' => Key::C,
+        'd' => Key::D,
+        'e' => Key::E,
+        'f' => Key::F,
+        'g' => Key::G,
+        'h' => Key::H,
+        'i' => Key::I,
+        'j' => Key::J,
+        'k' => Key::K,
+        'l' => Key::L,
+        'm' => Key::M,
+        'n' => Key::N,
+        'o' => Key::O,
+        'p' => Key::P,
+        'q' => Key::Q,
+        'r' => Key::R,
+        's' => Key::S,
+        't' => Key::T,
+        'u' => Key::U,
+        'v' => Key::V,
+        'w' => Key::W,
+        'x' => Key::X,
+        'y' => Key::Y,
         'z' => Key::Z,
-        '0' => Key::Num0, '1' => Key::Num1, '2' => Key::Num2, '3' => Key::Num3,
-        '4' => Key::Num4, '5' => Key::Num5, '6' => Key::Num6, '7' => Key::Num7,
-        '8' => Key::Num8, '9' => Key::Num9,
+        '0' => Key::Num0,
+        '1' => Key::Num1,
+        '2' => Key::Num2,
+        '3' => Key::Num3,
+        '4' => Key::Num4,
+        '5' => Key::Num5,
+        '6' => Key::Num6,
+        '7' => Key::Num7,
+        '8' => Key::Num8,
+        '9' => Key::Num9,
         _ => return None,
     };
     Some(key)
@@ -289,7 +317,9 @@ fn vk_key_for_char(c: char) -> Option<Key> {
 
 #[cfg(test)]
 mod tests {
-    use super::{code_to_key, modifier_bit, resolve_key_with_mods, Key, MOD_CTRL, MOD_ALT, MOD_META};
+    use super::{
+        code_to_key, modifier_bit, resolve_key_with_mods, Key, MOD_ALT, MOD_CTRL, MOD_META,
+    };
     use crate::geom::map_frame_to_real;
 
     #[test]
@@ -377,16 +407,25 @@ mod tests {
         // 无修饰键：仍是 Unicode
         assert_eq!(resolve_key_with_mods("c", 0), Some(Key::Unicode('c')));
         // 具名键不受影响
-        assert_eq!(resolve_key_with_mods("Backspace", MOD_CTRL), Some(Key::Backspace));
+        assert_eq!(
+            resolve_key_with_mods("Backspace", MOD_CTRL),
+            Some(Key::Backspace)
+        );
     }
 
     // 非 Windows（信创 X11）：Unicode 本就与修饰键组合，mods_held 不改变解析结果。
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn 非windows_组合键不改变映射() {
-        assert_eq!(resolve_key_with_mods("c", MOD_CTRL), Some(Key::Unicode('c')));
+        assert_eq!(
+            resolve_key_with_mods("c", MOD_CTRL),
+            Some(Key::Unicode('c'))
+        );
         assert_eq!(resolve_key_with_mods("c", 0), Some(Key::Unicode('c')));
-        assert_eq!(resolve_key_with_mods("Backspace", MOD_CTRL), Some(Key::Backspace));
+        assert_eq!(
+            resolve_key_with_mods("Backspace", MOD_CTRL),
+            Some(Key::Backspace)
+        );
     }
 
     // 注入器构造依赖 X11 DISPLAY，CI/无头环境不可用；此处只单测坐标换算逻辑（与 Injector::to_real 同源）。

@@ -167,10 +167,11 @@ fn perms_for_legacy_role(role: &str) -> &'static str {
 /// role 映射：superadmin→superadmin（permissions 空）；admin/operator/auditor→user（按旧角色 backfill 菜单键）。
 pub(crate) async fn migrate_users_to_per_account_permissions(pool: &Db) -> sqlx::Result<()> {
     // users 表不存在（异常/极早期）或已含 permissions 列（全新库/已迁移）→ 跳过
-    let exists: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'")
-            .fetch_one(pool)
-            .await?;
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'",
+    )
+    .fetch_one(pool)
+    .await?;
     if exists == 0 {
         return Ok(());
     }
@@ -280,7 +281,9 @@ CREATE TABLE users (
             .unwrap();
         }
 
-        migrate_users_to_per_account_permissions(&pool).await.unwrap();
+        migrate_users_to_per_account_permissions(&pool)
+            .await
+            .unwrap();
 
         // permissions 列已建
         assert!(users_has_column(&pool, "permissions").await.unwrap());
@@ -337,7 +340,9 @@ CREATE TABLE users (
         assert!(!perms.contains("use_remote"));
 
         // 幂等：再跑一次不报错、行数不变、数据不变
-        migrate_users_to_per_account_permissions(&pool).await.unwrap();
+        migrate_users_to_per_account_permissions(&pool)
+            .await
+            .unwrap();
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
             .fetch_one(&pool)
             .await
@@ -379,7 +384,9 @@ CREATE TABLE users (
         .await
         .unwrap();
 
-        migrate_users_to_per_account_permissions(&pool).await.unwrap();
+        migrate_users_to_per_account_permissions(&pool)
+            .await
+            .unwrap();
 
         let (role, perms): (String, String) =
             sqlx::query_as("SELECT role, permissions FROM users WHERE username='superadmin'")
@@ -394,7 +401,9 @@ CREATE TABLE users (
     async fn migrate_users_is_noop_when_users_table_absent() {
         // users 表不存在（异常/极早期）→ 迁移应静默返回 Ok，不报错
         let pool = new_memory_pool().await;
-        migrate_users_to_per_account_permissions(&pool).await.unwrap();
+        migrate_users_to_per_account_permissions(&pool)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

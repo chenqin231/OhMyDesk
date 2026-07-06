@@ -5,9 +5,15 @@ use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::OnceLock;
 
 static NUDGE_TX: OnceLock<SyncSender<()>> = OnceLock::new();
-pub fn set_nudge_sender(tx: SyncSender<()>) { let _ = NUDGE_TX.set(tx); }
+pub fn set_nudge_sender(tx: SyncSender<()>) {
+    let _ = NUDGE_TX.set(tx);
+}
 /// net 每次成功 Register/重连后调用：唤醒守护提前检测。
-pub fn nudge() { if let Some(tx) = NUDGE_TX.get() { let _ = tx.try_send(()); } }
+pub fn nudge() {
+    if let Some(tx) = NUDGE_TX.get() {
+        let _ = tx.try_send(());
+    }
+}
 
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -30,8 +36,12 @@ pub struct Asset {
     pub auto: bool,
 }
 
-fn default_enabled() -> bool { true }
-fn default_rollout() -> u8 { 100 }
+fn default_enabled() -> bool {
+    true
+}
+fn default_rollout() -> u8 {
+    100
+}
 
 #[derive(Debug, Clone, serde::Deserialize, PartialEq)]
 pub struct Manifest {
@@ -63,7 +73,10 @@ pub fn parse_manifest(bytes: &[u8]) -> anyhow::Result<Manifest> {
 
 /// 仅当 latest 语义版本严格高于 current 才为真；任一非法版本保守返回 false。
 pub fn is_newer(latest: &str, current: &str) -> bool {
-    match (semver::Version::parse(latest), semver::Version::parse(current)) {
+    match (
+        semver::Version::parse(latest),
+        semver::Version::parse(current),
+    ) {
         (Ok(l), Ok(c)) => l > c,
         _ => false,
     }
@@ -83,17 +96,32 @@ pub fn bucket(endpoint_id: &str) -> u8 {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpdateAction {
     Skip,
-    Notice { version: String, url: String, notes: Option<String> },
-    AutoUpdate { version: String, url: String, sha256: String, size: u64 },
+    Notice {
+        version: String,
+        url: String,
+        notes: Option<String>,
+    },
+    AutoUpdate {
+        version: String,
+        url: String,
+        sha256: String,
+        size: u64,
+    },
 }
 
 /// 当前编译平台对应的 manifest asset 键。
 pub fn platform_key() -> &'static str {
-    if cfg!(windows) { "windows_x86_64" }
-    else if cfg!(all(target_os = "linux", target_arch = "x86_64")) { "linux_x86_64_deb" }
-    else if cfg!(all(target_os = "linux", target_arch = "aarch64")) { "linux_arm64_deb" }
-    else if cfg!(all(target_os = "macos", target_arch = "aarch64")) { "macos_arm64" }
-    else { "unsupported" }
+    if cfg!(windows) {
+        "windows_x86_64"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "linux_x86_64_deb"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "linux_arm64_deb"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "macos_arm64"
+    } else {
+        "unsupported"
+    }
 }
 
 pub fn current_asset<'a>(m: &'a Manifest, key: &str) -> Option<&'a Asset> {
@@ -113,13 +141,22 @@ pub fn decide(m: &Manifest, current: &str, endpoint_id: &str) -> UpdateAction {
 /// - 非 auto（Linux/macOS）：is_newer → Notice（不受灰度）
 /// - auto（Windows）：allow_downgrade(version!=current) 或 (is_newer 且 (强制 min_version 或 中桶))
 ///   且 asset 必须带 sha256+size，否则 Skip
-pub fn decide_with_asset(m: &Manifest, current: &str, endpoint_id: &str, asset: &Asset) -> UpdateAction {
+pub fn decide_with_asset(
+    m: &Manifest,
+    current: &str,
+    endpoint_id: &str,
+    asset: &Asset,
+) -> UpdateAction {
     if !m.enabled {
         return UpdateAction::Skip;
     }
     if !asset.auto {
         return if is_newer(&m.version, current) {
-            UpdateAction::Notice { version: m.version.clone(), url: asset.url.clone(), notes: m.notes.clone() }
+            UpdateAction::Notice {
+                version: m.version.clone(),
+                url: asset.url.clone(),
+                notes: m.notes.clone(),
+            }
         } else {
             UpdateAction::Skip
         };
@@ -127,7 +164,10 @@ pub fn decide_with_asset(m: &Manifest, current: &str, endpoint_id: &str, asset: 
     let want = if m.allow_downgrade {
         m.version != current
     } else if is_newer(&m.version, current) {
-        let forced = m.min_version.as_deref().map_or(false, |mv| is_newer(mv, current));
+        let forced = m
+            .min_version
+            .as_deref()
+            .map_or(false, |mv| is_newer(mv, current));
         forced || (bucket(endpoint_id) < m.rollout_percent)
     } else {
         false
@@ -137,7 +177,10 @@ pub fn decide_with_asset(m: &Manifest, current: &str, endpoint_id: &str, asset: 
     }
     match (asset.sha256.clone(), asset.size) {
         (Some(sha256), Some(size)) => UpdateAction::AutoUpdate {
-            version: m.version.clone(), url: asset.url.clone(), sha256, size,
+            version: m.version.clone(),
+            url: asset.url.clone(),
+            sha256,
+            size,
         },
         _ => UpdateAction::Skip, // Windows asset 缺完整性字段 → 不自动更新
     }
@@ -177,7 +220,10 @@ pub fn same_origin(base: &url::Url, target: &str) -> bool {
 /// 用内置公钥验证 latest.json 的分离签名（minisig 文件全文）。任何失败 → false。
 pub fn verify_manifest_sig(pubkey_b64: &str, manifest_bytes: &[u8], minisig: &str) -> bool {
     use minisign_verify::{PublicKey, Signature};
-    match (PublicKey::from_base64(pubkey_b64), Signature::decode(minisig)) {
+    match (
+        PublicKey::from_base64(pubkey_b64),
+        Signature::decode(minisig),
+    ) {
         (Ok(pk), Ok(sig)) => pk.verify(manifest_bytes, &sig, false).is_ok(),
         _ => false,
     }
@@ -204,9 +250,16 @@ pub struct CapReader<R> {
 impl<R: std::io::Read> CapReader<R> {
     pub fn new(inner: R, cap: u64) -> Self {
         use sha2::Digest;
-        Self { inner, cap, read: 0, hasher: sha2::Sha256::new() }
+        Self {
+            inner,
+            cap,
+            read: 0,
+            hasher: sha2::Sha256::new(),
+        }
     }
-    pub fn total(&self) -> u64 { self.read }
+    pub fn total(&self) -> u64 {
+        self.read
+    }
     pub fn finish_hex(self) -> String {
         use sha2::Digest;
         to_hex(&self.hasher.finalize())
@@ -217,7 +270,10 @@ impl<R: std::io::Read> std::io::Read for CapReader<R> {
         let n = self.inner.read(buf)?;
         self.read += n as u64;
         if self.read > self.cap {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "下载超过大小上限"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "下载超过大小上限",
+            ));
         }
         use sha2::Digest;
         self.hasher.update(&buf[..n]);
@@ -268,10 +324,10 @@ pub fn apply(staged: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-use std::sync::Arc;
-use std::time::Duration;
 use crate::activity::ClientActivityState;
 use crate::net::ToUi;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// 构建带 TLS 后端的 ureq Agent（自动更新 HTTPS 用）。
@@ -285,7 +341,10 @@ pub(crate) fn build_agent(connect_s: u64, read_s: u64) -> ureq::Agent {
         .timeout_read(Duration::from_secs(read_s));
     match native_tls::TlsConnector::new() {
         Ok(c) => b.tls_connector(Arc::new(c)).build(),
-        Err(e) => { tracing::warn!("native-tls 初始化失败：{e}"); b.build() }
+        Err(e) => {
+            tracing::warn!("native-tls 初始化失败：{e}");
+            b.build()
+        }
     }
 }
 #[cfg(not(windows))]
@@ -305,36 +364,64 @@ pub fn spawn_update_daemon(
     nudge_rx: Receiver<()>,
 ) {
     std::thread::spawn(move || {
-        let base = match resolve_base(&server_url, std::env::var("OHMYDESK_UPDATE_BASE_URL").ok().as_deref()) {
+        let base = match resolve_base(
+            &server_url,
+            std::env::var("OHMYDESK_UPDATE_BASE_URL").ok().as_deref(),
+        ) {
             Some(b) => b,
-            None => { tracing::warn!("自动更新已禁用：服务器非 wss 且未设 OHMYDESK_UPDATE_BASE_URL(https)"); return; }
+            None => {
+                tracing::warn!(
+                    "自动更新已禁用：服务器非 wss 且未设 OHMYDESK_UPDATE_BASE_URL(https)"
+                );
+                return;
+            }
         };
-        let interval = std::env::var("OHMYDESK_UPDATE_INTERVAL_SECS").ok()
-            .and_then(|s| s.parse::<u64>().ok()).unwrap_or(6 * 3600);
+        let interval = std::env::var("OHMYDESK_UPDATE_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(6 * 3600);
         #[cfg(windows)]
         if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() { cleanup_stale_temp(dir); }
+            if let Some(dir) = exe.parent() {
+                cleanup_stale_temp(dir);
+            }
         }
         std::thread::sleep(Duration::from_secs(5)); // 启动延迟：短暂避开连接抖动，尽快「打开即检查」
         loop {
             if let Err(e) = run_once(&base, &endpoint_id, &state, &to_ui) {
                 tracing::warn!("更新检查失败：{e}");
-                let _ = to_ui.send(ToUi::UpdateStatus { text: "更新检查失败，稍后重试".into(), phase: crate::net::update_phase::FAILED });
+                let _ = to_ui.send(ToUi::UpdateStatus {
+                    text: "更新检查失败，稍后重试".into(),
+                    phase: crate::net::update_phase::FAILED,
+                });
             }
             let _ = nudge_rx.recv_timeout(Duration::from_secs(interval)); // nudge 或超时唤醒
         }
     });
 }
 
-fn run_once(base: &url::Url, endpoint_id: &str, state: &Arc<ClientActivityState>, to_ui: &UnboundedSender<ToUi>) -> anyhow::Result<()> {
-    let _ = to_ui.send(ToUi::UpdateStatus { text: "正在检查更新…".into(), phase: crate::net::update_phase::CHECKING });
+fn run_once(
+    base: &url::Url,
+    endpoint_id: &str,
+    state: &Arc<ClientActivityState>,
+    to_ui: &UnboundedSender<ToUi>,
+) -> anyhow::Result<()> {
+    let _ = to_ui.send(ToUi::UpdateStatus {
+        text: "正在检查更新…".into(),
+        phase: crate::net::update_phase::CHECKING,
+    });
     let agent = build_agent(10, 30);
     let manifest_url = base.join("latest.json")?;
     let sig_url = base.join("latest.json.minisig")?;
     // manifest（限 64KB）
     let mut buf = Vec::new();
     use std::io::Read;
-    agent.get(manifest_url.as_str()).call()?.into_reader().take(MAX_MANIFEST_BYTES as u64 + 1).read_to_end(&mut buf)?;
+    agent
+        .get(manifest_url.as_str())
+        .call()?
+        .into_reader()
+        .take(MAX_MANIFEST_BYTES as u64 + 1)
+        .read_to_end(&mut buf)?;
     let sig = agent.get(sig_url.as_str()).call()?.into_string()?;
     if !verify_manifest_sig(UPDATE_PUBKEY, &buf, &sig) {
         anyhow::bail!("清单验签失败，丢弃");
@@ -348,33 +435,67 @@ fn run_once(base: &url::Url, endpoint_id: &str, state: &Arc<ClientActivityState>
     }
     let current = env!("CARGO_PKG_VERSION");
     match decide(&m, current, endpoint_id) {
-        UpdateAction::Skip => { let _ = to_ui.send(ToUi::UpdateStatus { text: format!("已是最新（当前 v{}）", env!("CARGO_PKG_VERSION")), phase: crate::net::update_phase::IDLE }); Ok(()) }
-        UpdateAction::Notice { version, url, notes } => {
-            let _ = to_ui.send(ToUi::UpdateAvailable { version, url, notes });
+        UpdateAction::Skip => {
+            let _ = to_ui.send(ToUi::UpdateStatus {
+                text: format!("已是最新（当前 v{}）", env!("CARGO_PKG_VERSION")),
+                phase: crate::net::update_phase::IDLE,
+            });
             Ok(())
         }
-        UpdateAction::AutoUpdate { version, url, sha256, size } => {
-            apply_auto(state, to_ui, &version, &url, &sha256, size)
+        UpdateAction::Notice {
+            version,
+            url,
+            notes,
+        } => {
+            let _ = to_ui.send(ToUi::UpdateAvailable {
+                version,
+                url,
+                notes,
+            });
+            Ok(())
         }
+        UpdateAction::AutoUpdate {
+            version,
+            url,
+            sha256,
+            size,
+        } => apply_auto(state, to_ui, &version, &url, &sha256, size),
     }
 }
 
 #[cfg(windows)]
-fn apply_auto(state: &Arc<ClientActivityState>, to_ui: &UnboundedSender<ToUi>, version: &str, url: &str, sha256: &str, size: u64) -> anyhow::Result<()> {
+fn apply_auto(
+    state: &Arc<ClientActivityState>,
+    to_ui: &UnboundedSender<ToUi>,
+    version: &str,
+    url: &str,
+    sha256: &str,
+    size: u64,
+) -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
     let dir = exe.parent().ok_or_else(|| anyhow::anyhow!("无 exe 目录"))?;
-    let _ = to_ui.send(ToUi::UpdateStatus { text: format!("正在下载更新 v{version}…"), phase: crate::net::update_phase::DOWNLOADING });
+    let _ = to_ui.send(ToUi::UpdateStatus {
+        text: format!("正在下载更新 v{version}…"),
+        phase: crate::net::update_phase::DOWNLOADING,
+    });
     let staged = match download_verified(url, sha256, size, dir) {
         Ok(p) => p,
-        Err(e) => { // 下载/校验失败兜底提示手动
-            let _ = to_ui.send(ToUi::UpdateAvailable { version: version.into(), url: url.into(), notes: Some(format!("自动更新失败，请手动下载（{e}）")) });
+        Err(e) => {
+            // 下载/校验失败兜底提示手动
+            let _ = to_ui.send(ToUi::UpdateAvailable {
+                version: version.into(),
+                url: url.into(),
+                notes: Some(format!("自动更新失败，请手动下载（{e}）")),
+            });
             return Err(e);
         }
     };
     if state.try_enter_updating(now_ms()) {
         let r = apply(&staged);
         if r.is_ok() {
-            let _ = slint::invoke_from_event_loop(|| { let _ = slint::quit_event_loop(); });
+            let _ = slint::invoke_from_event_loop(|| {
+                let _ = slint::quit_event_loop();
+            });
             std::thread::sleep(Duration::from_millis(300));
             std::process::exit(0);
         }
@@ -382,13 +503,23 @@ fn apply_auto(state: &Arc<ClientActivityState>, to_ui: &UnboundedSender<ToUi>, v
         r
     } else {
         tracing::info!("有会话进行中，推迟替换到下个周期");
-        let _ = to_ui.send(ToUi::UpdateStatus { text: format!("有远控会话，稍后自动更新 v{version}"), phase: crate::net::update_phase::FAILED });
+        let _ = to_ui.send(ToUi::UpdateStatus {
+            text: format!("有远控会话，稍后自动更新 v{version}"),
+            phase: crate::net::update_phase::FAILED,
+        });
         Ok(()) // staged 临时文件随 drop 删除，下周期重下
     }
 }
 
 #[cfg(not(windows))]
-fn apply_auto(_s: &Arc<ClientActivityState>, _t: &UnboundedSender<ToUi>, _v: &str, _u: &str, _h: &str, _z: u64) -> anyhow::Result<()> {
+fn apply_auto(
+    _s: &Arc<ClientActivityState>,
+    _t: &UnboundedSender<ToUi>,
+    _v: &str,
+    _u: &str,
+    _h: &str,
+    _z: u64,
+) -> anyhow::Result<()> {
     Ok(()) // 非 Windows 不会进 AutoUpdate（asset.auto=false），兜底空实现
 }
 
@@ -452,14 +583,14 @@ mod tests {
         assert!(is_newer("0.3.0", "0.2.1"));
         assert!(!is_newer("0.2.1", "0.2.1")); // 相等
         assert!(!is_newer("0.2.0", "0.2.1")); // 更低
-        assert!(!is_newer("乱码", "0.2.1"));   // 非法保守不更新
+        assert!(!is_newer("乱码", "0.2.1")); // 非法保守不更新
     }
 
     #[test]
     fn 分桶_同id恒定且落0_99() {
         let a = bucket("123456789");
         let b = bucket("123456789");
-        assert_eq!(a, b);          // 确定性
+        assert_eq!(a, b); // 确定性
         assert!(a < 100);
         assert_ne!(bucket("111"), bucket("999")); // 不同 id 大概率不同（此对已验证不同）
     }
@@ -467,12 +598,22 @@ mod tests {
     // ── Task 3: decide ──
 
     fn mk_manifest(version: &str, auto: bool, rollout: u8) -> (Manifest, Asset) {
-        let asset = Asset { url: "https://h/d/c.exe".into(), sha256: Some("ab".into()), size: Some(10), auto };
+        let asset = Asset {
+            url: "https://h/d/c.exe".into(),
+            sha256: Some("ab".into()),
+            size: Some(10),
+            auto,
+        };
         let mut assets = HashMap::new();
         assets.insert("windows_x86_64".to_string(), asset.clone());
         let m = Manifest {
-            version: version.into(), assets, enabled: true, rollout_percent: rollout,
-            min_version: None, allow_downgrade: false, notes: Some("note".into()),
+            version: version.into(),
+            assets,
+            enabled: true,
+            rollout_percent: rollout,
+            min_version: None,
+            allow_downgrade: false,
+            notes: Some("note".into()),
         };
         (m, asset)
     }
@@ -497,23 +638,35 @@ mod tests {
     #[test]
     fn 决策_windows灰度0不更新_100更新() {
         let (m0, a) = mk_manifest("0.3.0", true, 0);
-        assert_eq!(decide_with_asset(&m0, "0.2.1", "id", &a), UpdateAction::Skip);
+        assert_eq!(
+            decide_with_asset(&m0, "0.2.1", "id", &a),
+            UpdateAction::Skip
+        );
         let (m100, a2) = mk_manifest("0.3.0", true, 100);
-        assert!(matches!(decide_with_asset(&m100, "0.2.1", "id", &a2), UpdateAction::AutoUpdate { .. }));
+        assert!(matches!(
+            decide_with_asset(&m100, "0.2.1", "id", &a2),
+            UpdateAction::AutoUpdate { .. }
+        ));
     }
 
     #[test]
     fn 决策_min_version强制无视灰度() {
         let (mut m, a) = mk_manifest("0.3.0", true, 0); // 灰度 0
-        m.min_version = Some("0.3.0".into());           // 强制线高于 current
-        assert!(matches!(decide_with_asset(&m, "0.2.1", "id", &a), UpdateAction::AutoUpdate { .. }));
+        m.min_version = Some("0.3.0".into()); // 强制线高于 current
+        assert!(matches!(
+            decide_with_asset(&m, "0.2.1", "id", &a),
+            UpdateAction::AutoUpdate { .. }
+        ));
     }
 
     #[test]
     fn 决策_allow_downgrade降级() {
-        let (mut m, a) = mk_manifest("0.2.0", true, 0);  // 比 current 更低 + 灰度0
+        let (mut m, a) = mk_manifest("0.2.0", true, 0); // 比 current 更低 + 灰度0
         m.allow_downgrade = true;
-        assert!(matches!(decide_with_asset(&m, "0.2.1", "id", &a), UpdateAction::AutoUpdate { .. }));
+        assert!(matches!(
+            decide_with_asset(&m, "0.2.1", "id", &a),
+            UpdateAction::AutoUpdate { .. }
+        ));
     }
 
     #[test]
@@ -552,7 +705,10 @@ mod tests {
     #[test]
     fn 同源_同主机https放行_异源拒绝() {
         let b = resolve_base("wss://rc.guoziweb.com/ws", None).unwrap();
-        assert!(same_origin(&b, "https://rc.guoziweb.com/downloads/c-0.3.0.exe"));
+        assert!(same_origin(
+            &b,
+            "https://rc.guoziweb.com/downloads/c-0.3.0.exe"
+        ));
         assert!(!same_origin(&b, "https://evil.com/c.exe")); // 异主机
         assert!(!same_origin(&b, "http://rc.guoziweb.com/c.exe")); // 非 https
     }
@@ -592,7 +748,11 @@ mod tests {
     #[test]
     fn 生产公钥_拒绝非己签名() {
         // 夹具由测试密钥签名；生产 UPDATE_PUBKEY 必拒（验证内置公钥与签名绑定，非任意签名都收）。
-        assert!(!verify_manifest_sig(UPDATE_PUBKEY, FIXTURE_JSON, FIXTURE_SIG));
+        assert!(!verify_manifest_sig(
+            UPDATE_PUBKEY,
+            FIXTURE_JSON,
+            FIXTURE_SIG
+        ));
     }
 
     #[test]
@@ -612,7 +772,10 @@ mod tests {
         r.read_to_end(&mut out).unwrap();
         assert_eq!(r.total(), data.len() as u64);
         // sha256("hello world") = b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
-        assert_eq!(r.finish_hex(), "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+        assert_eq!(
+            r.finish_hex(),
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
     }
 
     #[test]

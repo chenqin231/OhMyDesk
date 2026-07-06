@@ -13,7 +13,10 @@
 /// 确保（尽力）以管理员权限运行：未提权则自重启提权，成功即退出本体。
 #[cfg(windows)]
 pub fn ensure_elevated() {
-    if std::env::var("OHMYDESK_NO_ELEVATE").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("OHMYDESK_NO_ELEVATE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         return;
     }
     if is_elevated() {
@@ -66,9 +69,7 @@ fn is_elevated() -> bool {
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             return false; // 拿不到令牌时保守按未提权处理（最多多弹一次 UAC，不会误判为已提权）
         }
-        let mut elevation = TOKEN_ELEVATION {
-            TokenIsElevated: 0,
-        };
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
         let mut ret_len: u32 = 0;
         let ok = GetTokenInformation(
             token,
@@ -96,7 +97,11 @@ fn relaunch_as_admin() -> bool {
     let verb_w = to_wide("runas");
     // 透传除 argv[0] 外的原始参数（保持重启后行为一致）。含空格的参数加双引号，
     // 避免被 ShellExecute 拆成多参（如带空格的用户名「演示 终端」）。
-    let params = std::env::args().skip(1).map(quote_arg).collect::<Vec<_>>().join(" ");
+    let params = std::env::args()
+        .skip(1)
+        .map(quote_arg)
+        .collect::<Vec<_>>()
+        .join(" ");
     let params_w = to_wide(&params);
 
     // ShellExecuteW 返回值 > 32 表示成功（HINSTANCE 历史语义）。

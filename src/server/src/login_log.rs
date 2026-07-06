@@ -68,9 +68,8 @@ impl LoginLogStore {
         };
         let limit = limit.clamp(1, 200);
         let offset = offset.max(0);
-        let mut sql = String::from(
-            "SELECT id, ts, username, ip, user_agent, success, reason FROM login_log",
-        );
+        let mut sql =
+            String::from("SELECT id, ts, username, ip, user_agent, success, reason FROM login_log");
         if username_scope.is_some() {
             sql.push_str(" WHERE username = ?");
         }
@@ -175,7 +174,9 @@ mod tests {
         .await
         .unwrap();
         let store = LoginLogStore::new(Some(pool));
-        store.record("alice", Some("1.1.1.1"), None, true, None).await;
+        store
+            .record("alice", Some("1.1.1.1"), None, true, None)
+            .await;
         store
             .record("alice", Some("1.1.1.1"), None, false, Some("密码错"))
             .await;
