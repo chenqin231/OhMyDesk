@@ -209,7 +209,9 @@ pub(super) async fn handle_downlink(
             }
         }
         // 被控端收主控切换的画质档位 → 更新采集参数（仅本会话被控态时生效）
-        Message::SetQuality { session_id, mode } => {
+        Message::SetQuality {
+            session_id, mode, ..
+        } => {
             let controlled =
                 session.lock().await.controlled.as_deref() == Some(session_id.as_str());
             tracing::info!(
@@ -260,7 +262,7 @@ pub(super) async fn handle_downlink(
             }
             CLIPBOARD_TX.send(ClipboardMsg::Stop);
             crate::transfer::clear_pull_targets(); // 清理本会话残留的取回目标登记
-            // 携结束的 session_id 上抛，UI 侧据此门控清理被控会话副本（对齐上方 controlled 的按 id 清理）。
+                                                   // 携结束的 session_id 上抛，UI 侧据此门控清理被控会话副本（对齐上方 controlled 的按 id 清理）。
             let _ = to_ui.send(ToUi::SessionEnded { session_id });
         }
 
@@ -686,7 +688,13 @@ pub(super) async fn handle_uplink(
             from: self_id.to_string(),
             to: None, // server 按 session_id 路由给被控端
             ts: now(),
-            payload: Message::SetQuality { session_id, mode },
+            payload: Message::SetQuality {
+                session_id,
+                mode,
+                resolution: None,
+                clarity: None,
+                fps: None,
+            },
         },
         FromUi::ClipboardSync { session_id, text } => Envelope {
             from: self_id.to_string(),
@@ -1270,8 +1278,14 @@ mod tests {
 
     #[test]
     fn 控制方显示名_缺账号名时回退连接id() {
-        assert_eq!(control_peer_name(Some(" caodan "), "admin-vazkcy"), "caodan");
-        assert_eq!(control_peer_name(Some("   "), "admin-vazkcy"), "admin-vazkcy");
+        assert_eq!(
+            control_peer_name(Some(" caodan "), "admin-vazkcy"),
+            "caodan"
+        );
+        assert_eq!(
+            control_peer_name(Some("   "), "admin-vazkcy"),
+            "admin-vazkcy"
+        );
         assert_eq!(control_peer_name(None, "admin-vazkcy"), "admin-vazkcy");
     }
 

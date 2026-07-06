@@ -152,6 +152,36 @@ pub enum QualityMode {
     Smooth,
 }
 
+/// 分辨率档位:采集缩放上限(fit-within 等比,绝不放大)。Native=不缩放,按被控真实屏发送。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolutionTier {
+    R720p,
+    R900p,
+    R1080p,
+    Native,
+}
+
+/// 清晰度档位:JPEG 编码质量。Standard=q80,High=q88(q≥90 切 4:4:4 体积翻倍,真机已否决)。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ClarityTier {
+    Standard,
+    High,
+}
+
+/// 帧率档位:推帧间隔。Smooth=40ms(~25fps),Standard=66ms(~15fps),Saver=125ms(~8fps)。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum FpsTier {
+    Smooth,
+    Standard,
+    Saver,
+}
+
 /// WS 统一消息体；`#[serde(tag="type")]` **内部 tag**——type 在 payload 对象内（非信封顶层），
 /// 前端按 `env.payload.type` 判别，Rust 按枚举变体匹配（裁决 W0-3）。
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -223,11 +253,18 @@ pub enum Message {
         session_id: String,
         event: InputEvent,
     },
-    /// 主控→被控：设置画质档位（高清优先 / 流畅优先）。被控端据此调整采集分辨率/JPEG质量/帧率。
-    /// 按 session 对端路由（同 Input）。
+    /// 主控→被控:设置显示参数。三轴新字段(v0.5.x 起)独立控制分辨率/清晰度/帧率;
+    /// mode 旧字段保留兼容 ≤0.5.0 被控端(新主控按清晰度映射填写:High→HighQuality)。
+    /// 旧主控不发三轴(None),新被控按 mode 兜底展开。按 session 对端路由(同 Input)。
     SetQuality {
         session_id: String,
         mode: QualityMode,
+        #[serde(default)]
+        resolution: Option<ResolutionTier>,
+        #[serde(default)]
+        clarity: Option<ClarityTier>,
+        #[serde(default)]
+        fps: Option<FpsTier>,
     },
     /// 主控→被控:会话内帧推流开关(懒推流——主控仅在「远程桌面」标签需要帧)。
     /// active=false 暂停采集推帧, true 恢复。按 session 对端路由(同 SetQuality);不审计(纯传输优化)。
@@ -365,12 +402,26 @@ pub struct FileEntry {
 #[ts(export)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InputEvent {
-    MouseMove { x: i32, y: i32 },
-    MouseButton { button: u8, down: bool },
-    Key { code: String, down: bool },
-    Text { text: String },
+    MouseMove {
+        x: i32,
+        y: i32,
+    },
+    MouseButton {
+        button: u8,
+        down: bool,
+    },
+    Key {
+        code: String,
+        down: bool,
+    },
+    Text {
+        text: String,
+    },
     /// 鼠标滚轮。dx/dy 单位为滚轮"格"(notches,非像素);dy>0 向上、dx>0 向右。
-    Scroll { dx: i32, dy: i32 },
+    Scroll {
+        dx: i32,
+        dy: i32,
+    },
     /// 未知/未来变体兜底：旧端遇不认识的 `kind` 落到此，不再整条失败(见 Message::Unknown)。
     /// `skip_serializing` 理由同 Message::Unknown：只反序列化+原样透传，误序列化即报错暴露。
     #[serde(other, skip_serializing)]
