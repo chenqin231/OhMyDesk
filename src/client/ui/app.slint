@@ -562,7 +562,7 @@ export component AppWindow inherits Window {
     // 默认紧凑小窗（贴合原型卡片）；进入主控画面态由 Rust 动态放大到 ~1280×820。
     preferred-width: 460px;
     preferred-height: 620px;
-    min-width: 420px;
+    min-width: root.remote_active ? 900px : 420px;  // 远控态撑开到 ≥900px 防断开按钮裁切
     min-height: 520px;
     background: Theme.bg;
     default-font-size: 14px;
@@ -607,8 +607,11 @@ export component AppWindow inherits Window {
     in property <int> frame_h: 1;
     callback connect_b();
     callback disconnect_remote();
-    in-out property <bool> high_quality: false;   // 画质档位：true=高清优先，false=流畅优先
-    callback set_quality(bool /*high*/);          // 主控切换画质档位
+    // ── 三轴显示参数（主控选择，发 SetQuality 给被控端）──
+    in-out property <int> res_tier: 0;      // 分辨率 0=720p 1=900p 2=1080p 3=原生
+    in-out property <int> clarity_tier: 0;  // 清晰度 0=标准 1=高清
+    in-out property <int> fps_tier: 0;      // 帧率 0=流畅 1=标准 2=省流
+    callback set_display_params(int /*res*/, int /*clarity*/, int /*fps*/);
 
     // ── 主控工作台标签（0=远程桌面 1=远程命令 2=远程文件 3=即时消息）──
     in-out property <int> active_tab: 0;
@@ -1085,22 +1088,22 @@ export component AppWindow inherits Window {
                         }
                     }
                     Rectangle { } // 撑开
-                    // 画质档位切换（仅远程桌面标签有意义，常驻方便随时切）
+                    // 三轴显示参数（分辨率/清晰度/帧率），常驻标签条右侧随时可切
                     VerticalLayout {
                         alignment: center;
                         Rectangle {
-                            width: 132px;
+                            width: 172px;
                             height: 28px;
                             border-radius: 8px;
                             background: #1a1a1edd;
                             HorizontalLayout {
                                 padding: 2px;
                                 spacing: 2px;
-                                Rectangle {
+                                for r-label[r-idx] in ["720", "900", "1080", "原生"]: Rectangle {
                                     border-radius: 6px;
-                                    background: !root.high_quality ? Theme.emerald : transparent;
+                                    background: root.res_tier == r-idx ? Theme.emerald : transparent;
                                     Text {
-                                        text: "流畅";
+                                        text: r-label;
                                         color: white;
                                         font-size: 11px;
                                         horizontal-alignment: center;
@@ -1109,16 +1112,29 @@ export component AppWindow inherits Window {
                                     TouchArea {
                                         mouse-cursor: pointer;
                                         clicked => {
-                                            root.high_quality = false;
-                                            root.set_quality(false);
+                                            root.res_tier = r-idx;
+                                            root.set_display_params(root.res_tier, root.clarity_tier, root.fps_tier);
                                         }
                                     }
                                 }
-                                Rectangle {
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 92px;
+                            height: 28px;
+                            border-radius: 8px;
+                            background: #1a1a1edd;
+                            HorizontalLayout {
+                                padding: 2px;
+                                spacing: 2px;
+                                for c-label[c-idx] in ["标准", "高清"]: Rectangle {
                                     border-radius: 6px;
-                                    background: root.high_quality ? Theme.emerald : transparent;
+                                    background: root.clarity_tier == c-idx ? Theme.emerald : transparent;
                                     Text {
-                                        text: "高清";
+                                        text: c-label;
                                         color: white;
                                         font-size: 11px;
                                         horizontal-alignment: center;
@@ -1127,8 +1143,39 @@ export component AppWindow inherits Window {
                                     TouchArea {
                                         mouse-cursor: pointer;
                                         clicked => {
-                                            root.high_quality = true;
-                                            root.set_quality(true);
+                                            root.clarity_tier = c-idx;
+                                            root.set_display_params(root.res_tier, root.clarity_tier, root.fps_tier);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 134px;
+                            height: 28px;
+                            border-radius: 8px;
+                            background: #1a1a1edd;
+                            HorizontalLayout {
+                                padding: 2px;
+                                spacing: 2px;
+                                for f-label[f-idx] in ["流畅", "标准", "省流"]: Rectangle {
+                                    border-radius: 6px;
+                                    background: root.fps_tier == f-idx ? Theme.emerald : transparent;
+                                    Text {
+                                        text: f-label;
+                                        color: white;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.fps_tier = f-idx;
+                                            root.set_display_params(root.res_tier, root.clarity_tier, root.fps_tier);
                                         }
                                     }
                                 }

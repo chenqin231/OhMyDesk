@@ -216,13 +216,30 @@ pub fn wire_ui_callbacks(
             }
         });
     }
-    // 主控切换画质档位（高清优先 / 流畅优先）→ 发 SetQuality 给被控端
+    // int 档位语义与 app.slint res_tier/clarity_tier/fps_tier 注释及数组顺序一一对应,改动需两侧同步
+    // 主控切换三轴显示参数（分辨率/清晰度/帧率）→ 发 SetQuality 给被控端
     {
         let tx = from_ui_tx.clone();
         let sess = cur_session.clone();
-        ui.on_set_quality(move |high| {
+        ui.on_set_display_params(move |res, clarity, fps| {
             if let Some(sid) = sess.lock().unwrap().clone() {
-                let mode = if high {
+                let resolution = match res {
+                    1 => protocol::ResolutionTier::R900p,
+                    2 => protocol::ResolutionTier::R1080p,
+                    3 => protocol::ResolutionTier::Native,
+                    _ => protocol::ResolutionTier::R720p,
+                };
+                let clarity_t = match clarity {
+                    1 => protocol::ClarityTier::High,
+                    _ => protocol::ClarityTier::Standard,
+                };
+                let fps_t = match fps {
+                    1 => protocol::FpsTier::Standard,
+                    2 => protocol::FpsTier::Saver,
+                    _ => protocol::FpsTier::Smooth,
+                };
+                // 旧被控端（≤0.5.0）兜底：mode 按清晰度映射
+                let mode = if matches!(clarity_t, protocol::ClarityTier::High) {
                     protocol::QualityMode::HighQuality
                 } else {
                     protocol::QualityMode::Smooth
@@ -230,9 +247,9 @@ pub fn wire_ui_callbacks(
                 let _ = tx.send(net::FromUi::SetQuality {
                     session_id: sid,
                     mode,
-                    resolution: None,
-                    clarity: None,
-                    fps: None,
+                    resolution: Some(resolution),
+                    clarity: Some(clarity_t),
+                    fps: Some(fps_t),
                 });
             }
         });
