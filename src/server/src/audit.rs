@@ -185,9 +185,7 @@ impl AuditStore {
             "SELECT id, mode, from_id, to_id, start_at, end_at, status, operator_user_id, operator_username, operator_role FROM sessions",
         );
         if owner_scope.is_some() {
-            sql.push_str(
-                " WHERE to_id IN (SELECT id FROM endpoint_registry WHERE owner_id = ?)",
-            );
+            sql.push_str(" WHERE to_id IN (SELECT id FROM endpoint_registry WHERE owner_id = ?)");
         }
         sql.push_str(" ORDER BY start_at DESC LIMIT 200");
 
@@ -360,7 +358,13 @@ CREATE TABLE audit_logs (
             is_superadmin: false,
         };
         store
-            .log("sess-1", "admin-1", AuditType::Connect, "会话建立", Some(&actor))
+            .log(
+                "sess-1",
+                "admin-1",
+                AuditType::Connect,
+                "会话建立",
+                Some(&actor),
+            )
             .await;
 
         let logs = store.query_audit(None, None, None, None).await;
@@ -444,10 +448,22 @@ CREATE TABLE audit_logs (
         };
         store.insert_session(&sess("s1", "ep-a")).await;
         store.insert_session(&sess("s2", "ep-b")).await;
-        store.log("s1", "admin-x", AuditType::Connect, "到 A", None).await;
-        store.log("s2", "admin-x", AuditType::Connect, "到 B", None).await;
+        store
+            .log("s1", "admin-x", AuditType::Connect, "到 A", None)
+            .await;
+        store
+            .log("s2", "admin-x", AuditType::Connect, "到 B", None)
+            .await;
         // 无对应 session 的审计（如截图 req_id）：普通账号视角应不呈现（验证无泄露）。
-        store.log("s-none", "admin-x", AuditType::Screenshot, "无会话截图", None).await;
+        store
+            .log(
+                "s-none",
+                "admin-x",
+                AuditType::Screenshot,
+                "无会话截图",
+                None,
+            )
+            .await;
 
         // A(ua) 审计仅 s1；不含 s2；不含无 session 的 a3。
         let a_logs = store.query_audit(None, None, None, Some("ua")).await;

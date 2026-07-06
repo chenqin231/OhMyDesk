@@ -203,7 +203,9 @@ mod tests {
         for _ in 0..10 {
             store.bump_input("s-001");
         }
-        let (ended, summary) = store.end_session("s-001", 100, SessionStatus::Ended).unwrap();
+        let (ended, summary) = store
+            .end_session("s-001", 100, SessionStatus::Ended)
+            .unwrap();
         assert_eq!(ended.status, SessionStatus::Ended);
         assert_eq!(ended.end_at, Some(100));
         assert_eq!(summary, "输入操作 10 次");
@@ -212,7 +214,9 @@ mod tests {
     #[test]
     fn session_store_end_nonexistent_returns_none() {
         let store = SessionStore::new();
-        assert!(store.end_session("nonexistent", 0, SessionStatus::Ended).is_none());
+        assert!(store
+            .end_session("nonexistent", 0, SessionStatus::Ended)
+            .is_none());
     }
 
     #[test]
@@ -251,8 +255,16 @@ mod tests {
             operator_role: None,
         });
         assert_eq!(store.outbound_session("ep-a", "ep-b"), Some("s-out".into()));
-        assert_eq!(store.outbound_session("ep-a", "ep-x"), None, "target 不符不应命中");
-        assert_eq!(store.outbound_session("ep-x", "ep-b"), None, "发起方不符不应命中");
+        assert_eq!(
+            store.outbound_session("ep-a", "ep-x"),
+            None,
+            "target 不符不应命中"
+        );
+        assert_eq!(
+            store.outbound_session("ep-x", "ep-b"),
+            None,
+            "发起方不符不应命中"
+        );
         // 结束后不再命中
         store.end_session("s-out", 10, SessionStatus::Ended);
         assert_eq!(store.outbound_session("ep-a", "ep-b"), None);

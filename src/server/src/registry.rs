@@ -112,10 +112,7 @@ impl Registry {
 
     /// 校验 endpoint 密码（模式 B 鉴权）
     pub fn check_password(&self, id: &str, pw: &str) -> bool {
-        self.map
-            .get(id)
-            .map(|e| e.password == pw)
-            .unwrap_or(false)
+        self.map.get(id).map(|e| e.password == pw).unwrap_or(false)
     }
 
     /// 返回所有终端的视图快照；now 用于判断在线态
@@ -363,9 +360,15 @@ mod tests {
         reg.upsert(ep("ep-n"), "pw".into(), 1000, None);
 
         // A 普通账号：仅见自己归属 ep-a
-        assert_eq!(sorted_ids(reg.views_visible_to(1000, Some("A"), false)), vec!["ep-a"]);
+        assert_eq!(
+            sorted_ids(reg.views_visible_to(1000, Some("A"), false)),
+            vec!["ep-a"]
+        );
         // B 普通账号：仅见 ep-b
-        assert_eq!(sorted_ids(reg.views_visible_to(1000, Some("B"), false)), vec!["ep-b"]);
+        assert_eq!(
+            sorted_ids(reg.views_visible_to(1000, Some("B"), false)),
+            vec!["ep-b"]
+        );
         // superadmin：全量（含 owner=None 旧端）
         assert_eq!(
             sorted_ids(reg.views_visible_to(1000, None, true)),

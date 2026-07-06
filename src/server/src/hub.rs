@@ -3,8 +3,8 @@
 //! W0-1：Register 回发 RegisterAck。
 //! M-SRV4：转发 Input 时对对应会话的 InputAggregator.bump()。
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use protocol::{AuditType, Envelope, Message};
@@ -117,7 +117,13 @@ impl Hub {
         frame_tx: tokio::sync::watch::Sender<Option<String>>,
         enqueued: std::sync::Arc<AtomicU64>,
     ) {
-        self.frame_clients.insert(id, FrameClient { tx: frame_tx, enqueued });
+        self.frame_clients.insert(
+            id,
+            FrameClient {
+                tx: frame_tx,
+                enqueued,
+            },
+        );
     }
 
     /// 帧定向推送（drop-stale）：覆盖目标的单槽最新帧；累加 enqueued（入队计数）。
@@ -234,9 +240,9 @@ impl Hub {
     /// 对每条被移除的会话：向对端发 SessionEnd（清「被控/控制」态）+ audit.end_session
     /// 更新 DB 终态 + 落输入聚合审计 + 落 Disconnect「对端断开」审计。镜像 handle_session_end。
     pub async fn end_client_sessions(&self, client_id: &str, now: i64) {
-        let ended = self
-            .sessions
-            .remove_sessions_of(client_id, now, protocol::SessionStatus::Ended);
+        let ended =
+            self.sessions
+                .remove_sessions_of(client_id, now, protocol::SessionStatus::Ended);
         for (session, input_summary) in ended {
             let session_id = &session.id;
             // 通知对端（会话里 ≠ 断开方的一侧）：据此清除"正在被控/控制"态。
@@ -260,7 +266,13 @@ impl Hub {
             let actor = ActorIdentity::from_session(&session);
             // 落输入聚合审计（M-SRV4）
             self.audit
-                .log(session_id, &session.from_id, AuditType::Input, &input_summary, actor.as_ref())
+                .log(
+                    session_id,
+                    &session.from_id,
+                    AuditType::Input,
+                    &input_summary,
+                    actor.as_ref(),
+                )
                 .await;
             // 更新 DB 会话终态
             self.audit
@@ -268,7 +280,13 @@ impl Hub {
                 .await;
             // 落断开审计（对端断开）
             self.audit
-                .log(session_id, &session.from_id, AuditType::Disconnect, "对端断开", actor.as_ref())
+                .log(
+                    session_id,
+                    &session.from_id,
+                    AuditType::Disconnect,
+                    "对端断开",
+                    actor.as_ref(),
+                )
                 .await;
         }
     }
@@ -321,10 +339,7 @@ impl Hub {
                         })
                         .unwrap_or(false);
                     if !allowed {
-                        tracing::warn!(
-                            "拒绝无 UseRemote 权限的 admin 远控发起: from={}",
-                            env.from
-                        );
+                        tracing::warn!("拒绝无 UseRemote 权限的 admin 远控发起: from={}", env.from);
                         return;
                     }
                 }
@@ -893,7 +908,13 @@ mod tests {
         // 复现生产路径:先反序列化(此时不再整条失败),再 handle_raw 传原始 text。
         let env: Envelope = serde_json::from_str(&raw).expect("未知 event 变体不应导致整条失败");
         assert!(
-            matches!(env.payload, Message::Input { event: protocol::InputEvent::Unknown, .. }),
+            matches!(
+                env.payload,
+                Message::Input {
+                    event: protocol::InputEvent::Unknown,
+                    ..
+                }
+            ),
             "未知 kind 应落 InputEvent::Unknown"
         );
         hub.handle_raw(env, &raw, 200).await;
@@ -933,9 +954,7 @@ mod tests {
         hub.end_client_sessions("ep-a", 300).await;
 
         // 对端 ep-b 收到 SessionEnd
-        let got = b_rx
-            .try_recv()
-            .expect("对端应收到 SessionEnd 结束通知");
+        let got = b_rx.try_recv().expect("对端应收到 SessionEnd 结束通知");
         let env: Envelope = serde_json::from_str(&got).unwrap();
         match env.payload {
             Message::SessionEnd { session_id } => assert_eq!(session_id, sid),
@@ -974,10 +993,7 @@ mod tests {
             victim_rx.try_recv().is_err(),
             "无身份 admin 发起应被拒，被控端不应收到 IncomingControl"
         );
-        assert!(
-            hub.sessions.active_sessions().is_empty(),
-            "被拒不应建会话"
-        );
+        assert!(hub.sessions.active_sessions().is_empty(), "被拒不应建会话");
     }
 
     /// RBAC 闸：绑定的账户权限集不含 use_remote(仅 view_audit)→ 远控发起被拒(不建会话)。
@@ -1028,7 +1044,8 @@ mod tests {
         hub.add_client("ep-victim".into(), victim_tx);
         // 归属范围闸（T020）：ep-victim 须归属该操作人（u-op）才可被其远控；
         // 否则即便持 use_remote 也越权被拒（见 connect_request_归属范围闸）。
-        hub.reg.upsert(ep_owned("ep-victim"), "pw".into(), 200, Some("u-op".into()));
+        hub.reg
+            .upsert(ep_owned("ep-victim"), "pw".into(), 200, Some("u-op".into()));
         hub.bind_actor(
             "admin-x",
             ActorIdentity {
@@ -1059,7 +1076,13 @@ mod tests {
             .expect("含 use_remote，被控端应收到 IncomingControl");
         let got_env: Envelope = serde_json::from_str(&got).unwrap();
         assert!(
-            matches!(&got_env.payload, Message::IncomingControl { auto_accept: true, .. }),
+            matches!(
+                &got_env.payload,
+                Message::IncomingControl {
+                    auto_accept: true,
+                    ..
+                }
+            ),
             "force 直连应 auto_accept=true"
         );
         assert!(
@@ -1122,7 +1145,10 @@ mod tests {
         let got_env: Envelope = serde_json::from_str(&got).unwrap();
         assert!(matches!(
             got_env.payload,
-            Message::IncomingControl { auto_accept: true, .. }
+            Message::IncomingControl {
+                auto_accept: true,
+                ..
+            }
         ));
 
         let sessions = hub.sessions.active_sessions();
@@ -1134,7 +1160,11 @@ mod tests {
     fn frame_lane_drop_计算() {
         assert_eq!(super::frame_lane_drop(5, 3), 2, "入5发3→丢2");
         assert_eq!(super::frame_lane_drop(3, 3), 0, "1:1→不丢(不过报)");
-        assert_eq!(super::frame_lane_drop(2, 5), 0, "sent>enqueued(并发瞬态)→clamp 0");
+        assert_eq!(
+            super::frame_lane_drop(2, 5),
+            0,
+            "sent>enqueued(并发瞬态)→clamp 0"
+        );
     }
 
     /// 帧 lane(drop-stale):Frame 走独立 frame_clients,连发两帧只保留最新(coalesce)。
@@ -1262,8 +1292,10 @@ mod tests {
     #[tokio::test]
     async fn push_list_每admin按owner过滤() {
         let hub = test_hub();
-        hub.reg.upsert(ep_owned("ep-a"), "pw".into(), 100, Some("ua".into()));
-        hub.reg.upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
+        hub.reg
+            .upsert(ep_owned("ep-a"), "pw".into(), 100, Some("ua".into()));
+        hub.reg
+            .upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
 
         let (a_tx, mut a_rx) = mpsc::unbounded_channel::<String>();
         let (b_tx, mut b_rx) = mpsc::unbounded_channel::<String>();
@@ -1281,9 +1313,14 @@ mod tests {
         assert_eq!(list_ids(&mut s_rx), vec!["ep-a", "ep-b"], "superadmin 全量");
 
         // AC-005-E2 推送级：ep-b 再触发 push，admin-A 通道任何帧都不含 ep-b。
-        hub.reg.upsert(ep_owned("ep-b"), "pw".into(), 101, Some("ub".into()));
+        hub.reg
+            .upsert(ep_owned("ep-b"), "pw".into(), 101, Some("ub".into()));
         hub.push_list(101);
-        assert_eq!(list_ids(&mut a_rx), vec!["ep-a"], "推送级隔离：admin-A 永不含他人终端");
+        assert_eq!(
+            list_ids(&mut a_rx),
+            vec!["ep-a"],
+            "推送级隔离：admin-A 永不含他人终端"
+        );
     }
 
     /// T017【RED】ConnectRequest 归属范围闸（AC-006-H1/E1/E2）：
@@ -1291,8 +1328,10 @@ mod tests {
     #[tokio::test]
     async fn connect_request_归属范围闸() {
         let hub = test_hub();
-        hub.reg.upsert(ep_owned("ep-a"), "pw".into(), 100, Some("ua".into()));
-        hub.reg.upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
+        hub.reg
+            .upsert(ep_owned("ep-a"), "pw".into(), 100, Some("ua".into()));
+        hub.reg
+            .upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
         hub.reg.upsert(ep_owned("ep-n"), "pw".into(), 100, None);
         for id in ["ep-a", "ep-b", "ep-n"] {
             let (t, _r) = mpsc::unbounded_channel::<String>();
@@ -1326,14 +1365,20 @@ mod tests {
         let env: Envelope = serde_json::from_str(&reject).unwrap();
         match env.payload {
             Message::Reject { reason, .. } => {
-                assert_eq!(reason, "无权远控该终端", "拒连 reason 供 web RejectedCard 渲染")
+                assert_eq!(
+                    reason, "无权远控该终端",
+                    "拒连 reason 供 web RejectedCard 渲染"
+                )
             }
             other => panic!("应为 Reject，实际 {other:?}"),
         }
 
         // A 控 owner=None 旧端 → 同样拒绝（非 superadmin）
         hub.handle(req("ep-n"), 200).await;
-        assert!(hub.sessions.active_sessions().is_empty(), "控 NULL 端不应建会话");
+        assert!(
+            hub.sessions.active_sessions().is_empty(),
+            "控 NULL 端不应建会话"
+        );
         assert!(a_rx.try_recv().is_ok(), "控 NULL 端应回拒连");
 
         // A 控自有终端 ep-a → 放行（mode A force → 建 Active 会话）
@@ -1346,7 +1391,8 @@ mod tests {
 
         // superadmin 控他人终端 → 放行
         let hub2 = test_hub();
-        hub2.reg.upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
+        hub2.reg
+            .upsert(ep_owned("ep-b"), "pw".into(), 100, Some("ub".into()));
         let (tb, _rb) = mpsc::unbounded_channel::<String>();
         hub2.add_client("ep-b".into(), tb);
         let (sa_tx, _sa_rx) = mpsc::unbounded_channel::<String>();

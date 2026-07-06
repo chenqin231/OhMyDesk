@@ -19,16 +19,16 @@ mod capture;
 mod chat_notice;
 mod credential;
 mod elevate;
-mod suwen;
 mod exec;
 mod framediff;
-mod telemetry;
-mod render_mode;
 mod geom;
 mod history;
 mod inject;
 mod login;
 mod net;
+mod render_mode;
+mod suwen;
+mod telemetry;
 mod transfer;
 mod ui_glue;
 mod update;
@@ -54,13 +54,23 @@ fn main() -> anyhow::Result<()> {
     // OHMYDESK_LOG_FILE 仍兼容（显式指定单文件时优先）。
     let _log_guard = match std::env::var("OHMYDESK_LOG_FILE") {
         Ok(p) if !p.is_empty() => {
-            match std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&p)
+            {
                 Ok(file) => {
-                    tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false)
-                        .with_writer(std::sync::Mutex::new(file)).init();
+                    tracing_subscriber::fmt()
+                        .with_env_filter(filter)
+                        .with_ansi(false)
+                        .with_writer(std::sync::Mutex::new(file))
+                        .init();
                     None
                 }
-                Err(_) => { tracing_subscriber::fmt().with_env_filter(filter).init(); None }
+                Err(_) => {
+                    tracing_subscriber::fmt().with_env_filter(filter).init();
+                    None
+                }
             }
         }
         _ => {
@@ -68,8 +78,11 @@ fn main() -> anyhow::Result<()> {
             let _ = std::fs::create_dir_all(&log_dir);
             let appender = tracing_appender::rolling::daily(&log_dir, "client.log");
             let (nb, guard) = tracing_appender::non_blocking(appender);
-            tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false)
-                .with_writer(nb).init();
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(false)
+                .with_writer(nb)
+                .init();
             Some(guard)
         }
     };
@@ -135,14 +148,22 @@ fn main() -> anyhow::Result<()> {
     // 遥测通道（worker 投 FrameSample、conn 投 EgressSample）
     let (tele_tx, tele_rx) = tokio::sync::mpsc::unbounded_channel::<telemetry::TelemetryMsg>();
     // 运行模式初始化（env > 启动参数 > config.toml > 默认 Frameskip）
-    let arg_mode = std::env::args()
-        .find_map(|a| a.strip_prefix("--render-mode=").map(|s| s.to_string()));
+    let arg_mode =
+        std::env::args().find_map(|a| a.strip_prefix("--render-mode=").map(|s| s.to_string()));
     let cfg_mode = std::fs::read_to_string(ohmydesk_state_dir().join("config.toml"))
         .ok()
         .and_then(|s| s.parse::<toml::Table>().ok())
-        .and_then(|t| t.get("render").and_then(|r| r.get("mode")).and_then(|m| m.as_str().map(|s| s.to_string())));
+        .and_then(|t| {
+            t.get("render")
+                .and_then(|r| r.get("mode"))
+                .and_then(|m| m.as_str().map(|s| s.to_string()))
+        });
     let env_mode = std::env::var("OHMYDESK_RENDER_MODE").ok();
-    let mode = render_mode::resolve(env_mode.as_deref(), arg_mode.as_deref(), cfg_mode.as_deref());
+    let mode = render_mode::resolve(
+        env_mode.as_deref(),
+        arg_mode.as_deref(),
+        cfg_mode.as_deref(),
+    );
     render_mode::apply(mode);
     // 单开关环境变量覆盖（最高优先级）
     if std::env::var("OHMYDESK_FRAMESKIP").as_deref() == Ok("0") {
@@ -151,15 +172,27 @@ fn main() -> anyhow::Result<()> {
     if std::env::var("OHMYDESK_DIRTY_TELEMETRY").as_deref() == Ok("0") {
         render_mode::set_telemetry(false);
     }
-    tracing::info!("渲染模式 mode={:?} frameskip={} telemetry={}", render_mode::current_mode(), render_mode::frameskip_on(), render_mode::telemetry_on());
+    tracing::info!(
+        "渲染模式 mode={:?} frameskip={} telemetry={}",
+        render_mode::current_mode(),
+        render_mode::frameskip_on(),
+        render_mode::telemetry_on()
+    );
 
     // 过载自适应开关：env OHMYDESK_ADAPTIVE > config.toml [render].adaptive > 默认 ON
     let cfg_adaptive = std::fs::read_to_string(ohmydesk_state_dir().join("config.toml"))
         .ok()
         .and_then(|s| s.parse::<toml::Table>().ok())
-        .and_then(|t| t.get("render").and_then(|r| r.get("adaptive")).and_then(|a| a.as_bool()));
+        .and_then(|t| {
+            t.get("render")
+                .and_then(|r| r.get("adaptive"))
+                .and_then(|a| a.as_bool())
+        });
     let env_adaptive = std::env::var("OHMYDESK_ADAPTIVE").ok();
-    adaptive::set_enabled(adaptive::resolve_enabled(env_adaptive.as_deref(), cfg_adaptive));
+    adaptive::set_enabled(adaptive::resolve_enabled(
+        env_adaptive.as_deref(),
+        cfg_adaptive,
+    ));
     tracing::info!("过载自适应 adaptive_enabled={}", adaptive::enabled());
 
     // 共享：当前主控会话 id（键鼠回传需要）+ 当前被控会话 id（授权回传需要）
@@ -170,25 +203,60 @@ fn main() -> anyhow::Result<()> {
     let ended_session: SharedSession = Arc::new(std::sync::Mutex::new(None));
 
     // 活动门控 + nudge 通道
-    let activity = std::sync::Arc::new(activity::ClientActivityState::new(cur_session.clone(), ctrl_session.clone()));
+    let activity = std::sync::Arc::new(activity::ClientActivityState::new(
+        cur_session.clone(),
+        ctrl_session.clone(),
+    ));
     let (nudge_tx, nudge_rx) = std::sync::mpsc::sync_channel::<()>(4);
     update::set_nudge_sender(nudge_tx);
 
     // 设诊断目录路径到 UI（启动时立即 set，无需会话）
-    ui.set_diag_dir(ohmydesk_state_dir().join("diag").to_string_lossy().to_string().into());
+    ui.set_diag_dir(
+        ohmydesk_state_dir()
+            .join("diag")
+            .to_string_lossy()
+            .to_string()
+            .into(),
+    );
     // UI 回调注册（UI 线程）
-    ui_glue::wire_ui_callbacks(&ui, &from_ui_tx, &cur_session, &ctrl_session, &ended_session, &activity, &tele_tx);
+    ui_glue::wire_ui_callbacks(
+        &ui,
+        &from_ui_tx,
+        &cur_session,
+        &ctrl_session,
+        &ended_session,
+        &activity,
+        &tele_tx,
+    );
     ui_glue::wire_chat_notice_callbacks(&ui, &chat_notice);
     // 登录 / 注销回调（后台 ureq 登录 + token watch 通知 net）。
-    ui_glue::wire_login_callbacks(&ui, token_tx.clone(), server_url.clone(), active_server_url.clone());
+    ui_glue::wire_login_callbacks(
+        &ui,
+        token_tx.clone(),
+        server_url.clone(),
+        active_server_url.clone(),
+    );
 
     // 后台 tokio runtime
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     // 更新守护（独立 std 线程，在 to_ui_tx move 进 net::run 之前 clone）
-    update::spawn_update_daemon(server_url.clone(), self_id.clone(), activity.clone(), to_ui_tx.clone(), nudge_rx);
-    rt.spawn(net::run(active_server_url, info, to_ui_tx, from_ui_rx, tele_tx.clone(), token_rx));
+    update::spawn_update_daemon(
+        server_url.clone(),
+        self_id.clone(),
+        activity.clone(),
+        to_ui_tx.clone(),
+        nudge_rx,
+    );
+    rt.spawn(net::run(
+        active_server_url,
+        info,
+        to_ui_tx,
+        from_ui_rx,
+        tele_tx.clone(),
+        token_rx,
+    ));
     rt.spawn(ui_glue::consume_to_ui(
         to_ui_rx,
         ui.as_weak(),
@@ -201,9 +269,16 @@ fn main() -> anyhow::Result<()> {
     ));
     rt.spawn(workers::consume_inject(inject_rx));
     rt.spawn(workers::consume_screenshot(shot_rx, from_ui_tx.clone()));
-    rt.spawn(workers::consume_capture(cap_rx, from_ui_tx.clone(), tele_tx.clone()));
+    rt.spawn(workers::consume_capture(
+        cap_rx,
+        from_ui_tx.clone(),
+        tele_tx.clone(),
+    ));
     rt.spawn(workers::consume_clipboard(clip_rx, from_ui_tx));
-    rt.spawn(telemetry::run_collector(tele_rx, ohmydesk_state_dir().join("diag")));
+    rt.spawn(telemetry::run_collector(
+        tele_rx,
+        ohmydesk_state_dir().join("diag"),
+    ));
 
     // 主线程进入 Slint 事件循环（阻塞）
     ui.run()?;
@@ -242,7 +317,9 @@ fn detect_user() -> String {
 fn lock_x11_session() {
     // 先记录“原本是 Wayland 会话”——下面会抹掉 WAYLAND_DISPLAY 强制 X11 后端，
     // 但真实 Wayland 会话即便连到 Xwayland 也抓不到桌面，截屏线程据此明确回执主控端。
-    let is_wayland = std::env::var("WAYLAND_DISPLAY").map(|v| !v.is_empty()).unwrap_or(false)
+    let is_wayland = std::env::var("WAYLAND_DISPLAY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
         || std::env::var("XDG_SESSION_TYPE")
             .map(|v| v.eq_ignore_ascii_case("wayland"))
             .unwrap_or(false);
@@ -266,9 +343,16 @@ fn lock_x11_session() {
 pub(crate) fn ohmydesk_state_dir() -> std::path::PathBuf {
     if let Some(pd) = directories::ProjectDirs::from("", "", "OhMyDesk") {
         #[cfg(windows)]
-        { return pd.data_dir().to_path_buf(); }
+        {
+            return pd.data_dir().to_path_buf();
+        }
         #[cfg(not(windows))]
-        { return pd.state_dir().map(|p| p.to_path_buf()).unwrap_or_else(|| pd.data_local_dir().to_path_buf()); }
+        {
+            return pd
+                .state_dir()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| pd.data_local_dir().to_path_buf());
+        }
     }
     std::env::temp_dir().join("ohmydesk")
 }

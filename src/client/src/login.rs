@@ -122,7 +122,10 @@ mod tests {
 
     #[test]
     fn parse_ok_提取_token_与_user() {
-        let ok = parse_ok(r#"{"token":"jwt-xyz","user":"alice","tier":"user"}"#, "fallback");
+        let ok = parse_ok(
+            r#"{"token":"jwt-xyz","user":"alice","tier":"user"}"#,
+            "fallback",
+        );
         assert_eq!(
             ok,
             Ok(Creds {

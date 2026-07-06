@@ -442,10 +442,12 @@ CREATE TABLE users (
     #[tokio::test]
     async fn operator_cannot_delete_endpoints() {
         let (state, _users) = test_state().await;
-        state
-            .hub
-            .reg
-            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec(), None);
+        state.hub.reg.upsert(
+            EndpointInfo::sample(),
+            "123456".to_string(),
+            now_sec(),
+            None,
+        );
 
         let response = delete_endpoints(
             State(state.clone()),
@@ -468,10 +470,12 @@ CREATE TABLE users (
     #[tokio::test]
     async fn admin_and_superadmin_can_delete_endpoints() {
         let (state, _users) = test_state().await;
-        state
-            .hub
-            .reg
-            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec(), None);
+        state.hub.reg.upsert(
+            EndpointInfo::sample(),
+            "123456".to_string(),
+            now_sec(),
+            None,
+        );
 
         let admin_response = delete_endpoints(
             State(state.clone()),
@@ -486,10 +490,12 @@ CREATE TABLE users (
         assert_eq!(admin_response.status(), StatusCode::OK);
         assert_eq!(response_json(admin_response).await, json!({ "deleted": 1 }));
 
-        state
-            .hub
-            .reg
-            .upsert(EndpointInfo::sample(), "123456".to_string(), now_sec(), None);
+        state.hub.reg.upsert(
+            EndpointInfo::sample(),
+            "123456".to_string(),
+            now_sec(),
+            None,
+        );
         let superadmin_response = delete_endpoints(
             State(state),
             superadmin_user(),

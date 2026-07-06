@@ -835,7 +835,11 @@ CREATE TABLE users (
     async fn get_by_username_get_by_id_and_list_read_created_users() {
         let store = test_store().await;
         let alice = store
-            .create_user_v2("alice", "a-pass", &["view_assets", "view_grid", "use_remote"])
+            .create_user_v2(
+                "alice",
+                "a-pass",
+                &["view_assets", "view_grid", "use_remote"],
+            )
             .await
             .unwrap();
         let bob = store
@@ -864,7 +868,11 @@ CREATE TABLE users (
         store.bootstrap(None).await.unwrap();
         let superadmin = store.get_by_username("superadmin").await.unwrap().unwrap();
         let operator = store
-            .create_user_v2("operator", "secret", &["view_assets", "view_grid", "use_remote"])
+            .create_user_v2(
+                "operator",
+                "secret",
+                &["view_assets", "view_grid", "use_remote"],
+            )
             .await
             .unwrap();
 
@@ -1149,7 +1157,10 @@ CREATE TABLE users (
     #[tokio::test]
     async fn set_permissions_persists_and_manage_assets_requires_view_assets() {
         let store = test_store().await;
-        let u = store.create_user_v2("op1", "pw", &["view_grid"]).await.unwrap();
+        let u = store
+            .create_user_v2("op1", "pw", &["view_grid"])
+            .await
+            .unwrap();
 
         // 合法覆盖：view_assets + manage_assets 生效，且是「覆盖」语义（旧 view_grid 被替换）
         store
@@ -1169,14 +1180,20 @@ CREATE TABLE users (
         assert!(err.to_string().contains("view_assets"));
 
         // 非法键：manage_users 不可配给普通账户 → 拒
-        assert!(store.set_permissions(&u.id, &["manage_users"]).await.is_err());
+        assert!(store
+            .set_permissions(&u.id, &["manage_users"])
+            .await
+            .is_err());
         // 未知键 → 拒
         assert!(store.set_permissions(&u.id, &["not_a_menu"]).await.is_err());
 
         // superadmin 目标拒改
         store.bootstrap(None).await.unwrap();
         let sa = store.get_by_username("superadmin").await.unwrap().unwrap();
-        assert!(store.set_permissions(&sa.id, &["view_assets"]).await.is_err());
+        assert!(store
+            .set_permissions(&sa.id, &["view_assets"])
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -1254,7 +1271,11 @@ CREATE TABLE users (
         let sa = store.get_by_username("superadmin").await.unwrap().unwrap();
         assert!(sa.is_superadmin());
         assert!(sa.permissions.contains(Permission::ManageUsers));
-        let legacy = store.get_by_username("legacy_admin").await.unwrap().unwrap();
+        let legacy = store
+            .get_by_username("legacy_admin")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(!legacy.is_superadmin());
         assert!(legacy.permissions.contains(Permission::ManageAssets));
         assert!(!legacy.permissions.contains(Permission::ManageUsers));

@@ -203,7 +203,10 @@ mod tests {
         );
         assert_eq!(dirs.len(), 2);
         assert_eq!(dirs[0], PathBuf::from(r"C:\Program Files").join("Suwen"));
-        assert_eq!(dirs[1], PathBuf::from(r"C:\Program Files (x86)").join("Suwen"));
+        assert_eq!(
+            dirs[1],
+            PathBuf::from(r"C:\Program Files (x86)").join("Suwen")
+        );
     }
 
     #[test]
