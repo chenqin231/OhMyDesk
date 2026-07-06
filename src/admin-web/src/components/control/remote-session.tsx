@@ -6,6 +6,9 @@ import { Separator } from "@/components/ui/separator";
 import { frameSrc } from "@/lib/adapters/media";
 import { useStore } from "@/store";
 import type { InputEvent } from "@/lib/types/InputEvent";
+import type { ResolutionTier } from "@/lib/types/ResolutionTier";
+import type { ClarityTier } from "@/lib/types/ClarityTier";
+import type { FpsTier } from "@/lib/types/FpsTier";
 import { MODE_LABELS } from "@/components/control/launch-panel";
 import {
   containedFrameRect,
@@ -34,6 +37,42 @@ function MetaItem({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** 分段按钮组：三轴显示参数共用（样式与原「流畅/高清」一致） */
+function SegGroup<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label?: string;
+  options: { v: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="flex items-center gap-0.5">
+      {label && (
+        <span className="text-[10px] text-muted-foreground">{label}</span>
+      )}
+      <div
+        aria-label={label}
+        className="flex items-center overflow-hidden rounded-md border border-border"
+      >
+        {options.map((o) => (
+          <button
+            key={o.v}
+            type="button"
+            onClick={() => onChange(o.v)}
+            className={`px-2.5 py-1 text-xs ${o.v === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // G-1：canvas/img 消费远控帧；G-2：键鼠监听+坐标映射+发 Input 信封
 // O-2 裁决：删除会话录制标记 UI
 export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionProps) {
@@ -41,8 +80,10 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   const remoteNotice = useStore((s) => s.remoteNotice);
   const remoteSessionId = useStore((s) => s.remoteSessionId);
   const sendEnvelope = useStore((s) => s.sendEnvelope);
-  const remoteQuality = useStore((s) => s.remoteQuality);
-  const setRemoteQuality = useStore((s) => s.setRemoteQuality);
+  const remoteResolution = useStore((s) => s.remoteResolution);
+  const remoteClarity = useStore((s) => s.remoteClarity);
+  const remoteFps = useStore((s) => s.remoteFps);
+  const setRemoteDisplayParams = useStore((s) => s.setRemoteDisplayParams);
   const containerRef = useRef<HTMLDivElement>(null);
   // 滚轮像素累加器(每会话一个,跨 wheel 事件保留余量)。见 makeRemoteScroll。
   const scrollAccRef = useRef(makeRemoteScroll());
@@ -231,24 +272,40 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
         </div>
 
         {/* 右：操作按钮 */}
-        <div className="flex shrink-0 items-center gap-2">
-          {/* 画质档位切换：流畅 / 高清（仅远程控制标签） */}
+        <div className="flex items-center gap-2">
+          {/* 三轴显示参数：分辨率 / 清晰度 / 帧率（仅远程控制标签） */}
           {tab === "remote" && (
-            <div className="flex items-center overflow-hidden rounded-md border border-border">
-              <button
-                type="button"
-                onClick={() => setRemoteQuality("smooth")}
-                className={`px-2.5 py-1 text-xs ${remoteQuality === "smooth" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
-              >
-                流畅
-              </button>
-              <button
-                type="button"
-                onClick={() => setRemoteQuality("high_quality")}
-                className={`px-2.5 py-1 text-xs ${remoteQuality === "high_quality" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
-              >
-                高清
-              </button>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <SegGroup<ResolutionTier>
+                label="分辨率"
+                options={[
+                  { v: "r720p", label: "720" },
+                  { v: "r900p", label: "900" },
+                  { v: "r1080p", label: "1080" },
+                  { v: "native", label: "原生" },
+                ]}
+                value={remoteResolution}
+                onChange={(v) => setRemoteDisplayParams({ resolution: v })}
+              />
+              <SegGroup<ClarityTier>
+                label="清晰度"
+                options={[
+                  { v: "standard", label: "标准" },
+                  { v: "high", label: "高清" },
+                ]}
+                value={remoteClarity}
+                onChange={(v) => setRemoteDisplayParams({ clarity: v })}
+              />
+              <SegGroup<FpsTier>
+                label="帧率"
+                options={[
+                  { v: "smooth", label: "流畅" },
+                  { v: "standard", label: "标准" },
+                  { v: "saver", label: "省流" },
+                ]}
+                value={remoteFps}
+                onChange={(v) => setRemoteDisplayParams({ fps: v })}
+              />
             </div>
           )}
           {tab === "remote" && (
