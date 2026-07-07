@@ -15,8 +15,10 @@ ARCH="${ARCH:-$(dpkg --print-architecture)}"
 BIN="${BIN:-target/release/client}"
 
 # 默认路径 = 本地手动打包：打包前总是重新编译最新代码，根治「忘 cargo build → 打进旧二进制」复发。
-# CI 交叉构建会显式注入 BIN（异构目标路径 ≠ 默认），此时跳过自动编译，仅校验存在。
-if [ "$BIN" = "target/release/client" ] && command -v cargo >/dev/null 2>&1; then
+# 但 CI 不能在此重编：release.yml 的 deb 已在 glibc2.28 容器内交叉编译好 target/release/client，
+# 本步在宿主机跑；宿主 cargo（glibc2.39/缺 X11 dev 库）重编会覆盖成不兼容二进制或直接失败。
+# 故 CI（GitHub Actions 恒置 CI=true）跳过自动编译，仅用已产二进制；本地手动运行（无 CI）才重编。
+if [ "$BIN" = "target/release/client" ] && [ -z "${CI:-}" ] && command -v cargo >/dev/null 2>&1; then
   echo "▶ 打包前重新编译客户端：cargo build -p client --release"
   cargo build -p client --release
 fi
