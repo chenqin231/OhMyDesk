@@ -22,6 +22,9 @@ rand = "0.8"
 serde.workspace = true
 serde_json.workspace = true
 slint = { version = "1.17", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software"] }
+# winit 事件钩子(on_winit_window_event):修「最小化→恢复后白板」——软渲染下恢复不重建表面,
+# 需在恢复瞬间强制整窗重绘。版本对齐 slint 1.17;default-features=false 守「无 GPU 渲染器」硬约束。
+i-slint-backend-winit = { version = "1.17", default-features = false, features = ["renderer-software"] }
 sysinfo = "0.39"
 sha2 = "0.10"
 semver = "1"

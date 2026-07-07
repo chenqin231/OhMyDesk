@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "arboard",
@@ -793,6 +793,7 @@ dependencies = [
  "enigo",
  "fast_image_resize",
  "futures-util",
+ "i-slint-backend-winit",
  "image 0.25.10",
  "jpeg-encoder",
  "minisign-verify",
@@ -4474,7 +4475,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -5176,7 +5177,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "axum",
