@@ -14,6 +14,13 @@ VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
 ARCH="${ARCH:-$(dpkg --print-architecture)}"
 BIN="${BIN:-target/release/client}"
 
+# 默认路径 = 本地手动打包：打包前总是重新编译最新代码，根治「忘 cargo build → 打进旧二进制」复发。
+# CI 交叉构建会显式注入 BIN（异构目标路径 ≠ 默认），此时跳过自动编译，仅校验存在。
+if [ "$BIN" = "target/release/client" ] && command -v cargo >/dev/null 2>&1; then
+  echo "▶ 打包前重新编译客户端：cargo build -p client --release"
+  cargo build -p client --release
+fi
+
 if [ ! -f "$BIN" ]; then
   echo "✗ 未找到 $BIN，请先：cargo build -p client --release" >&2
   exit 1

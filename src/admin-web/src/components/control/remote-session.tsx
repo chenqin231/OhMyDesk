@@ -39,9 +39,9 @@ function MetaItem({ label, value }: { label: string; value: string }) {
 
 // 三轴档位选项（模块级常量：RemoteSession 每帧随 remoteFrame 重渲染，避免逐帧新建数组）
 const RES_OPTS: { v: ResolutionTier; label: string }[] = [
-  { v: "r720p", label: "720" },
-  { v: "r900p", label: "900" },
-  { v: "r1080p", label: "1080" },
+  { v: "r720p", label: "1280×720" },
+  { v: "r900p", label: "1600×900" },
+  { v: "r1080p", label: "1920×1080" },
   { v: "native", label: "原生" },
 ];
 const CLARITY_OPTS: { v: ClarityTier; label: string }[] = [
@@ -54,39 +54,34 @@ const FPS_OPTS: { v: FpsTier; label: string }[] = [
   { v: "saver", label: "省流" },
 ];
 
-/** 分段按钮组：三轴显示参数共用（样式与原「流畅/高清」一致） */
-function SegGroup<T extends string>({
+/** 标签 + 下拉：三轴显示参数共用（原生 select，深色主题描边） */
+function LabeledSelect<T extends string>({
   label,
   options,
   value,
   onChange,
 }: {
-  label?: string;
+  label: string;
   options: { v: T; label: string }[];
   value: T;
   onChange: (v: T) => void;
 }) {
   return (
-    <div className="flex items-center gap-0.5">
-      {label && (
-        <span className="text-[10px] text-muted-foreground">{label}</span>
-      )}
-      <div
+    <label className="flex items-center gap-1.5 whitespace-nowrap">
+      <span className="text-[11px] text-muted-foreground">{label}</span>
+      <select
         aria-label={label}
-        className="flex items-center overflow-hidden rounded-md border border-border"
+        value={value}
+        onChange={(e) => onChange(e.target.value as T)}
+        className="rounded-md border border-border bg-secondary px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
       >
         {options.map((o) => (
-          <button
-            key={o.v}
-            type="button"
-            onClick={() => onChange(o.v)}
-            className={`px-2.5 py-1 text-xs ${o.v === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
-          >
+          <option key={o.v} value={o.v}>
             {o.label}
-          </button>
+          </option>
         ))}
-      </div>
-    </div>
+      </select>
+    </label>
   );
 }
 
@@ -292,20 +287,20 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
         <div className="flex items-center gap-2">
           {/* 三轴显示参数：分辨率 / 清晰度 / 帧率（仅远程控制标签） */}
           {tab === "remote" && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <SegGroup<ResolutionTier>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <LabeledSelect<ResolutionTier>
                 label="分辨率"
                 options={RES_OPTS}
                 value={remoteResolution}
                 onChange={(v) => setRemoteDisplayParams({ resolution: v })}
               />
-              <SegGroup<ClarityTier>
+              <LabeledSelect<ClarityTier>
                 label="清晰度"
                 options={CLARITY_OPTS}
                 value={remoteClarity}
                 onChange={(v) => setRemoteDisplayParams({ clarity: v })}
               />
-              <SegGroup<FpsTier>
+              <LabeledSelect<FpsTier>
                 label="帧率"
                 options={FPS_OPTS}
                 value={remoteFps}

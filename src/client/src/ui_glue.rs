@@ -4,6 +4,13 @@
 
 use crate::{history, net, AppWindow, ChatNoticeWindow, FileEntry, HistoryItem, SharedSession};
 use slint::{ComponentHandle, ModelRc, VecModel};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering as AtomicOrdering};
+
+/// 用户点「分辨率」档 → 置位；主控 Frame 处理在下一次帧尺寸变化时据此把窗口一次性重贴合到
+/// 被控分辨率（用户触发=单次 set_size，不受 adaptive 抖动影响，避开首帧后「不再动窗口」的风暴）。
+static REFIT_PENDING: AtomicBool = AtomicBool::new(false);
+/// 上次分辨率档位（仅分辨率轴变化才触发窗口重贴合；清晰度/帧率不改帧尺寸，不该动窗口）。
+static LAST_RES_TIER: AtomicI32 = AtomicI32::new(-1);
 
 /// 把 9 位 id 按 3-3-3 分组展示（"617343065" → "617 343 065"）。复制时 Rust 侧再去空白。
 pub fn group_digits(id: &str) -> String {
@@ -223,6 +230,10 @@ pub fn wire_ui_callbacks(
         let sess = cur_session.clone();
         ui.on_set_display_params(move |res, clarity, fps| {
             if let Some(sid) = sess.lock().unwrap().clone() {
+                // 分辨率轴变化 → 请求主控窗口重贴合（清晰度/帧率不改帧尺寸，不触发）。
+                if LAST_RES_TIER.swap(res, AtomicOrdering::Relaxed) != res {
+                    REFIT_PENDING.store(true, AtomicOrdering::Relaxed);
+                }
                 let resolution = match res {
                     1 => protocol::ResolutionTier::R900p,
                     2 => protocol::ResolutionTier::R1080p,
@@ -809,6 +820,9 @@ pub async fn consume_to_ui(
                         ui.set_self_id(id_disp.into());
                         ui.set_self_password(password.into());
                         ui.set_connected(true);
+                        // 重连/注册成功即清除「与服务器断开，重连中…」残留横幅。
+                        // Disconnected 会置该串，但此前无人清它 → 抖一次后永久钉死（在线却显红串）。
+                        ui.set_remote_status("".into());
                     }
                 });
             }
@@ -942,11 +956,21 @@ pub async fn consume_to_ui(
                             // 最大化下渲染表面与布局 desync 致字体割裂。首帧后一律不再动窗口，画面靠
                             // frame_scale 在窗口内自适应缩放。
                             let win = ui.window();
-                            if is_first_frame && !win.is_maximized() && !win.is_fullscreen() {
+                            // 首帧贴合 或 用户切分辨率档触发的一次性重贴合（REFIT_PENDING）。
+                            // 均要求「尺寸真变 + 非最大化/全屏」，且重贴合后清位——单次 set_size，
+                            // 不受 adaptive 降档抖动影响，避免窗口风暴/最大化字体割裂（见 900-946 注释）。
+                            let want_refit =
+                                is_first_frame || REFIT_PENDING.load(AtomicOrdering::Relaxed);
+                            if want_refit
+                                && dims_changed
+                                && !win.is_maximized()
+                                && !win.is_fullscreen()
+                            {
                                 let sf = win.scale_factor().max(1.0);
                                 let win_w = (w.min(1920) as f32) / sf;
                                 let win_h = (h.min(1080) as f32) / sf;
                                 win.set_size(slint::LogicalSize::new(win_w, win_h));
+                                REFIT_PENDING.store(false, AtomicOrdering::Relaxed);
                             }
                         }
                     });

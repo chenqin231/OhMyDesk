@@ -476,6 +476,86 @@ component FilePane inherits Rectangle {
     }
 }
 
+// 标签 + 自绘弹出式下拉（软渲染无 std-widgets ComboBox，用 PopupWindow 自绘顶层浮层）。
+// 形如「分辨率：1920×1080 ▾」，点值框弹出选项列表，选中即回调 changed(idx) 并关闭；点外部自动关。
+component LabeledDropdown inherits Rectangle {
+    in property <string> label;
+    in property <[string]> options;
+    in-out property <int> current: 0;
+    callback changed(int /* idx */);
+    width: 118px;
+    height: 28px;
+    border-radius: 8px;
+    background: #1a1a1edd;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 4px;
+        Text {
+            text: root.label + "：";
+            color: #9ca3af;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.options[root.current];
+            color: white;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+        Rectangle { } // 撑开，把 ▾ 顶到右侧
+        Text {
+            text: "▾";
+            color: #9ca3af;
+            font-size: 10px;
+            vertical-alignment: center;
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            popup.show();
+        }
+    }
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 3px;
+        width: root.width;
+        height: root.options.length * 27px + 6px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            border-radius: 8px;
+            background: #14141af5;
+            border-width: 1px;
+            border-color: #ffffff1a;
+            VerticalLayout {
+                padding: 3px;
+                spacing: 1px;
+                for opt[i] in root.options: Rectangle {
+                    height: 26px;
+                    border-radius: 6px;
+                    background: root.current == i ? Theme.emerald : transparent;
+                    Text {
+                        text: opt;
+                        color: white;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.current = i;
+                            root.changed(i);
+                            popup.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component ChatNoticeWindow inherits Window {
     title: "OhMyDesk 新消息";
     icon: @image-url("../icons/app-icon.png");
@@ -1088,97 +1168,43 @@ export component AppWindow inherits Window {
                         }
                     }
                     Rectangle { } // 撑开
-                    // 三轴显示参数（分辨率/清晰度/帧率），常驻标签条右侧随时可切
+                    // 三轴显示参数（分辨率/清晰度/帧率）标签+下拉，常驻标签条右侧随时可切
                     VerticalLayout {
                         alignment: center;
-                        Rectangle {
-                            width: 172px;
-                            height: 28px;
-                            border-radius: 8px;
-                            background: #1a1a1edd;
-                            HorizontalLayout {
-                                padding: 2px;
-                                spacing: 2px;
-                                for r-label[r-idx] in ["720", "900", "1080", "原生"]: Rectangle {
-                                    border-radius: 6px;
-                                    background: root.res_tier == r-idx ? Theme.emerald : transparent;
-                                    Text {
-                                        text: r-label;
-                                        color: white;
-                                        font-size: 11px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                    TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => {
-                                            root.res_tier = r-idx;
-                                            root.set_display_params(root.res_tier, root.clarity_tier, root.fps_tier);
-                                        }
-                                    }
-                                }
+                        LabeledDropdown {
+                            width: 156px;
+                            label: "分辨率";
+                            options: ["1280×720", "1600×900", "1920×1080", "原生"];
+                            current: root.res_tier;
+                            changed(i) => {
+                                root.res_tier = i;
+                                root.set_display_params(root.res_tier, root.clarity_tier, root.fps_tier);
                             }
                         }
                     }
                     VerticalLayout {
                         alignment: center;
-                        Rectangle {
-                            width: 92px;
-                            height: 28px;
-                            border-radius: 8px;
-                            background: #1a1a1edd;
-                            HorizontalLayout {
-                                padding: 2px;
-                                spacing: 2px;
-                                for c-label[c-idx] in ["标准", "高清"]: Rectangle {
-                                    border-radius: 6px;
-                                    background: root.clarity_tier == c-idx ? Theme.emerald : transparent;
-                                    Text {
-                                        text: c-label;
-                                        color: white;
-                                        font-size: 11px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                    TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => {
-                                            root.clarity_tier = c-idx;
-                                            root.set_display_params(root.res_tier, root.clarity_tier, root.fps_tier);
-                                        }
-                                    }
-                                }
+                        LabeledDropdown {
+                            width: 104px;
+                            label: "清晰度";
+                            options: ["标准", "高清"];
+                            current: root.clarity_tier;
+                            changed(i) => {
+                                root.clarity_tier = i;
+                                root.set_display_params(root.res_tier, root.clarity_tier, root.fps_tier);
                             }
                         }
                     }
                     VerticalLayout {
                         alignment: center;
-                        Rectangle {
-                            width: 134px;
-                            height: 28px;
-                            border-radius: 8px;
-                            background: #1a1a1edd;
-                            HorizontalLayout {
-                                padding: 2px;
-                                spacing: 2px;
-                                for f-label[f-idx] in ["流畅", "标准", "省流"]: Rectangle {
-                                    border-radius: 6px;
-                                    background: root.fps_tier == f-idx ? Theme.emerald : transparent;
-                                    Text {
-                                        text: f-label;
-                                        color: white;
-                                        font-size: 11px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                    TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => {
-                                            root.fps_tier = f-idx;
-                                            root.set_display_params(root.res_tier, root.clarity_tier, root.fps_tier);
-                                        }
-                                    }
-                                }
+                        LabeledDropdown {
+                            width: 96px;
+                            label: "帧率";
+                            options: ["流畅", "标准", "省流"];
+                            current: root.fps_tier;
+                            changed(i) => {
+                                root.fps_tier = i;
+                                root.set_display_params(root.res_tier, root.clarity_tier, root.fps_tier);
                             }
                         }
                     }
