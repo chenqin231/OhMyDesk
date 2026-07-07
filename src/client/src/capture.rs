@@ -168,8 +168,10 @@ pub fn params_for_tiers(
         // 不缩放:fit_scale 比例恒 ≤1.0 → scaled_dims 原样返回,encode_frame_q 跳过 resize
         protocol::ResolutionTier::Native => (u32::MAX, u32::MAX),
     };
+    // 标准 q65（原 80）:与高清 q88 拉开可见差(用户反馈 80↔88 差异不明显)。内网带宽不紧,
+    // 低标准换明显对比;高清仍守 q88（4:2:0,q≥90 才切 4:4:4 体积翻倍,真机已否决）。
     let jpeg_q = match clarity {
-        protocol::ClarityTier::Standard => 80,
+        protocol::ClarityTier::Standard => 65,
         protocol::ClarityTier::High => 88,
     };
     let interval_ms = match fps {
@@ -484,7 +486,7 @@ mod tests {
         // 旧 100ms 间隔在新三档(40/66/125)中不存在,兜底取最近档 66ms(spec §3.3,帧率 10→15fps 属改善向)
         assert_eq!(hq.interval_ms, 66);
         let sm = params_for(protocol::QualityMode::Smooth);
-        assert_eq!((sm.max_w, sm.max_h, sm.jpeg_q), (1280, 720, 80));
+        assert_eq!((sm.max_w, sm.max_h, sm.jpeg_q), (1280, 720, 65));
         assert!(sm.interval_ms < hq.interval_ms, "流畅档帧率应高于高清档");
     }
 
@@ -504,7 +506,7 @@ mod tests {
         );
         assert_eq!(
             (p.max_w, p.max_h, p.jpeg_q, p.interval_ms),
-            (1280, 720, 80, 40)
+            (1280, 720, 65, 40)
         );
         // 原生档:不缩放也不放大(fit_scale 恒 ≤1.0)
         let p = params_for_tiers(

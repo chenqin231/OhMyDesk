@@ -289,6 +289,7 @@ pub async fn consume_capture(
             let mut notified_for: Option<String> = None;
             let mut last_cap_ms: u64 = 0;
             let mut last_real: Option<(u32, u32)> = None; // 上一帧真实屏尺寸:Native 档钳 ceiling 用
+            let mut last_logged_tiers: u32 = u32::MAX; // 三轴诊断:仅档位变化时打一行,避免逐帧刷屏
             const TICK_MS: u64 = 16;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
@@ -466,6 +467,17 @@ pub async fn consume_capture(
                         let (rms, jms) = (o.resize_ms, o.jpeg_ms);
                         let (data, w, h) = (o.data, o.w, o.h);
                         let encoded_bytes = data.len(); // base64 长度=上网字节(JSON 内即此串)
+                        // 三轴生效诊断(仅档位变化时一行):区分「消息到达/落地生效/adaptive 拉回」。
+                        // selected=用户所选档位;目标=clamp+adaptive 后欲发尺寸;实发=真正编码发出的尺寸;
+                        // adaptive_level>0 = 弱机降档在拉回分辨率(即使选了高档,实发也会被压小)。
+                        if quality != last_logged_tiers {
+                            last_logged_tiers = quality;
+                            tracing::info!(
+                                "三轴生效诊断 selected_tiers=0x{quality:06x} 目标={}x{} q={} 间隔={}ms 实发帧={w}x{h} 真实屏={rw}x{rh} adaptive_level={}",
+                                qp.max_w, qp.max_h, qp.jpeg_q, qp.interval_ms,
+                                crate::adaptive::level()
+                            );
+                        }
                         seq += 1;
                         capture::set_last_frame_dims(w, h); // 注入坐标还原用实际发出(含 adaptive 降档)尺寸
                         if tele_on {
