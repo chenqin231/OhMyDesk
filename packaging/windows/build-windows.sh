@@ -35,6 +35,10 @@ if ! command -v "${LINKER}" >/dev/null; then
 fi
 
 echo "==> 2/5 交叉编译 client（release，目标 ${TARGET}）"
+# 强制重编 client 主 crate：仅改 Cargo.toml 版本号（workspace 继承）时，cargo 交叉编译常复用
+# 陈旧产物、不重编 → env!("CARGO_PKG_VERSION") 停在旧版本（0.5.1 windows 显示 0.5.0 → 自更新
+# 死循环根因）。清掉 client 一个 crate（依赖仍缓存，仅重编叶子 binary，代价小）确保版本号新鲜。
+cargo clean -p client --target "${TARGET}" --release 2>/dev/null || true
 # -static：静态链接 mingw 运行时（libgcc/libstdc++/winpthread），尽量产出独立 exe，少依赖 DLL。
 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="${LINKER}" \
 RUSTFLAGS="${RUSTFLAGS:-} -C link-args=-static" \
