@@ -236,6 +236,8 @@ fn main() -> anyhow::Result<()> {
         server_url.clone(),
         active_server_url.clone(),
     );
+    // 修「最小化→托盘恢复后白板」：软渲染下恢复瞬间强制整窗重绘（详见函数注释）。
+    ui_glue::wire_repaint_on_restore(&ui);
 
     // 后台 tokio runtime
     let rt = tokio::runtime::Builder::new_multi_thread()
