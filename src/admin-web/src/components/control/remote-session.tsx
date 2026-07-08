@@ -85,6 +85,56 @@ function LabeledSelect<T extends string>({
   );
 }
 
+// 光标同步叠加层：在主控**本地指针位置**渲染被控端真实光标形状（箭头/文本 I 型/手型…），
+// 并隐藏本地系统光标 → 实现「看到被控端真实鼠标形状」。位置直接改 DOM transform（每次 mousemove
+// 平滑跟随，不触发 React 重渲染）；仅形状 dataURL 变化才重渲染 <img>。
+function RemoteCursorOverlay({
+  containerRef,
+  active,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  active: boolean;
+}) {
+  const shape = useStore((s) => s.remoteCursorShape);
+  const visible = useStore((s) => s.remoteCursorVisible);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !active) return;
+    const onMove = (e: MouseEvent) => {
+      const img = imgRef.current;
+      if (!img) return;
+      const rect = el.getBoundingClientRect();
+      img.style.transform = `translate(${e.clientX - rect.left}px, ${e.clientY - rect.top}px)`;
+    };
+    el.addEventListener("mousemove", onMove);
+    return () => el.removeEventListener("mousemove", onMove);
+  }, [containerRef, active, shape]);
+
+  if (!active || !shape || !visible) return null;
+  return (
+    <img
+      ref={imgRef}
+      src={shape.dataUrl}
+      alt=""
+      draggable={false}
+      style={{
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: shape.w,
+        height: shape.h,
+        marginLeft: -shape.hotspotX,
+        marginTop: -shape.hotspotY,
+        pointerEvents: "none",
+        zIndex: 20,
+        imageRendering: "pixelated",
+      }}
+    />
+  );
+}
+
 // G-1：canvas/img 消费远控帧；G-2：键鼠监听+坐标映射+发 Input 信封
 // O-2 裁决：删除会话录制标记 UI
 export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionProps) {
@@ -96,6 +146,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   const remoteClarity = useStore((s) => s.remoteClarity);
   const remoteFps = useStore((s) => s.remoteFps);
   const setRemoteDisplayParams = useStore((s) => s.setRemoteDisplayParams);
+  // 光标同步：有被控端形状时隐藏本地系统光标，改由 RemoteCursorOverlay 渲染真实光标。
+  const remoteCursorShape = useStore((s) => s.remoteCursorShape);
   const containerRef = useRef<HTMLDivElement>(null);
   // 滚轮像素累加器(每会话一个,跨 wheel 事件保留余量)。见 makeRemoteScroll。
   const scrollAccRef = useRef(makeRemoteScroll());
@@ -370,7 +422,7 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
         >
           <div
             ref={containerRef}
-            className="relative flex h-full w-full max-w-[1920px] items-center justify-center overflow-hidden rounded-lg ring-1 ring-border cursor-pointer"
+            className={`relative flex h-full w-full max-w-[1920px] items-center justify-center overflow-hidden rounded-lg ring-1 ring-border ${remoteCursorShape ? "cursor-none" : "cursor-pointer"}`}
           >
             {remoteFrame ? (
               <img
@@ -391,6 +443,9 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
                 等待第一帧…
               </div>
             )}
+
+            {/* 光标同步：被控端真实光标形状叠加层（在本地指针位置渲染，隐藏系统光标） */}
+            <RemoteCursorOverlay containerRef={containerRef} active={tab === "remote"} />
 
             {/* 左上角常驻安全提示条 */}
             <div className="absolute left-3 top-3 flex items-center gap-2 rounded-md bg-warning/90 px-3 py-1.5 text-xs font-medium text-warning-foreground shadow-lg backdrop-blur-sm">
