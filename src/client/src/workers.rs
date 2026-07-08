@@ -487,7 +487,13 @@ pub async fn consume_capture(
 
                         // ── 光标同步:随帧节奏采集被控端光标,仅形状变化(或可见性翻转)时推送 ──
                         // 主控在本地指针位置渲染此形状(零往返延迟),x/y(帧坐标系)供被控端自身移动时兜底。
-                        if let Some(cur) = cursor_cap.capture(last_cursor_id) {
+                        // 防御:光标采集是未全真机验证的平台 unsafe FFI,且与帧采集同线程——
+                        // 用 catch_unwind 兜底,任何 panic 只跳过本次光标同步,绝不拖死帧管线。
+                        let captured = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                            || cursor_cap.capture(last_cursor_id),
+                        ))
+                        .unwrap_or(None);
+                        if let Some(cur) = captured {
                             let changed = cur.shape.is_some() || cur.visible != last_cursor_visible;
                             if changed {
                                 if let Some(s) = &cur.shape {
