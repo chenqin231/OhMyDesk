@@ -53,7 +53,12 @@ ureq = { version = "2.12", default-features = false, features = ["native-tls", "
 native-tls = "0.2"
 # 启动自提权（UAC）：部分 Windows 需管理员权限才能向受 UIPI 保护/提权窗口注入键鼠。
 # 仅 token 提权检测 + ShellExecuteW("runas") 自重启，FFI 面极小，windows-gnu 交叉编译友好。
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# 光标同步:X11 XFixes 取当前光标形状位图(XFixesGetCursorImage)。纯 Rust,交叉编译友好(龙芯/鲲鹏)。
+# Wayland 无 X → 采集返回 None 优雅降级(Wayland 本就不能截屏)。
+x11rb = { version = "0.13", features = ["xfixes"] }
 
 [target.'cfg(not(windows))'.dependencies]
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }

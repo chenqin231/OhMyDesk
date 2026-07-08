@@ -154,6 +154,15 @@ pub enum FromUi {
     },
     /// 被控端会话内提示回流（如 Wayland 无法截屏）→ 主控端展示，替代「无限等待第一帧」。
     Notice { session_id: String, text: String },
+    /// 被控端光标同步回流（形状+位置）→ 发 CursorUpdate 给主控端，让主控看到被控真实光标形状。
+    /// shape 仅在形状变化时带（主控按 id 缓存）；visible=false 表示被控端光标此刻隐藏。
+    CursorUpdate {
+        session_id: String,
+        x: i32,
+        y: i32,
+        visible: bool,
+        shape: Option<protocol::CursorShape>,
+    },
     /// 主控端切换三轴显示参数（分辨率/清晰度/帧率）→ 发 SetQuality 给被控端。
     /// mode 为旧被控端兜底字段（按清晰度映射）；三轴 None 时对端回退 mode 旧映射。
     SetQuality {

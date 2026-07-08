@@ -690,6 +690,24 @@ pub(super) async fn handle_uplink(
             ts: now(),
             payload: Message::RemoteNotice { session_id, text },
         },
+        FromUi::CursorUpdate {
+            session_id,
+            x,
+            y,
+            visible,
+            shape,
+        } => Envelope {
+            from: self_id.to_string(),
+            to: None, // server 按 session_id 路由给主控
+            ts: now(),
+            payload: Message::CursorUpdate {
+                session_id,
+                x,
+                y,
+                visible,
+                shape,
+            },
+        },
         FromUi::SetQuality {
             session_id,
             mode,
