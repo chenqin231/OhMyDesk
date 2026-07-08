@@ -18,6 +18,7 @@ import {
   shouldBlockRemoteContextMenu,
 } from "@/components/control/remote-geometry";
 import { CommandPanel, FilePanel, ChatPanel, TabButton } from "@/components/control/remote-tools";
+import { MobileKeyboardBar } from "@/components/control/remote-mobile-keyboard";
 import { TouchGestureEngine, type GestureAction } from "@/lib/touch-gestures";
 
 type ToolTab = "remote" | "cmd" | "file" | "chat";
@@ -581,7 +582,10 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
           <div
             ref={containerRef}
             // touch-none(touch-action:none):关键——否则移动端浏览器把触摸当页面滚动/缩放吃掉，
-            // 自定义手势收不到 touchmove。select-none 防长按选中文本。
+            // 自定义手势收不到 touchmove。select-none + WebkitTouchCallout 防长按选中/弹系统菜单
+            //（否则长按=右键被浏览器的文本选择/图片回调菜单抢走）。
+            style={{ WebkitTouchCallout: "none" }}
+            onContextMenu={(e) => e.preventDefault()}
             className={`relative flex h-full w-full max-w-[1920px] touch-none select-none items-center justify-center overflow-hidden rounded-lg ring-1 ring-border ${remoteCursorShape ? "cursor-none" : "cursor-pointer"}`}
           >
             {remoteFrame ? (
@@ -590,6 +594,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
                 alt={`${targetName} 的远程桌面画面`}
                 className="max-h-full max-w-full object-contain"
                 draggable={false}
+                onContextMenu={(e) => e.preventDefault()}
+                style={{ WebkitTouchCallout: "none", WebkitUserSelect: "none" }}
               />
             ) : remoteNotice ? (
               <div className="absolute inset-0 flex items-center justify-center bg-secondary px-8">
@@ -615,6 +621,10 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
             </div>
           </div>
         </main>
+
+        {/* 移动端(粗指针)远控标签：画面下方常驻文本输入栏（软键盘 + 特殊键 + 修饰键），
+            桌面端有物理键盘故不显示。 */}
+        {coarse && tab === "remote" && <MobileKeyboardBar sendInput={sendInput} />}
 
         {tab === "cmd" && (
           <div className="min-h-0 flex-1">
