@@ -276,6 +276,67 @@ fn set_quality_三轴字段_序列化往返() {
     ));
 }
 
+#[test]
+fn cursor_update_形状_序列化往返() {
+    // 光标同步:被控→主控带形状(RGBA 位图 base64 + 热点 + 尺寸 + id 指纹)。
+    let env = Envelope {
+        from: "client-1".into(),
+        to: None,
+        ts: 1719500000,
+        payload: Message::CursorUpdate {
+            session_id: "s-1".into(),
+            x: 100,
+            y: 200,
+            visible: true,
+            shape: Some(CursorShape {
+                id: 42,
+                hotspot_x: 3,
+                hotspot_y: 4,
+                w: 32,
+                h: 32,
+                rgba: "AAAA".into(),
+            }),
+        },
+    };
+    let json = serde_json::to_string(&env).unwrap();
+    assert!(
+        json.contains(r#""type":"cursor_update""#),
+        "snake_case tag: {json}"
+    );
+    let back: Envelope = serde_json::from_str(&json).unwrap();
+    match back.payload {
+        Message::CursorUpdate {
+            x,
+            y,
+            visible,
+            shape: Some(s),
+            ..
+        } => {
+            assert_eq!((x, y, visible), (100, 200, true));
+            assert_eq!((s.id, s.hotspot_x, s.hotspot_y, s.w, s.h), (42, 3, 4, 32, 32));
+            assert_eq!(s.rgba, "AAAA");
+        }
+        _ => panic!("应判别为 CursorUpdate"),
+    }
+}
+
+#[test]
+fn cursor_update_仅位置_shape缺省none_visible缺省true() {
+    // 仅位置更新(形状未变):shape 缺省 None(主控复用缓存)、visible 缺省 true。
+    let json = r#"{"from":"c","to":null,"ts":1,"payload":{"type":"cursor_update","session_id":"s","x":5,"y":6}}"#;
+    let env: Envelope = serde_json::from_str(json).unwrap();
+    match env.payload {
+        Message::CursorUpdate {
+            x, y, visible, shape, ..
+        } => {
+            assert_eq!((x, y), (5, 6));
+            assert!(shape.is_none());
+            assert!(visible, "visible 缺省应为 true");
+        }
+        _ => panic!("应判别为 CursorUpdate"),
+    }
+}
+
 /// T026（AC-008-E1）：旧端 EndpointView JSON（无 owner_id 键）反序列化 → owner_id=None，
 /// 其余字段完整，不报错不丢消息。owner_id: Option 兜底旧端 serde（历史教训：加字段破坏兼容）。
 #[test]

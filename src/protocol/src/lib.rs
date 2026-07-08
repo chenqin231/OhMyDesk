@@ -283,6 +283,21 @@ pub enum Message {
         session_id: String,
         text: String,
     },
+    /// 被控→主控:光标同步。让主控「看到被控端真实鼠标形状」(箭头/文本 I 型/手型/调整大小…)。
+    /// 主控优先在**本地指针位置**渲染此形状并盖住系统光标(零往返延迟);x/y(帧坐标系,同 Frame
+    /// 缩放后 w/h)供被控端自身移动光标时兜底定位。形状按 id(RGBA 指纹)缓存:仅在形状变化时带
+    /// shape,其余更新 shape=None 复用主控缓存(省带宽,光标≤32×32 仅数 KB)。visible=false 表示
+    /// 被控端光标此刻隐藏(如全屏视频/游戏捕获)。按 session 对端路由(同 Frame);旧端不认识 →
+    /// Unknown 兜底,不破坏(协议演进不破坏旧端)。
+    CursorUpdate {
+        session_id: String,
+        x: i32,
+        y: i32,
+        #[serde(default = "default_true")]
+        visible: bool,
+        #[serde(default)]
+        shape: Option<CursorShape>,
+    },
     /// 会话内即时消息(双向,主控↔被控)。按 session 对端路由(同 ClipboardSync);
     /// server 转发同时落 AuditType::Chat 审计(全文)。
     ChatMessage {
@@ -387,6 +402,25 @@ pub enum Message {
     #[serde(other, skip_serializing)]
     #[ts(skip)]
     Unknown,
+}
+
+/// serde 默认值 helper:缺省字段回退 true(CursorUpdate.visible 无键时视为可见)。
+fn default_true() -> bool {
+    true
+}
+
+/// 光标形状位图(裸 RGBA,base64)。见 Message::CursorUpdate。
+/// id = RGBA 像素的 twox-hash 指纹,主控据此缓存去重(同一形状只传一次)。
+/// rgba = w*h*4 字节的 base64(未压缩;光标极小且仅形状变化时发,不值得再上 PNG 依赖)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CursorShape {
+    pub id: u64,
+    pub hotspot_x: u32,
+    pub hotspot_y: u32,
+    pub w: u32,
+    pub h: u32,
+    pub rgba: String,
 }
 
 /// 远端目录中的一个条目（文件或子目录）。

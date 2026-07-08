@@ -415,11 +415,13 @@ impl Hub {
                 }
             }
 
-            // ── RemoteNotice / SetQuality / SetCapture / Clipboard：可靠 control lane ──
+            // ── RemoteNotice / SetQuality / SetCapture / Clipboard / CursorUpdate：可靠 control lane ──
+            // CursorUpdate（被控→主控光标同步）走可靠 lane：形状变化不可丢，频率低（仅形状变时发）。
             Message::RemoteNotice { session_id, .. }
             | Message::SetQuality { session_id, .. }
             | Message::SetCapture { session_id, .. }
-            | Message::ClipboardSync { session_id, .. } => {
+            | Message::ClipboardSync { session_id, .. }
+            | Message::CursorUpdate { session_id, .. } => {
                 self.route_to_peer(session_id, &env, raw);
             }
 
