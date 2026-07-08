@@ -290,6 +290,10 @@ pub async fn consume_capture(
             let mut last_cap_ms: u64 = 0;
             let mut last_real: Option<(u32, u32)> = None; // 上一帧真实屏尺寸:Native 档钳 ceiling 用
             let mut last_logged_tiers: u32 = u32::MAX; // 三轴诊断:仅档位变化时打一行,避免逐帧刷屏
+            // 光标同步:采集被控端光标形状,仅形状变化(或可见性翻转)时推送 CursorUpdate,主控据此显示真实光标。
+            let mut cursor_cap = crate::cursor::CursorCapturer::new();
+            let mut last_cursor_id: Option<u64> = None;
+            let mut last_cursor_visible = true;
             const TICK_MS: u64 = 16;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
@@ -480,6 +484,45 @@ pub async fn consume_capture(
                         }
                         seq += 1;
                         capture::set_last_frame_dims(w, h); // 注入坐标还原用实际发出(含 adaptive 降档)尺寸
+
+                        // ── 光标同步:随帧节奏采集被控端光标,仅形状变化(或可见性翻转)时推送 ──
+                        // 主控在本地指针位置渲染此形状(零往返延迟),x/y(帧坐标系)供被控端自身移动时兜底。
+                        if let Some(cur) = cursor_cap.capture(last_cursor_id) {
+                            let changed = cur.shape.is_some() || cur.visible != last_cursor_visible;
+                            if changed {
+                                if let Some(s) = &cur.shape {
+                                    last_cursor_id = Some(s.id);
+                                }
+                                last_cursor_visible = cur.visible;
+                                // 屏幕坐标 → 帧坐标:按实发帧/真实屏比例缩放(与帧 fit 同款)。
+                                let (fx, fy) = if rw > 0 && rh > 0 {
+                                    (
+                                        (cur.x as i64 * w as i64 / rw as i64) as i32,
+                                        (cur.y as i64 * h as i64 / rh as i64) as i32,
+                                    )
+                                } else {
+                                    (cur.x, cur.y)
+                                };
+                                let shape = cur.shape.map(|sh| {
+                                    use base64::Engine as _;
+                                    protocol::CursorShape {
+                                        id: sh.id,
+                                        hotspot_x: sh.hotspot_x,
+                                        hotspot_y: sh.hotspot_y,
+                                        w: sh.w,
+                                        h: sh.h,
+                                        rgba: base64::engine::general_purpose::STANDARD.encode(&sh.rgba),
+                                    }
+                                });
+                                let _ = from_ui_tx.send(net::FromUi::CursorUpdate {
+                                    session_id: sid.clone(),
+                                    x: fx,
+                                    y: fy,
+                                    visible: cur.visible,
+                                    shape,
+                                });
+                            }
+                        }
                         if tele_on {
                             let _ = telemetry_tx.send(crate::telemetry::TelemetryMsg::Frame(
                                 crate::telemetry::FrameSample {

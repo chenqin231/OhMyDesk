@@ -18,6 +18,7 @@ mod asset;
 mod capture;
 mod chat_notice;
 mod credential;
+mod cursor;
 mod elevate;
 mod exec;
 mod framediff;
