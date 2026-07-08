@@ -217,6 +217,7 @@ pub fn wire_ui_callbacks(
             }
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_remote_active(false);
+                ui.set_cursor_ready(false); // 隐藏光标同步叠加层
                 ui.set_connecting(false);
                 ui.set_remote_status("已断开".into());
                 ui.window().set_size(slint::LogicalSize::new(460.0, 620.0));
@@ -1018,6 +1019,34 @@ pub async fn consume_to_ui(
                     });
                 }
             }
+            net::ToUi::Cursor { visible, shape } => {
+                // 解码裸 RGBA(base64)→ UI 线程构造 Image 并设光标属性;shape=None 仅改可见性。
+                let decoded = shape.as_ref().and_then(|s| {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(&s.rgba)
+                        .ok()
+                        .filter(|b| b.len() == (s.w * s.h * 4) as usize)
+                        .map(|b| (b, s.w, s.h, s.hotspot_x, s.hotspot_y))
+                });
+                let ui_weak = ui_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_cursor_visible(visible);
+                        if let Some((bytes, cw, ch, hx, hy)) = decoded {
+                            let mut buffer =
+                                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(cw, ch);
+                            buffer.make_mut_bytes().copy_from_slice(&bytes);
+                            ui.set_cursor_img(slint::Image::from_rgba8(buffer));
+                            ui.set_cursor_w(cw as i32);
+                            ui.set_cursor_h(ch as i32);
+                            ui.set_cursor_hotspot_x(hx as i32);
+                            ui.set_cursor_hotspot_y(hy as i32);
+                            ui.set_cursor_ready(true);
+                        }
+                    }
+                });
+            }
             net::ToUi::SessionEnded { session_id } => {
                 // 重置首帧标志：窗口贴合是「每会话一次」而非「每进程一次」。否则重连新会话时
                 // last_frame_dims 仍是上次的 Some(..)，is_first_frame 恒 false → 新会话首帧不再
@@ -1046,6 +1075,7 @@ pub async fn consume_to_ui(
                         ui.set_being_controlled(false);
                         ui.set_connecting(false);
                         ui.set_remote_active(false);
+                        ui.set_cursor_ready(false); // 隐藏光标同步叠加层
                         ui.set_remote_status("会话已结束".into());
                         // 会话结束清空各标签状态（spec §12）：回到远程桌面标签，下次新会话
                         // active_tab 不残留非 0（与被控进入态默认推流一致，消除懒推流接缝）。

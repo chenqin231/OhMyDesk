@@ -194,6 +194,10 @@ pub(super) async fn handle_downlink(
         Message::RemoteNotice { text, .. } => {
             let _ = to_ui.send(ToUi::RemoteRejected { reason: text });
         }
+        // 主控端收到被控端光标同步 → 交 UI 解码并叠加渲染真实光标形状（在本地指针位置）
+        Message::CursorUpdate { visible, shape, .. } => {
+            let _ = to_ui.send(ToUi::Cursor { visible, shape });
+        }
         // 被控端收到键鼠 → 经旁路交 main 注入侧（注入依赖 X11，不在 net 任务里执行）
         Message::Input { session_id, event } => {
             let ctx = session.lock().await;

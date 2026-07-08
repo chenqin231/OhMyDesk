@@ -685,6 +685,14 @@ export component AppWindow inherits Window {
     in-out property <image> frame;
     in property <int> frame_w: 1;
     in property <int> frame_h: 1;
+    // ── 光标同步：被控端真实光标形状（在本地指针位置叠加渲染，隐藏系统光标）──
+    in property <image> cursor_img;
+    in property <bool> cursor_ready: false;   // 收到过至少一帧光标形状
+    in property <bool> cursor_visible: true;  // 被控端光标当前是否可见
+    in property <int> cursor_w: 0;
+    in property <int> cursor_h: 0;
+    in property <int> cursor_hotspot_x: 0;
+    in property <int> cursor_hotspot_y: 0;
     callback connect_b();
     callback disconnect_remote();
     // ── 三轴显示参数（主控选择，发 SetQuality 给被控端）──
@@ -1299,7 +1307,8 @@ export component AppWindow inherits Window {
                         y: parent.frame_display_y;
                         width: parent.frame_display_w;
                         height: parent.frame_display_h;
-                        mouse-cursor: pointer;
+                        // 光标同步：有被控端真实光标时隐藏本地系统光标，改由 cursor_overlay 渲染。
+                        mouse-cursor: (root.cursor_ready && root.cursor_visible) ? none : pointer;
                         moved => {
                             root.on_pointer_move(
                                 (self.mouse-x / self.width * root.frame_w * 1px) / 1px,
@@ -1322,6 +1331,18 @@ export component AppWindow inherits Window {
                             root.on_pointer_scroll(ev.delta-x / 1px, ev.delta-y / 1px);
                             EventResult.accept
                         }
+                    }
+
+                    // 光标同步叠加层：在本地指针位置（ta.mouse-x/y，相对帧显示矩形）渲染被控端真实光标形状。
+                    // Image 无输入捕获，不影响下方 ta 收键鼠；仅指针悬停在画面上且已收到形状时可见。
+                    cursor_overlay := Image {
+                        visible: root.cursor_ready && root.cursor_visible && ta.has-hover && root.frame_w > 1;
+                        source: root.cursor_img;
+                        image-fit: fill;
+                        x: parent.frame_display_x + ta.mouse-x - root.cursor_hotspot_x * 1px;
+                        y: parent.frame_display_y + ta.mouse-y - root.cursor_hotspot_y * 1px;
+                        width: root.cursor_w * 1px;
+                        height: root.cursor_h * 1px;
                     }
 
                     // 键盘焦点捕获
