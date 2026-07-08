@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { Camera, Download, Maximize, PhoneOff, TriangleAlert, Monitor, Terminal, FolderTree, MessageSquare } from "lucide-react";
+import { Camera, Download, Maximize, PhoneOff, TriangleAlert, Monitor, Terminal, FolderTree, MessageSquare, SlidersHorizontal } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -172,19 +172,47 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   const [tab, setTab] = useState<ToolTab>("remote");
   // 是否已发生过触摸操作 → 启用手机触控板兜底光标（区分桌面鼠标 vs 移动触控）。
   const [touchMode, setTouchMode] = useState(false);
+  // CSS 伪全屏（iOS Safari 等不支持元素原生全屏时兜底：fixed 铺满视口）。
+  const [cssFullscreen, setCssFullscreen] = useState(false);
+  // 粗指针（移动端触屏）：据此切换移动端布局（画质控件收进菜单、加大触控目标）。
+  const [coarse, setCoarse] = useState(false);
+  // 移动端画质设置面板展开态（收进「画质」按钮，避免顶栏拥挤）。
+  const [showQualityMenu, setShowQualityMenu] = useState(false);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(pointer: coarse)");
+    const on = () => setCoarse(mq.matches);
+    on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
   const chatCount = useStore((s) => s.chatMessages.length);
   // 上次停留在「会话消息」标签时已读到的消息数；切到 chat 标签即清零未读。
   const [readChatCount, setReadChatCount] = useState(0);
   const unreadChat = tab === "chat" ? 0 : Math.max(0, chatCount - readChatCount);
 
   // 全屏：对远程画面容器请求浏览器全屏（再次点击退出）。
+  // 全屏：优先原生 Fullscreen API；移动端(尤其 iOS Safari)对非 video 元素不支持/被拒时，
+  // 回退 CSS 伪全屏(整个远控页 fixed 铺满视口)——保证「全屏」按钮在所有移动浏览器都生效。
   const toggleFullscreen = useCallback(() => {
+    const el = containerRef.current;
     if (document.fullscreenElement) {
       void document.exitFullscreen();
-    } else {
-      void containerRef.current?.requestFullscreen?.();
+      return;
     }
-  }, []);
+    if (cssFullscreen) {
+      setCssFullscreen(false);
+      return;
+    }
+    const nativeOk =
+      !!el && typeof el.requestFullscreen === "function" && !!document.fullscreenEnabled;
+    if (nativeOk) {
+      el!.requestFullscreen().catch(() => setCssFullscreen(true)); // 原生被拒 → CSS 兜底
+    } else {
+      setCssFullscreen(true);
+    }
+  }, [cssFullscreen]);
 
   // 截图：把当前帧（JPEG base64）触发浏览器下载为 .jpg。
   const saveScreenshot = useCallback(() => {
@@ -409,8 +437,36 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
     sendEnvelope({ type: "set_capture", session_id: remoteSessionId, active: tab === "remote" });
   }, [tab, remoteSessionId, sendEnvelope]);
 
+  // 三轴画质控件（桌面内联平铺 / 移动端收进「画质」按钮的下拉面板，复用同一份）。
+  const qualityControls = (
+    <>
+      <LabeledSelect<ResolutionTier>
+        label="分辨率"
+        options={RES_OPTS}
+        value={remoteResolution}
+        onChange={(v) => setRemoteDisplayParams({ resolution: v })}
+      />
+      <LabeledSelect<ClarityTier>
+        label="清晰度"
+        options={CLARITY_OPTS}
+        value={remoteClarity}
+        onChange={(v) => setRemoteDisplayParams({ clarity: v })}
+      />
+      <LabeledSelect<FpsTier>
+        label="帧率"
+        options={FPS_OPTS}
+        value={remoteFps}
+        onChange={(v) => setRemoteDisplayParams({ fps: v })}
+      />
+    </>
+  );
+
   return (
-    <div className="flex h-full min-h-[calc(100vh-7rem)] w-full flex-col bg-background">
+    <div
+      className={`flex w-full flex-col bg-background ${
+        cssFullscreen ? "fixed inset-0 z-50 h-screen" : "h-full min-h-[calc(100vh-7rem)]"
+      }`}
+    >
       {/* 顶部细工具栏：flex-wrap + min-h 而非固定 h-12——窄屏/移动端画质下拉+按钮换行显示，不再溢出裁掉。 */}
       <header className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border bg-card px-4 py-1.5">
         {/* 左：远程控制中 + 目标 */}
@@ -440,27 +496,26 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
 
         {/* 右：操作按钮 */}
         <div className="flex items-center gap-2">
-          {/* 三轴显示参数：分辨率 / 清晰度 / 帧率（仅远程控制标签） */}
-          {tab === "remote" && (
-            <div className="flex flex-wrap items-center gap-2.5">
-              <LabeledSelect<ResolutionTier>
-                label="分辨率"
-                options={RES_OPTS}
-                value={remoteResolution}
-                onChange={(v) => setRemoteDisplayParams({ resolution: v })}
-              />
-              <LabeledSelect<ClarityTier>
-                label="清晰度"
-                options={CLARITY_OPTS}
-                value={remoteClarity}
-                onChange={(v) => setRemoteDisplayParams({ clarity: v })}
-              />
-              <LabeledSelect<FpsTier>
-                label="帧率"
-                options={FPS_OPTS}
-                value={remoteFps}
-                onChange={(v) => setRemoteDisplayParams({ fps: v })}
-              />
+          {/* 三轴显示参数：桌面平铺内联；移动端(粗指针)收进「画质」按钮的下拉面板，避免顶栏拥挤 */}
+          {tab === "remote" && !coarse && (
+            <div className="flex flex-wrap items-center gap-2.5">{qualityControls}</div>
+          )}
+          {tab === "remote" && coarse && (
+            <div className="relative">
+              <Button
+                variant="outline"
+                size="sm"
+                aria-expanded={showQualityMenu}
+                onClick={() => setShowQualityMenu((v) => !v)}
+              >
+                <SlidersHorizontal data-icon="inline-start" />
+                画质
+              </Button>
+              {showQualityMenu && (
+                <div className="absolute right-0 top-full z-40 mt-1.5 flex flex-col gap-3 rounded-lg border border-border bg-card p-3 shadow-xl">
+                  {qualityControls}
+                </div>
+              )}
             </div>
           )}
           {tab === "remote" && (
