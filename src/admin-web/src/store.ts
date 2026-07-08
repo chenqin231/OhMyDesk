@@ -10,6 +10,7 @@ import type { ResolutionTier } from "@/lib/types/ResolutionTier";
 import type { ClarityTier } from "@/lib/types/ClarityTier";
 import type { FpsTier } from "@/lib/types/FpsTier";
 import { resolveDisplayParams } from "@/lib/quality";
+import { rgbaToDataUrl } from "@/lib/cursor-overlay";
 import { transport } from "@/lib/transport";
 import {
   bytesToB64,
@@ -33,6 +34,16 @@ export type ScreenshotCache = Record<string, Record<string, string>>;
 
 // 远控帧：含 data(base64) + 分辨率
 export type ActiveFrame = { data: string; w: number; h: number; seq: bigint };
+
+// 光标同步：被控端下发的光标形状（RGBA 已转 dataURL）+ 热点 + 尺寸。主控在本地指针位置渲染。
+export type RemoteCursorShape = {
+  id: bigint;
+  dataUrl: string;
+  w: number;
+  h: number;
+  hotspotX: number;
+  hotspotY: number;
+};
 
 // 一条命令执行记录（pending=等待被控端回执）
 export type ExecEntry = {
@@ -86,6 +97,10 @@ type State = {
   remoteResolution: ResolutionTier;
   remoteClarity: ClarityTier;
   remoteFps: FpsTier;
+  // 光标同步：被控端下发的当前光标形状（已转 dataURL）与可见性。主控在本地指针位置渲染此形状。
+  // shape 仅在形状变化时下发，位置更新复用缓存 → 此处只在收到新 shape 时替换。
+  remoteCursorShape: RemoteCursorShape | null;
+  remoteCursorVisible: boolean;
 
   // 会话内即时消息（时间正序，最新在末尾）
   chatMessages: ChatEntry[];
@@ -138,6 +153,8 @@ export const useStore = create<State>((set, get) => ({
   remoteResolution: "r720p",
   remoteClarity: "standard",
   remoteFps: "smooth",
+  remoteCursorShape: null,
+  remoteCursorVisible: true,
   chatMessages: [],
   fileProgress: {},
   diagRing: [],
@@ -168,6 +185,26 @@ export const useStore = create<State>((set, get) => ({
             remoteFrame: { data: p.data, w: p.w, h: p.h, seq: p.seq },
             diagRing: pushDiagRing(s.diagRing, sample, 300_000),
           };
+        });
+        return;
+      }
+
+      // 光标同步：被控端下发当前光标形状+可见性。shape 仅形状变化时带（主控换算为 dataURL 缓存），
+      // 位置更新（shape=null）只刷新可见性、复用已缓存形状。渲染在本地指针位置由组件负责。
+      if (p.type === "cursor_update") {
+        set((s) => {
+          let shape = s.remoteCursorShape;
+          if (p.shape) {
+            shape = {
+              id: p.shape.id,
+              w: p.shape.w,
+              h: p.shape.h,
+              hotspotX: p.shape.hotspot_x,
+              hotspotY: p.shape.hotspot_y,
+              dataUrl: rgbaToDataUrl(p.shape.rgba, p.shape.w, p.shape.h),
+            };
+          }
+          return { remoteCursorShape: shape, remoteCursorVisible: p.visible };
         });
         return;
       }
@@ -203,6 +240,8 @@ export const useStore = create<State>((set, get) => ({
           remotePhase: "rejected",
           remoteRejectReason: "对方已结束远程会话",
           remoteFrame: null,
+          remoteCursorShape: null,
+          remoteCursorVisible: true,
           chatMessages: [],
         });
         return;
@@ -390,6 +429,8 @@ export const useStore = create<State>((set, get) => ({
       remoteResolution: "r720p",
       remoteClarity: "standard",
       remoteFps: "smooth",
+      remoteCursorShape: null,
+      remoteCursorVisible: true,
       remoteListLoading: false,
       remoteListError: null,
       chatMessages: [],
