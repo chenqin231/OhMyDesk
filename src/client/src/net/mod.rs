@@ -65,6 +65,12 @@ pub enum ToUi {
         h: u32,
         seq: u64,
     },
+    /// 主控端收被控端光标同步：形状(base64 裸 RGBA)+热点+尺寸 + 可见性。UI 解码并在本地指针位置叠加渲染，
+    /// 让主控看到被控端真实光标形状。shape=None 表示仅可见性变化(复用上次形状)。
+    Cursor {
+        visible: bool,
+        shape: Option<protocol::CursorShape>,
+    },
     /// 会话结束（任一端断开）。带结束的 session_id，供 UI 侧门控清理被控会话副本
     /// （只清匹配的会话，避免重控/多会话/迟到 SessionEnd 下错误清空 `ctrl_session`）。
     SessionEnded { session_id: String },
