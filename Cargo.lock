@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -822,6 +822,7 @@ dependencies = [
  "uuid",
  "windows-sys 0.59.0",
  "winresource",
+ "x11rb",
  "xcap",
 ]
 
@@ -4475,7 +4476,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5177,7 +5178,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "axum",
