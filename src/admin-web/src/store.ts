@@ -6,10 +6,10 @@ import type { AuditLog } from "@/lib/types/AuditLog";
 import type { Session } from "@/lib/types/Session";
 import type { Message } from "@/lib/types/Message";
 import type { FileEntry } from "@/lib/types/FileEntry";
-import type { QualityMode } from "@/lib/types/QualityMode";
 import type { ResolutionTier } from "@/lib/types/ResolutionTier";
 import type { ClarityTier } from "@/lib/types/ClarityTier";
 import type { FpsTier } from "@/lib/types/FpsTier";
+import { resolveDisplayParams } from "@/lib/quality";
 import { transport } from "@/lib/transport";
 import {
   bytesToB64,
@@ -505,15 +505,16 @@ export const useStore = create<State>((set, get) => ({
     });
   },
 
-  // 切换三轴显示参数 → 合并当前值后发 set_quality 给被控端（mode 按清晰度映射兜底旧被控端）
+  // 切换三轴显示参数 → 合并当前值后发 set_quality 给被控端（mode 按清晰度映射兜底旧被控端）。
+  // 纯决策（合并 + mode 映射）在 lib/quality.resolveDisplayParams，本处只做 state 读写与发信封。
   setRemoteDisplayParams(p) {
     const sessionId = get().remoteSessionId;
-    const resolution = p.resolution ?? get().remoteResolution;
-    const clarity = p.clarity ?? get().remoteClarity;
-    const fps = p.fps ?? get().remoteFps;
+    const { resolution, clarity, fps, mode } = resolveDisplayParams(
+      { resolution: get().remoteResolution, clarity: get().remoteClarity, fps: get().remoteFps },
+      p,
+    );
     set({ remoteResolution: resolution, remoteClarity: clarity, remoteFps: fps });
     if (!sessionId) return;
-    const mode: QualityMode = clarity === "high" ? "high_quality" : "smooth";
     get().sendEnvelope({ type: "set_quality", session_id: sessionId, mode, resolution, clarity, fps });
   },
 
