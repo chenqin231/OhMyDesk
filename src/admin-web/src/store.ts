@@ -101,6 +101,8 @@ type State = {
   // shape 仅在形状变化时下发，位置更新复用缓存 → 此处只在收到新 shape 时替换。
   remoteCursorShape: RemoteCursorShape | null;
   remoteCursorVisible: boolean;
+  // 主控侧「控制光标」位置（帧坐标）：桌面由鼠标移动写入、手机由触控引擎写入；叠加层据此渲染真实光标形状。
+  remoteCursorPos: { x: number; y: number } | null;
 
   // 会话内即时消息（时间正序，最新在末尾）
   chatMessages: ChatEntry[];
@@ -125,6 +127,8 @@ type State = {
   pullFile: (path: string) => void;
   listRemote: (path: string) => void;
   setRemoteDisplayParams: (p: { resolution?: ResolutionTier; clarity?: ClarityTier; fps?: FpsTier }) => void;
+  // 更新主控控制光标位置（帧坐标）→ 驱动光标叠加层渲染。
+  setRemoteCursorPos: (p: { x: number; y: number } | null) => void;
   // 远控会话内：发送一条即时消息
   sendChat: (text: string) => void;
 };
@@ -155,6 +159,7 @@ export const useStore = create<State>((set, get) => ({
   remoteFps: "smooth",
   remoteCursorShape: null,
   remoteCursorVisible: true,
+  remoteCursorPos: null,
   chatMessages: [],
   fileProgress: {},
   diagRing: [],
@@ -242,6 +247,7 @@ export const useStore = create<State>((set, get) => ({
           remoteFrame: null,
           remoteCursorShape: null,
           remoteCursorVisible: true,
+          remoteCursorPos: null,
           chatMessages: [],
         });
         return;
@@ -431,6 +437,7 @@ export const useStore = create<State>((set, get) => ({
       remoteFps: "smooth",
       remoteCursorShape: null,
       remoteCursorVisible: true,
+      remoteCursorPos: null,
       remoteListLoading: false,
       remoteListError: null,
       chatMessages: [],
@@ -544,6 +551,10 @@ export const useStore = create<State>((set, get) => ({
       transfer_id: genId("l"),
       path,
     });
+  },
+
+  setRemoteCursorPos(p) {
+    set({ remoteCursorPos: p });
   },
 
   // 切换三轴显示参数 → 合并当前值后发 set_quality 给被控端（mode 按清晰度映射兜底旧被控端）。

@@ -18,6 +18,7 @@ import {
   shouldBlockRemoteContextMenu,
 } from "@/components/control/remote-geometry";
 import { CommandPanel, FilePanel, ChatPanel, TabButton } from "@/components/control/remote-tools";
+import { TouchGestureEngine, type GestureAction } from "@/lib/touch-gestures";
 
 type ToolTab = "remote" | "cmd" | "file" | "chat";
 
@@ -85,9 +86,9 @@ function LabeledSelect<T extends string>({
   );
 }
 
-// 光标同步叠加层：在主控**本地指针位置**渲染被控端真实光标形状（箭头/文本 I 型/手型…），
-// 并隐藏本地系统光标 → 实现「看到被控端真实鼠标形状」。位置直接改 DOM transform（每次 mousemove
-// 平滑跟随，不触发 React 重渲染）；仅形状 dataURL 变化才重渲染 <img>。
+// 光标同步叠加层：在主控「控制光标」位置（remoteCursorPos，帧坐标；桌面由鼠标、手机由触控引擎写入）
+// 渲染被控端真实光标形状（箭头/文本 I 型/手型…），并隐藏本地系统光标 → 实现「看到被控端真实鼠标形状」。
+// 位置直接改 DOM transform（不触发 <img> 重渲染），仅在 pos/frame 变化时重定位；形状 dataURL 变才换图。
 function RemoteCursorOverlay({
   containerRef,
   active,
@@ -97,20 +98,24 @@ function RemoteCursorOverlay({
 }) {
   const shape = useStore((s) => s.remoteCursorShape);
   const visible = useStore((s) => s.remoteCursorVisible);
+  const pos = useStore((s) => s.remoteCursorPos);
+  const frame = useStore((s) => s.remoteFrame);
   const imgRef = useRef<HTMLImageElement>(null);
 
   useEffect(() => {
     const el = containerRef.current;
-    if (!el || !active) return;
-    const onMove = (e: MouseEvent) => {
-      const img = imgRef.current;
-      if (!img) return;
-      const rect = el.getBoundingClientRect();
-      img.style.transform = `translate(${e.clientX - rect.left}px, ${e.clientY - rect.top}px)`;
-    };
-    el.addEventListener("mousemove", onMove);
-    return () => el.removeEventListener("mousemove", onMove);
-  }, [containerRef, active, shape]);
+    const img = imgRef.current;
+    if (!el || !img || !pos || !frame) return;
+    // 帧坐标 → 容器内显示 px：先算帧在容器里的实际显示矩形（object-contain letterbox），再按比例定位。
+    const rect = el.getBoundingClientRect();
+    const disp = containedFrameRect(
+      { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+      frame,
+    );
+    const x = disp.left - rect.left + (pos.x / Math.max(1, frame.w)) * disp.width;
+    const y = disp.top - rect.top + (pos.y / Math.max(1, frame.h)) * disp.height;
+    img.style.transform = `translate(${x}px, ${y}px)`;
+  }, [containerRef, pos, frame]);
 
   if (!active || !shape || !visible) return null;
   return (
@@ -148,7 +153,10 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   const setRemoteDisplayParams = useStore((s) => s.setRemoteDisplayParams);
   // 光标同步：有被控端形状时隐藏本地系统光标，改由 RemoteCursorOverlay 渲染真实光标。
   const remoteCursorShape = useStore((s) => s.remoteCursorShape);
+  const setRemoteCursorPos = useStore((s) => s.setRemoteCursorPos);
   const containerRef = useRef<HTMLDivElement>(null);
+  // 手机触控手势引擎（触控板模式）：跨 tick 持有虚拟光标与手势状态。
+  const touchEngineRef = useRef<TouchGestureEngine | null>(null);
   // 滚轮像素累加器(每会话一个,跨 wheel 事件保留余量)。见 makeRemoteScroll。
   const scrollAccRef = useRef(makeRemoteScroll());
   // 四标签：远程控制（画面）/ 命令行 / 文件传输 / 会话消息。仅「远程控制」标签转发键鼠到被控端。
@@ -221,6 +229,7 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
       const coords = toFrameCoords(e);
       if (!coords) return;
       sendInput({ kind: "mouse_move", x: coords.x, y: coords.y });
+      setRemoteCursorPos(coords); // 桌面：鼠标位置驱动光标叠加层
     }
 
     function onMouseDown(e: MouseEvent) {
@@ -260,7 +269,89 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
       el.removeEventListener("contextmenu", onContextMenu);
       el.removeEventListener("wheel", onWheel);
     };
-  }, [toFrameCoords, sendInput, tab]);
+  }, [toFrameCoords, sendInput, tab, setRemoteCursorPos]);
+
+  // 手机触控手势（触控板模式，借鉴 UU 远程）：单指移=光标移、轻点=左键、长按=右键、
+  // 双指移=滚动、双击后按住拖=左键拖拽。preventDefault 抑制浏览器缩放/滚动与合成鼠标事件。
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || tab !== "remote") return;
+
+    const toPts = (tl: TouchList) => Array.from(tl).map((t) => ({ x: t.clientX, y: t.clientY }));
+
+    const dispatch = (actions: GestureAction[]) => {
+      for (const a of actions) {
+        if (a.kind === "move") {
+          sendInput({ kind: "mouse_move", x: a.x, y: a.y });
+          setRemoteCursorPos({ x: a.x, y: a.y });
+        } else if (a.kind === "button") {
+          sendInput({ kind: "mouse_button", button: a.button, down: a.down });
+        } else {
+          sendInput({ kind: "scroll", dx: a.dx, dy: a.dy });
+        }
+      }
+    };
+
+    const ensureEngine = () => {
+      const frame = useStore.getState().remoteFrame;
+      const fw = frame?.w ?? 1280;
+      const fh = frame?.h ?? 720;
+      if (!touchEngineRef.current) {
+        const start = useStore.getState().remoteCursorPos ?? { x: fw / 2, y: fh / 2 };
+        touchEngineRef.current = new TouchGestureEngine(fw, fh, start);
+      } else {
+        touchEngineRef.current.setFrameSize(fw, fh);
+      }
+      return touchEngineRef.current;
+    };
+
+    let longTimer: number | undefined;
+    const clearLong = () => {
+      if (longTimer !== undefined) {
+        clearTimeout(longTimer);
+        longTimer = undefined;
+      }
+    };
+
+    const onStart = (e: TouchEvent) => {
+      e.preventDefault();
+      const eng = ensureEngine();
+      dispatch(eng.start(toPts(e.touches), Date.now()));
+      // 单指按下即在虚拟光标处显示光标；启动长按计时（到点触发右键）。
+      setRemoteCursorPos(eng.getCursor());
+      clearLong();
+      if (e.touches.length === 1) {
+        longTimer = window.setTimeout(() => dispatch(eng.longPressFire()), 500);
+      }
+    };
+    const onMove = (e: TouchEvent) => {
+      e.preventDefault();
+      const eng = touchEngineRef.current;
+      if (!eng) return;
+      const out = eng.move(toPts(e.touches), Date.now());
+      if (out.length) clearLong(); // 已产生移动 → 取消长按
+      dispatch(out);
+    };
+    const onEnd = (e: TouchEvent) => {
+      e.preventDefault();
+      clearLong();
+      const eng = touchEngineRef.current;
+      if (!eng) return;
+      dispatch(eng.end(toPts(e.touches), Date.now()));
+    };
+
+    el.addEventListener("touchstart", onStart, { passive: false });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: false });
+    el.addEventListener("touchcancel", onEnd, { passive: false });
+    return () => {
+      clearLong();
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+    };
+  }, [tab, sendInput, setRemoteCursorPos]);
 
   // 键盘事件挂在 window（焦点无关）。
   // 用 e.key（已按 Shift/CapsLock 解析出大小写与上档符，如 "A"/"!"/"/"），而非 e.code（物理键
