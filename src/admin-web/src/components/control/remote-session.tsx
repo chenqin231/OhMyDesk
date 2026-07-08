@@ -92,20 +92,22 @@ function LabeledSelect<T extends string>({
 function RemoteCursorOverlay({
   containerRef,
   active,
+  touchMode,
 }: {
   containerRef: React.RefObject<HTMLDivElement | null>;
   active: boolean;
+  touchMode: boolean;
 }) {
   const shape = useStore((s) => s.remoteCursorShape);
   const visible = useStore((s) => s.remoteCursorVisible);
   const pos = useStore((s) => s.remoteCursorPos);
   const frame = useStore((s) => s.remoteFrame);
-  const imgRef = useRef<HTMLImageElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const el = containerRef.current;
-    const img = imgRef.current;
-    if (!el || !img || !pos || !frame) return;
+    const w = wrapRef.current;
+    if (!el || !w || !pos || !frame) return;
     // 帧坐标 → 容器内显示 px：先算帧在容器里的实际显示矩形（object-contain letterbox），再按比例定位。
     const rect = el.getBoundingClientRect();
     const disp = containedFrameRect(
@@ -114,29 +116,36 @@ function RemoteCursorOverlay({
     );
     const x = disp.left - rect.left + (pos.x / Math.max(1, frame.w)) * disp.width;
     const y = disp.top - rect.top + (pos.y / Math.max(1, frame.h)) * disp.height;
-    img.style.transform = `translate(${x}px, ${y}px)`;
-  }, [containerRef, pos, frame]);
+    w.style.transform = `translate(${x}px, ${y}px)`;
+  }, [containerRef, pos, frame, shape, touchMode]);
 
-  if (!active || !shape || !visible) return null;
+  if (!active || !visible || !pos) return null;
+  // 有被控端真实形状 → 渲染真实光标；否则手机触控模式下渲染兜底箭头，保证触控板有可见反馈
+  //（被控端未升 0.6.0 不发形状、且 xcap 帧不含系统光标时，靠它让用户看到虚拟光标落点）。
+  const showFallback = !shape && touchMode;
+  if (!shape && !showFallback) return null;
   return (
-    <img
-      ref={imgRef}
-      src={shape.dataUrl}
-      alt=""
-      draggable={false}
-      style={{
-        position: "absolute",
-        left: 0,
-        top: 0,
-        width: shape.w,
-        height: shape.h,
-        marginLeft: -shape.hotspotX,
-        marginTop: -shape.hotspotY,
-        pointerEvents: "none",
-        zIndex: 20,
-        imageRendering: "pixelated",
-      }}
-    />
+    <div ref={wrapRef} style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none", zIndex: 20 }}>
+      {shape ? (
+        <img
+          src={shape.dataUrl}
+          alt=""
+          draggable={false}
+          style={{
+            display: "block",
+            width: shape.w,
+            height: shape.h,
+            marginLeft: -shape.hotspotX,
+            marginTop: -shape.hotspotY,
+            imageRendering: "pixelated",
+          }}
+        />
+      ) : (
+        <svg width="22" height="22" viewBox="0 0 24 24" style={{ display: "block", filter: "drop-shadow(0 1px 1.5px rgba(0,0,0,0.6))" }}>
+          <path d="M3 2 L3 19 L8 14.5 L11.3 21 L14 19.7 L10.8 13.4 L18 13 Z" fill="#fff" stroke="#000" strokeWidth="1.3" />
+        </svg>
+      )}
+    </div>
   );
 }
 
@@ -161,6 +170,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   const scrollAccRef = useRef(makeRemoteScroll());
   // 四标签：远程控制（画面）/ 命令行 / 文件传输 / 会话消息。仅「远程控制」标签转发键鼠到被控端。
   const [tab, setTab] = useState<ToolTab>("remote");
+  // 是否已发生过触摸操作 → 启用手机触控板兜底光标（区分桌面鼠标 vs 移动触控）。
+  const [touchMode, setTouchMode] = useState(false);
   const chatCount = useStore((s) => s.chatMessages.length);
   // 上次停留在「会话消息」标签时已读到的消息数；切到 chat 标签即清零未读。
   const [readChatCount, setReadChatCount] = useState(0);
@@ -315,6 +326,7 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
 
     const onStart = (e: TouchEvent) => {
       e.preventDefault();
+      setTouchMode(true); // 首次触摸即进入触控模式（启用兜底可见光标）
       const eng = ensureEngine();
       dispatch(eng.start(toPts(e.touches), Date.now()));
       // 单指按下即在虚拟光标处显示光标；启动长按计时（到点触发右键）。
@@ -399,8 +411,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
 
   return (
     <div className="flex h-full min-h-[calc(100vh-7rem)] w-full flex-col bg-background">
-      {/* 顶部细工具栏 */}
-      <header className="flex h-12 shrink-0 items-center justify-between gap-4 border-b border-border bg-card px-4">
+      {/* 顶部细工具栏：flex-wrap + min-h 而非固定 h-12——窄屏/移动端画质下拉+按钮换行显示，不再溢出裁掉。 */}
+      <header className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border bg-card px-4 py-1.5">
         {/* 左：远程控制中 + 目标 */}
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex items-center gap-1.5 rounded-full border border-online/30 bg-online/10 px-2.5 py-1">
@@ -513,7 +525,9 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
         >
           <div
             ref={containerRef}
-            className={`relative flex h-full w-full max-w-[1920px] items-center justify-center overflow-hidden rounded-lg ring-1 ring-border ${remoteCursorShape ? "cursor-none" : "cursor-pointer"}`}
+            // touch-none(touch-action:none):关键——否则移动端浏览器把触摸当页面滚动/缩放吃掉，
+            // 自定义手势收不到 touchmove。select-none 防长按选中文本。
+            className={`relative flex h-full w-full max-w-[1920px] touch-none select-none items-center justify-center overflow-hidden rounded-lg ring-1 ring-border ${remoteCursorShape ? "cursor-none" : "cursor-pointer"}`}
           >
             {remoteFrame ? (
               <img
@@ -535,8 +549,9 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
               </div>
             )}
 
-            {/* 光标同步：被控端真实光标形状叠加层（在本地指针位置渲染，隐藏系统光标） */}
-            <RemoteCursorOverlay containerRef={containerRef} active={tab === "remote"} />
+            {/* 光标同步：被控端真实光标形状叠加层（在本地指针位置渲染，隐藏系统光标）；
+                手机触控模式下无被控形状时渲染兜底箭头，保证触控板可见反馈。 */}
+            <RemoteCursorOverlay containerRef={containerRef} active={tab === "remote"} touchMode={touchMode} />
 
             {/* 左上角常驻安全提示条 */}
             <div className="absolute left-3 top-3 flex items-center gap-2 rounded-md bg-warning/90 px-3 py-1.5 text-xs font-medium text-warning-foreground shadow-lg backdrop-blur-sm">
