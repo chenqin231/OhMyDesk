@@ -20,6 +20,19 @@ import {
 import { CommandPanel, FilePanel, ChatPanel, TabButton } from "@/components/control/remote-tools";
 import { MobileKeyboardBar } from "@/components/control/remote-mobile-keyboard";
 import { TouchGestureEngine, type GestureAction } from "@/lib/touch-gestures";
+import { buildKeyEvents, NO_MODS, type Mods } from "@/lib/mobile-keys";
+
+// 移动端底部面板「常用组合键」：一键发送常见快捷键组合（发给被控端）。
+const COMBO_KEYS: { label: string; code: string; mods: Partial<Mods> }[] = [
+  { label: "复制", code: "c", mods: { Control: true } },
+  { label: "粘贴", code: "v", mods: { Control: true } },
+  { label: "剪切", code: "x", mods: { Control: true } },
+  { label: "撤销", code: "z", mods: { Control: true } },
+  { label: "全选", code: "a", mods: { Control: true } },
+  { label: "保存", code: "s", mods: { Control: true } },
+  { label: "切窗", code: "Tab", mods: { Alt: true } },
+  { label: "关机键", code: "Delete", mods: { Control: true, Alt: true } },
+];
 
 type ToolTab = "remote" | "cmd" | "file" | "chat";
 
@@ -201,6 +214,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   const remoteCursorShape = useStore((s) => s.remoteCursorShape);
   const setRemoteCursorPos = useStore((s) => s.setRemoteCursorPos);
   const containerRef = useRef<HTMLDivElement>(null);
+  // 整个远控页根元素：原生全屏作用于它（含 FAB/控制面板），才能既隐藏浏览器地址栏又保留控件。
+  const rootRef = useRef<HTMLDivElement>(null);
   // 手机触控手势引擎（触控板模式）：跨 tick 持有虚拟光标与手势状态。
   const touchEngineRef = useRef<TouchGestureEngine | null>(null);
   // 滚轮像素累加器(每会话一个,跨 wheel 事件保留余量)。见 makeRemoteScroll。
@@ -236,7 +251,7 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   // 全屏：优先原生 Fullscreen API；移动端(尤其 iOS Safari)对非 video 元素不支持/被拒时，
   // 回退 CSS 伪全屏(整个远控页 fixed 铺满视口)——保证「全屏」按钮在所有移动浏览器都生效。
   const toggleFullscreen = useCallback(() => {
-    const el = containerRef.current;
+    const el = rootRef.current; // 对根元素请求全屏：连同 FAB/控制面板一起进全屏，浏览器地址栏隐藏
     if (document.fullscreenElement) {
       void document.exitFullscreen();
       return;
@@ -503,6 +518,7 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
 
   return (
     <div
+      ref={rootRef}
       className={`flex w-full flex-col bg-background ${
         cssFullscreen ? "fixed inset-0 z-50 h-screen" : "h-full min-h-[calc(100vh-7rem)]"
       }`}
@@ -658,11 +674,13 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
                 手机触控模式下无被控形状时渲染兜底箭头，保证触控板可见反馈。 */}
             <RemoteCursorOverlay containerRef={containerRef} active={tab === "remote"} touchMode={touchMode} />
 
-            {/* 左上角常驻安全提示条 */}
-            <div className="absolute left-3 top-3 flex items-center gap-2 rounded-md bg-warning/90 px-3 py-1.5 text-xs font-medium text-warning-foreground shadow-lg backdrop-blur-sm">
-              <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
-              此终端正在被 管理员 远程协助
-            </div>
+            {/* 左上角安全提示条：桌面端常驻；移动端(coarse)隐藏，避免遮挡画面(被控端另有本机指示)。 */}
+            {!coarse && (
+              <div className="absolute left-3 top-3 flex items-center gap-2 rounded-md bg-warning/90 px-3 py-1.5 text-xs font-medium text-warning-foreground shadow-lg backdrop-blur-sm">
+                <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
+                此终端正在被 管理员 远程协助
+              </div>
+            )}
           </div>
 
         </main>
@@ -737,7 +755,11 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
                 <div className="grid grid-cols-4 gap-2">
                   <SheetAction icon={<Keyboard className="size-5" />} label="键盘" onClick={() => { setKeyboardOn(true); setSheetOpen(false); }} />
                   <SheetAction icon={<SlidersHorizontal className="size-5" />} label="画质" active={showQualityMenu} onClick={() => setShowQualityMenu((v) => !v)} />
-                  <SheetAction icon={<Maximize className="size-5" />} label="全屏" onClick={toggleFullscreen} />
+                  <SheetAction
+                    icon={<Maximize className="size-5" />}
+                    label={cssFullscreen || (typeof document !== "undefined" && !!document.fullscreenElement) ? "退出全屏" : "全屏"}
+                    onClick={toggleFullscreen}
+                  />
                   <SheetAction icon={<Camera className="size-5" />} label="截图" disabled={!remoteFrame} onClick={saveScreenshot} />
                 </div>
                 {showQualityMenu && (
@@ -745,6 +767,22 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
                     {qualityControls}
                   </div>
                 )}
+                {/* 常用组合键：一键发常见快捷键（发后自动清修饰，见 buildKeyEvents） */}
+                <div className="mt-3">
+                  <div className="mb-1.5 text-[11px] text-muted-foreground">常用组合键</div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {COMBO_KEYS.map((c) => (
+                      <button
+                        key={c.label}
+                        type="button"
+                        onClick={() => buildKeyEvents(c.code, { ...NO_MODS, ...c.mods }).forEach(sendInput)}
+                        className="rounded-lg border border-border py-2 text-xs text-foreground active:bg-secondary"
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </>
             )}
             <button

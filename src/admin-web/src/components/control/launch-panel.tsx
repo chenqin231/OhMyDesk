@@ -16,7 +16,7 @@ import { useStore } from "@/store";
 import { endpointToRow } from "@/lib/adapters/endpoint";
 
 type LaunchPanelProps = {
-  onLaunch: (mode: "a" | "b", target: string, password: string | null) => void;
+  onLaunch: (mode: "a" | "b", target: string, password: string | null, force?: boolean) => void;
   onPreviewAuth: () => void;
 };
 
@@ -36,6 +36,8 @@ export function LaunchPanel({ onLaunch, onPreviewAuth }: LaunchPanelProps) {
   const [targetId, setTargetId] = useState<string>(onlineTargets[0]?.id ?? "");
   const [peerId, setPeerId] = useState("");
   const [peerPwd, setPeerPwd] = useState("");
+  // 模式 A 强制远程(免对方同意)：勾选后服务端 AutoAccept，不弹被控端授权框。仅 admin 生效(服务端强制)。
+  const [forceA, setForceA] = useState(false);
 
   const targetName = onlineTargets.find((t) => t.id === targetId)?.user ?? "目标终端";
   const modeBReady = peerId.trim().length > 0 && peerPwd.trim().length === 6;
@@ -90,13 +92,24 @@ export function LaunchPanel({ onLaunch, onPreviewAuth }: LaunchPanelProps) {
             </Select>
           </div>
 
+          {/* 强制远程开关：勾选=免对方同意直接接入（服务端仅 admin 生效）。 */}
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={forceA}
+              onChange={(e) => setForceA(e.target.checked)}
+              className="size-4 accent-destructive"
+            />
+            强制远程（免对方同意，直接接入）
+          </label>
+
           <Button
-            className="mt-auto w-full"
+            className={cn("mt-auto w-full", forceA && "bg-destructive text-destructive-foreground hover:bg-destructive/90")}
             disabled={!targetId}
-            onClick={() => onLaunch("a", targetName, null)}
+            onClick={() => onLaunch("a", targetName, null, forceA)}
           >
             <MonitorUp data-icon="inline-start" />
-            发起远程协助
+            {forceA ? "强制发起远程" : "发起远程协助"}
           </Button>
         </div>
 
