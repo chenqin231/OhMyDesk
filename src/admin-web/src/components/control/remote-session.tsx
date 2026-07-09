@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { Camera, Download, Maximize, PhoneOff, TriangleAlert, Monitor, Terminal, FolderTree, MessageSquare, SlidersHorizontal } from "lucide-react";
+import { Camera, Download, Maximize, PhoneOff, TriangleAlert, Monitor, Terminal, FolderTree, MessageSquare, SlidersHorizontal, Keyboard, ChevronUp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -84,6 +84,42 @@ function LabeledSelect<T extends string>({
         ))}
       </select>
     </label>
+  );
+}
+
+// 移动端底部控制面板：标签项 + 动作按钮（大触控目标，Fitts 定律）。
+const TAB_ITEMS: { key: ToolTab; label: string; Icon: typeof Monitor }[] = [
+  { key: "remote", label: "远程桌面", Icon: Monitor },
+  { key: "cmd", label: "命令行", Icon: Terminal },
+  { key: "file", label: "文件", Icon: FolderTree },
+  { key: "chat", label: "消息", Icon: MessageSquare },
+];
+
+function SheetAction({
+  icon,
+  label,
+  onClick,
+  active,
+  disabled,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex flex-col items-center gap-1 rounded-lg border py-2.5 text-xs disabled:opacity-40 ${
+        active ? "border-primary bg-primary/10 text-primary" : "border-border text-foreground active:bg-secondary"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }
 
@@ -179,6 +215,9 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
   const [coarse, setCoarse] = useState(false);
   // 移动端画质设置面板展开态（收进「画质」按钮，避免顶栏拥挤）。
   const [showQualityMenu, setShowQualityMenu] = useState(false);
+  // 移动端沉浸式：控制面板(底部弹出)开合 + 软键盘栏开合。平时画面铺满，按 FAB 呼出控制。
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [keyboardOn, setKeyboardOn] = useState(false);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
@@ -468,7 +507,8 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
         cssFullscreen ? "fixed inset-0 z-50 h-screen" : "h-full min-h-[calc(100vh-7rem)]"
       }`}
     >
-      {/* 顶部细工具栏：flex-wrap + min-h 而非固定 h-12——窄屏/移动端画质下拉+按钮换行显示，不再溢出裁掉。 */}
+      {/* 顶部工具栏：桌面端常驻；移动端(粗指针)隐藏，改由画面上的悬浮按钮(FAB)呼出底部控制面板，最大化画面。 */}
+      {!coarse && (
       <header className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border bg-card px-4 py-1.5">
         {/* 左：远程控制中 + 目标 */}
         <div className="flex min-w-0 items-center gap-2.5">
@@ -545,8 +585,10 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
           </Button>
         </div>
       </header>
+      )}
 
-      {/* 四标签栏：远程控制 / 命令行 / 文件传输 / 会话消息（连接态才渲染整个 RemoteSession，天然门控） */}
+      {/* 四标签栏：桌面端常驻；移动端隐藏，标签切换移入底部控制面板。 */}
+      {!coarse && (
       <nav className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-2">
         <TabButton active={tab === "remote"} onClick={() => setTab("remote")} icon={<Monitor className="size-3.5" />}>
           远程控制
@@ -572,12 +614,14 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
           </span>
         </TabButton>
       </nav>
+      )}
 
       {/* 主体：按标签切换。命令行/文件传输与远程画面平级（不再是底部停靠面板）。 */}
       <div className="flex min-h-0 flex-1 flex-col">
-        {/* 远程控制标签：始终挂载（隐藏而非卸载），保持 containerRef 与第一帧不丢；非 remote 标签时 hidden。 */}
+        {/* 远程控制标签：始终挂载（隐藏而非卸载），保持 containerRef 与第一帧不丢；非 remote 标签时 hidden。
+            移动端(粗指针)去掉内边距，画面铺满整屏。 */}
         <main
-          className={`relative min-h-0 flex-1 items-center justify-center overflow-hidden bg-black p-3 md:p-6 ${tab === "remote" ? "flex" : "hidden"}`}
+          className={`relative min-h-0 flex-1 items-center justify-center overflow-hidden bg-black ${coarse ? "p-0" : "p-3 md:p-6"} ${tab === "remote" ? "flex" : "hidden"}`}
         >
           <div
             ref={containerRef}
@@ -620,11 +664,13 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
               此终端正在被 管理员 远程协助
             </div>
           </div>
+
         </main>
 
-        {/* 移动端(粗指针)远控标签：画面下方常驻文本输入栏（软键盘 + 特殊键 + 修饰键），
-            桌面端有物理键盘故不显示。 */}
-        {coarse && tab === "remote" && <MobileKeyboardBar sendInput={sendInput} />}
+        {/* 移动端软键盘栏：仅在从控制面板点「键盘」后显示（软键盘 + 特殊键 + 修饰键）。 */}
+        {coarse && tab === "remote" && keyboardOn && (
+          <MobileKeyboardBar sendInput={sendInput} onClose={() => setKeyboardOn(false)} />
+        )}
 
         {tab === "cmd" && (
           <div className="min-h-0 flex-1">
@@ -642,6 +688,76 @@ export function RemoteSession({ targetName, mode, onDisconnect }: RemoteSessionP
           </div>
         )}
       </div>
+
+      {/* 移动端沉浸式控制（根级 fixed，所有标签可见）：平时只露悬浮按钮(FAB)，点开底部控制面板。
+          FAB 非 containerRef 后代，触摸不触发远控手势；键盘打开时让位不显示。 */}
+      {coarse && !sheetOpen && !keyboardOn && (
+        <button
+          type="button"
+          onClick={() => setSheetOpen(true)}
+          aria-label="呼出控制面板"
+          className="fixed bottom-4 right-4 z-[60] flex size-12 items-center justify-center rounded-full bg-primary/85 text-primary-foreground shadow-lg backdrop-blur active:scale-95"
+        >
+          <ChevronUp className="size-6" />
+        </button>
+      )}
+      {coarse && sheetOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex flex-col justify-end bg-black/50"
+          onClick={() => setSheetOpen(false)}
+        >
+          <div
+            className="rounded-t-2xl border-t border-border bg-card p-4 pb-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border" />
+            {/* 标签切换 */}
+            <div className="mb-3 grid grid-cols-4 gap-2">
+              {TAB_ITEMS.map(({ key, label, Icon }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => {
+                    setTab(key);
+                    if (key === "chat") setReadChatCount(chatCount);
+                    setSheetOpen(false);
+                  }}
+                  className={`flex flex-col items-center gap-1 rounded-lg border py-2 text-xs ${
+                    tab === key ? "border-primary bg-primary/10 text-primary" : "border-border text-foreground"
+                  }`}
+                >
+                  <Icon className="size-4" />
+                  {label}
+                </button>
+              ))}
+            </div>
+            {/* 动作按钮（仅远控标签相关；大触控目标） */}
+            {tab === "remote" && (
+              <>
+                <div className="grid grid-cols-4 gap-2">
+                  <SheetAction icon={<Keyboard className="size-5" />} label="键盘" onClick={() => { setKeyboardOn(true); setSheetOpen(false); }} />
+                  <SheetAction icon={<SlidersHorizontal className="size-5" />} label="画质" active={showQualityMenu} onClick={() => setShowQualityMenu((v) => !v)} />
+                  <SheetAction icon={<Maximize className="size-5" />} label="全屏" onClick={toggleFullscreen} />
+                  <SheetAction icon={<Camera className="size-5" />} label="截图" disabled={!remoteFrame} onClick={saveScreenshot} />
+                </div>
+                {showQualityMenu && (
+                  <div className="mt-3 flex flex-col gap-3 rounded-lg border border-border bg-secondary/40 p-3">
+                    {qualityControls}
+                  </div>
+                )}
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => { setSheetOpen(false); onDisconnect(); }}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-destructive py-3 text-sm font-medium text-destructive-foreground"
+            >
+              <PhoneOff className="size-4" />
+              断开连接
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

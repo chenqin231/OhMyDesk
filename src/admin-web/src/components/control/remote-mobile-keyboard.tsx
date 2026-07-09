@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Keyboard } from "lucide-react";
+import { Keyboard, X } from "lucide-react";
 import type { InputEvent as WireInput } from "@/lib/types/InputEvent";
 import { buildKeyEvents, buildCharEvents, anyMod, NO_MODS, type Mods } from "@/lib/mobile-keys";
 
@@ -27,7 +27,13 @@ const MOD_KEYS: { label: string; key: keyof Mods }[] = [
 
 // 手机端文本输入栏：隐藏 input 唤起软键盘 + beforeinput/composition 捕获输入 → 发 Text/Key；
 // 特殊键工具条 + 一次性粘滞修饰键（Ctrl/Alt/Shift/Win）。渲染在远控画面下方（不覆盖触控手势区）。
-export function MobileKeyboardBar({ sendInput }: { sendInput: (e: WireInput) => void }) {
+export function MobileKeyboardBar({
+  sendInput,
+  onClose,
+}: {
+  sendInput: (e: WireInput) => void;
+  onClose?: () => void;
+}) {
   const inputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
   const modsRef = useRef<Mods>(NO_MODS);
@@ -102,6 +108,11 @@ export function MobileKeyboardBar({ sendInput }: { sendInput: (e: WireInput) => 
     setKbOpen(true);
   }, []);
 
+  // 键盘栏出现即自动聚焦隐藏 input 唤起软键盘（Android 有效；iOS 若不弹，点栏内「键盘」按钮补触发）。
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
   // 特殊键/修饰键按下时阻止默认，避免抢走隐藏 input 焦点（软键盘不收起）。
   const keepFocus = (e: React.PointerEvent) => e.preventDefault();
 
@@ -121,6 +132,11 @@ export function MobileKeyboardBar({ sendInput }: { sendInput: (e: WireInput) => 
         className="pointer-events-none absolute bottom-0 left-0 h-px w-px opacity-0"
         onBlur={() => setKbOpen(false)}
       />
+      {onClose && (
+        <button type="button" onPointerDown={keepFocus} onClick={onClose} className={btn} aria-label="收起键盘">
+          <X className="size-3.5" />
+        </button>
+      )}
       <button
         type="button"
         onClick={openKeyboard}

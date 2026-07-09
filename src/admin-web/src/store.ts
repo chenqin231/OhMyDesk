@@ -74,6 +74,8 @@ type State = {
   remoteSessionId: string | null;
   remoteTarget: string;           // 当前远控目标展示名（连接中/控制中卡片显示）
   remotePhase: "launch" | "connecting" | "connected" | "rejected";
+  // 本次发起是否为「强制远程」(模式A force)：连接过场文案据此区分——强制不需对方同意。
+  remoteForced: boolean;
   remoteFrame: ActiveFrame | null;
   remoteRejectReason: string | null;
   // Grid 截图缓存 { endpointId: base64 }
@@ -143,6 +145,7 @@ export const useStore = create<State>((set, get) => ({
   remoteSessionId: null,
   remoteTarget: "",
   remotePhase: "launch",
+  remoteForced: false,
   remoteFrame: null,
   remoteRejectReason: null,
   screenshots: {},
@@ -393,6 +396,7 @@ export const useStore = create<State>((set, get) => ({
   startRemote(mode, target, password, name, force = false) {
     set({
       remotePhase: "connecting",
+      remoteForced: mode === "a" && force,
       remoteTarget: name ?? target,
       remoteRejectReason: null,
       remoteFrame: null,
