@@ -21,10 +21,10 @@ export function ControlClient() {
   const [targetName, setTargetName] = useState("");
   const [authOpen, setAuthOpen] = useState(false);
 
-  function handleLaunch(m: "a" | "b", name: string, password: string | null) {
+  function handleLaunch(m: "a" | "b", name: string, password: string | null, force = false) {
     setMode(m);
     setTargetName(name);
-    startRemote(m, name, password);
+    startRemote(m, name, password, undefined, force);
   }
 
   return (
