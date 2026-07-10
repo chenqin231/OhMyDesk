@@ -6,12 +6,18 @@ use crate::{history, net, AppWindow, ChatNoticeWindow, SharedSession};
 use slint::ComponentHandle;
 
 mod chat;
+mod chat_notice;
 mod control;
 mod exec;
 mod files;
 mod input;
+mod login;
 mod misc;
+mod restore;
 mod util;
+pub use chat_notice::wire_chat_notice_callbacks;
+pub use login::wire_login_callbacks;
+pub use restore::wire_repaint_on_restore;
 pub use util::{
     append_line, build_file_model, build_history_model, group_digits, join_path, parent_of,
     rel_time, resolve_path_arg,
@@ -80,170 +86,6 @@ fn next_ctrl_session_after_end(current: Option<&str>, ending_session_id: &str) -
         None
     } else {
         current.map(str::to_owned)
-    }
-}
-
-/// 登录 / 注销回调（客户端账号登录 + 归属绑定）。独立于 net 上行通道：
-/// - `on_do_login`：后台线程阻塞 ureq 调 `/api/login` → `invoke_from_event_loop` 回填 UI；
-///   成功则存盘凭据 + 经 `token_tx`(watch) 通知 `net::run` 携 token 上线（放行登录门，服务端派生 owner）。
-/// - `on_do_logout`：清凭据 + token 置 None（令 net 主动断开 WS + 回登录门）+ 回登录页。
-pub fn wire_login_callbacks(
-    ui: &AppWindow,
-    token_tx: std::sync::Arc<tokio::sync::watch::Sender<Option<String>>>,
-    server_url: String,
-    active_server_url: crate::SharedServerUrl,
-) {
-    // on_do_login(user, pass, server_override)
-    {
-        let ui_weak = ui.as_weak();
-        let token_tx = token_tx.clone();
-        let default_server = server_url;
-        let active_server_url = active_server_url.clone();
-        ui.on_do_login(move |user, pass, server_override| {
-            let user = user.to_string();
-            let pass = pass.to_string();
-            // 服务器地址：高级项非空则用它，否则用默认（env/OHMYDESK_SERVER）。
-            let server = selected_login_server(&default_server, &server_override);
-            let ui_weak = ui_weak.clone();
-            let token_tx = token_tx.clone();
-            let active_server_url = active_server_url.clone();
-            // 进入 loading 态（回调在 UI 线程，直接 set）。
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_login_loading(true);
-                ui.set_login_error("".into());
-            }
-            // 阻塞式 ureq 放后台线程，完成后投回 UI 线程回填。
-            std::thread::spawn(move || {
-                let result = crate::login::login(&server, &user, &pass);
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(ui) = ui_weak.upgrade() else {
-                        return;
-                    };
-                    ui.set_login_loading(false);
-                    match result {
-                        Ok(creds) => {
-                            crate::credential::save(&creds);
-                            *active_server_url.lock().unwrap() = server;
-                            ui.set_logged_user(creds.user.clone().into());
-                            ui.set_login_pass("".into()); // 清密码框
-                            ui.set_login_error("".into());
-                            ui.set_logged_in(true);
-                            // 放行 net 登录门：携 token 上线（服务端据此派生 owner）。
-                            let _ = token_tx.send(Some(creds.token));
-                        }
-                        Err(e) => {
-                            // 错密码：清空密码框、账号保留（AC-001-E1）；网络错则保留密码便于直接重试。
-                            if e == crate::login::LoginErr::BadCredential {
-                                ui.set_login_pass("".into());
-                            }
-                            ui.set_login_error(e.message().into());
-                        }
-                    }
-                });
-            });
-        });
-    }
-    // on_do_logout（S3 确定）
-    {
-        let ui_weak = ui.as_weak();
-        let token_tx = token_tx.clone();
-        ui.on_do_logout(move || {
-            crate::credential::clear();
-            let _ = token_tx.send(None); // 令 net 主动断开 WS + 回登录门（终端离线，归属服务端保留）
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_logged_in(false);
-                ui.set_connected(false);
-                ui.set_login_pass("".into());
-                ui.set_login_error("".into());
-            }
-        });
-    }
-}
-
-pub fn wire_chat_notice_callbacks(ui: &AppWindow, notice: &ChatNoticeWindow) {
-    {
-        let ui_weak = ui.as_weak();
-        let notice_weak = notice.as_weak();
-        notice.on_open_chat(move || {
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_chat_panel_open(true);
-                ui.set_controlled_chat_unread(false);
-                ui.window().set_minimized(false);
-                let _ = ui.show();
-            }
-            if let Some(notice) = notice_weak.upgrade() {
-                let _ = notice.hide();
-            }
-        });
-    }
-
-    {
-        let notice_weak = notice.as_weak();
-        notice.on_dismiss(move || {
-            if let Some(notice) = notice_weak.upgrade() {
-                let _ = notice.hide();
-            }
-        });
-    }
-
-    {
-        let notice_weak = notice.as_weak();
-        ui.on_controlled_chat_panel_opened(move || {
-            if let Some(notice) = notice_weak.upgrade() {
-                let _ = notice.hide();
-            }
-        });
-    }
-}
-
-/// 修「最小化→托盘图标恢复后白板」：Slint 软渲染器按 softbuffer buffer age 做脏区复用——
-/// 假设上一帧像素仍在缓冲里。Windows 最小化→恢复不重建表面(age 仍有效),但窗口内容已被 OS 清空,
-/// 于是渲染器只重绘「新脏区」(如点中的控件)、其余留白 = 白板+局部。仅 request_redraw 无效(脏区为空)。
-/// 根治：恢复瞬间把窗口逻辑高度 +1px 再复原,强制 winit 重建 softbuffer 表面(buffer age=0 → 整窗重绘)。
-/// 触发门：最小化态→非最小化态(Windows)或 Occluded(false)(X11/Wayland/macOS);最大化/全屏不 nudge
-/// (winit 忽略尺寸变更,且此类恢复通常自带 Resized 会整窗重绘)。
-pub fn wire_repaint_on_restore(ui: &AppWindow) {
-    use i_slint_backend_winit::winit::event::WindowEvent;
-    use i_slint_backend_winit::{EventResult, WinitWindowAccessor};
-    use std::cell::Cell;
-
-    let ui_weak = ui.as_weak();
-    // 最小化状态跟踪：true→false = 恢复。回调对多数 winit 事件触发,故正常使用(未最小化)恒 false,不误触。
-    let was_minimized = Cell::new(false);
-    ui.window().on_winit_window_event(move |win, ev| {
-        let now_min = win.is_minimized();
-        let restored = was_minimized.get() && !now_min;
-        was_minimized.set(now_min);
-
-        if restored || matches!(ev, WindowEvent::Occluded(false)) {
-            win.request_redraw();
-            if let Some(ui) = ui_weak.upgrade() {
-                let w = ui.window();
-                if !w.is_maximized() && !w.is_fullscreen() {
-                    let sf = w.scale_factor();
-                    let sz = w.size(); // 物理像素 → 逻辑像素(set_size 要逻辑)
-                    let lw = sz.width as f32 / sf;
-                    let lh = sz.height as f32 / sf;
-                    w.set_size(slint::LogicalSize::new(lw, lh + 1.0));
-                    let back = ui.as_weak();
-                    slint::Timer::single_shot(std::time::Duration::from_millis(32), move || {
-                        if let Some(ui) = back.upgrade() {
-                            ui.window().set_size(slint::LogicalSize::new(lw, lh));
-                        }
-                    });
-                }
-            }
-        }
-        EventResult::Propagate
-    });
-}
-
-fn selected_login_server(default_server: &str, server_override: &str) -> String {
-    let server = server_override.trim();
-    if server.is_empty() {
-        default_server.to_string()
-    } else {
-        server.to_string()
     }
 }
 
@@ -765,18 +607,6 @@ mod tests {
         );
         // 本无被控会话：保持 None。
         assert_eq!(next_ctrl_session_after_end(None, "S1"), None);
-    }
-
-    #[test]
-    fn 登录服务器地址_高级项覆盖默认地址() {
-        assert_eq!(
-            selected_login_server("wss://rc.guoziweb.com/ws", " ws://172.16.76.1:8765/ws "),
-            "ws://172.16.76.1:8765/ws"
-        );
-        assert_eq!(
-            selected_login_server("wss://rc.guoziweb.com/ws", "   "),
-            "wss://rc.guoziweb.com/ws"
-        );
     }
 
     #[test]
