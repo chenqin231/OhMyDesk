@@ -31,6 +31,7 @@ pub(super) fn next_ctrl_session_after_end(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_session_ended(
     ui_weak: &slint::Weak<AppWindow>,
     chat_notice_weak: &slint::Weak<ChatNoticeWindow>,

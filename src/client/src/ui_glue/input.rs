@@ -1,7 +1,6 @@
 //! 采集回调·输入域：键盘(on_key_ev/on_text)、指针移动/按键、滚轮、画质。
 use super::UiCtx;
 use crate::{net, AppWindow};
-use slint::ComponentHandle;
 
 pub(super) fn wire(ui: &AppWindow, cx: &UiCtx) {
     // int 档位语义与 app.slint res_tier/clarity_tier/fps_tier 注释及数组顺序一一对应,改动需两侧同步

@@ -19,11 +19,8 @@ pub use chat_notice::wire_chat_notice_callbacks;
 pub use login::wire_login_callbacks;
 pub use restore::wire_repaint_on_restore;
 pub use ui_update::consume_to_ui;
-pub(self) use ui_update::{LAST_RES_TIER, REFIT_PENDING};
-pub use util::{
-    append_line, build_file_model, build_history_model, group_digits, join_path, parent_of,
-    rel_time, resolve_path_arg,
-};
+use ui_update::{LAST_RES_TIER, REFIT_PENDING};
+pub use util::{build_history_model, group_digits};
 
 /// 采集侧回调共享句柄打包。全字段皆 Arc/Sender，clone 廉价。
 pub(crate) struct UiCtx {

@@ -1,7 +1,7 @@
 //! ui_glue 纯工具：id 分组、相对时间、Slint model 构造、路径运算、聊天行追加。
 //! 全部无副作用，可单测。
 
-use crate::{history, net, FileEntry, HistoryItem};
+use crate::{history, FileEntry, HistoryItem};
 use slint::{ModelRc, VecModel};
 
 /// 把 9 位 id 按 3-3-3 分组展示（"617343065" → "617 343 065"）。复制时 Rust 侧再去空白。

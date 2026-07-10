@@ -1,7 +1,6 @@
 //! 帧/光标类 ToUi 事件处理：Frame、Cursor。
 //! decode_frame_rgba 在本模块（tokio 线程解码，UI 线程构造 Image）。
 use crate::{AppWindow, SharedSession};
-use protocol;
 use slint::ComponentHandle;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
@@ -15,6 +14,7 @@ fn decode_frame_rgba(data: &str) -> anyhow::Result<(Vec<u8>, u32, u32)> {
     Ok((rgba.into_raw(), w, h))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_frame(
     ui_weak: &slint::Weak<AppWindow>,
     cur_session: &SharedSession,
