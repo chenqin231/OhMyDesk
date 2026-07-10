@@ -285,7 +285,7 @@ pub fn wire_ui_callbacks(
         let sess = cur_session.clone();
         ui.on_on_pointer_button(move |x, y, btn, down| {
             let sid = sess.lock().unwrap().clone();
-            tracing::info!(
+            tracing::debug!(
                 "主控采集·鼠标键 btn={btn} down={down} pos=({x},{y}) session={}",
                 sid.as_deref().unwrap_or("<无>")
             );
@@ -343,7 +343,7 @@ pub fn wire_ui_callbacks(
             match crate::key_route::key_route(&text, ctrl, alt, meta) {
                 crate::key_route::KeyRoute::Key(code) => {
                     let sid = sess.lock().unwrap().clone();
-                    tracing::info!(
+                    tracing::debug!(
                         "主控采集·键 code={code:?} down={down} session={}",
                         sid.as_deref().unwrap_or("<无>")
                     );
@@ -371,7 +371,7 @@ pub fn wire_ui_callbacks(
                 return;
             }
             let sid = sess.lock().unwrap().clone();
-            tracing::info!(
+            tracing::debug!(
                 "主控采集·文本 len={} session={}",
                 text.len(),
                 sid.as_deref().unwrap_or("<无>")
