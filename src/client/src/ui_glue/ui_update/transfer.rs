@@ -1,6 +1,5 @@
 //! 文件传输/命令类 ToUi 事件处理：ExecResult、RemoteEntries、FileProgress、FileNotice、PaneRefresh。
 use crate::AppWindow;
-use protocol;
 
 use super::super::util::build_file_model;
 
