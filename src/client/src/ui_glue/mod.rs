@@ -5,7 +5,10 @@
 use crate::{history, net, AppWindow, ChatNoticeWindow, SharedSession};
 use slint::ComponentHandle;
 
+mod chat;
 mod control;
+mod exec;
+mod files;
 mod input;
 mod util;
 pub use util::{
@@ -50,6 +53,9 @@ pub fn wire_ui_callbacks(
     };
     control::wire(ui, &cx);
     input::wire(ui, &cx);
+    files::wire(ui, &cx);
+    exec::wire(ui, &cx);
+    chat::wire(ui, &cx);
     // 复制 ID/密码到剪贴板（ID 分组带空格，先去白）
     {
         ui.on_copy_text(move |s| {
@@ -103,172 +109,6 @@ pub fn wire_ui_callbacks(
                     session_id: sid,
                     active: tab == 0,
                 });
-            }
-        });
-    }
-    // ── 远程命令：执行（本地回显命令行，回执到达后追加结果块）──
-    {
-        let tx = from_ui_tx.clone();
-        let sess = cur_session.clone();
-        let ui_weak = ui.as_weak();
-        ui.on_run_command(move |command| {
-            let command = command.to_string();
-            if command.trim().is_empty() {
-                return;
-            }
-            if let Some(sid) = sess.lock().unwrap().clone() {
-                let _ = tx.send(net::FromUi::ExecCommand {
-                    session_id: sid,
-                    command: command.clone(),
-                });
-                // 本地回显命令行（下行 ExecResult 不带 command 原文，此处回显补齐，解决 Minor #1）。
-                if let Some(ui) = ui_weak.upgrade() {
-                    let prev = ui.get_cmd_output().to_string();
-                    let echo = format!("$ {command}");
-                    let next = if prev.is_empty() {
-                        echo
-                    } else {
-                        format!("{prev}\n\n{echo}")
-                    };
-                    ui.set_cmd_output(next.into());
-                }
-            }
-        });
-    }
-    // ── 远程文件：浏览本机目录（左栏，复用 transfer::list_dir 列本机任意路径）──
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_list_local(move |arg| {
-            let arg = arg.to_string();
-            let ui_weak = ui_weak.clone();
-            // 解析 Slint 传来的指令串（<up>:/<cd>: 标记）→ 目标绝对路径
-            let cur = ui_weak
-                .upgrade()
-                .map(|u| u.get_local_path().to_string())
-                .unwrap_or_default();
-            let target = resolve_path_arg(&arg, &cur);
-            // 列目录是阻塞 IO，放后台线程，完成后投回 UI 线程 set。
-            std::thread::spawn(move || {
-                let listed = crate::transfer::list_dir(&target);
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak.upgrade() {
-                        match listed {
-                            Ok((dir, entries)) => {
-                                ui.set_local_path(dir.into());
-                                ui.set_local_entries(build_file_model(&entries));
-                            }
-                            Err(reason) => {
-                                ui.set_file_notice(format!("本机目录读取失败：{reason}").into());
-                            }
-                        }
-                    }
-                });
-            });
-        });
-    }
-    // ── 远程文件：浏览远端目录（右栏）──
-    {
-        let tx = from_ui_tx.clone();
-        let sess = cur_session.clone();
-        let ui_weak = ui.as_weak();
-        ui.on_list_remote(move |arg| {
-            let arg = arg.to_string();
-            let cur = ui_weak
-                .upgrade()
-                .map(|u| u.get_remote_path().to_string())
-                .unwrap_or_default();
-            let target = resolve_path_arg(&arg, &cur);
-            if let Some(sid) = sess.lock().unwrap().clone() {
-                let _ = tx.send(net::FromUi::ListRemote {
-                    session_id: sid,
-                    path: target,
-                });
-            }
-        });
-    }
-    // ── 远程文件：下发（左栏选中文件 → 右栏当前目录）──
-    {
-        let tx = from_ui_tx.clone();
-        let sess = cur_session.clone();
-        let ui_weak = ui.as_weak();
-        ui.on_push_file(move |name| {
-            let name = name.to_string();
-            if let Some(ui) = ui_weak.upgrade() {
-                let local_dir = ui.get_local_path().to_string();
-                let dest_dir = ui.get_remote_path().to_string();
-                let local_path = join_path(&local_dir, &name);
-                if let Some(sid) = sess.lock().unwrap().clone() {
-                    let _ = tx.send(net::FromUi::PushFile {
-                        session_id: sid,
-                        local_path,
-                        dest_dir,
-                    });
-                }
-            }
-        });
-    }
-    // ── 远程文件：取回（右栏选中文件 → 左栏当前目录）──
-    {
-        let tx = from_ui_tx.clone();
-        let sess = cur_session.clone();
-        let ui_weak = ui.as_weak();
-        ui.on_pull_file(move |name| {
-            let name = name.to_string();
-            if let Some(ui) = ui_weak.upgrade() {
-                let remote_dir = ui.get_remote_path().to_string();
-                let local_dir = ui.get_local_path().to_string();
-                let remote_path = join_path(&remote_dir, &name);
-                if let Some(sid) = sess.lock().unwrap().clone() {
-                    let _ = tx.send(net::FromUi::PullFile {
-                        session_id: sid,
-                        remote_path,
-                        local_dir,
-                    });
-                }
-            }
-        });
-    }
-    // ── 即时消息：主控发送（本地即时回显「我」）──
-    {
-        let tx = from_ui_tx.clone();
-        let sess = cur_session.clone();
-        let ui_weak = ui.as_weak();
-        ui.on_send_chat(move |text| {
-            let text = text.to_string();
-            if text.trim().is_empty() {
-                return;
-            }
-            if let Some(sid) = sess.lock().unwrap().clone() {
-                let _ = tx.send(net::FromUi::SendChat {
-                    session_id: sid,
-                    text: text.clone(),
-                });
-                if let Some(ui) = ui_weak.upgrade() {
-                    let log = ui.get_chat_log().to_string();
-                    ui.set_chat_log(append_line(&log, "我", &text).into());
-                }
-            }
-        });
-    }
-    // ── 即时消息：被控发送（用被控会话 ctrl_session，本地即时回显「我」）──
-    {
-        let tx = from_ui_tx.clone();
-        let sess = ctrl_session.clone();
-        let ui_weak = ui.as_weak();
-        ui.on_send_controlled_chat(move |text| {
-            let text = text.to_string();
-            if text.trim().is_empty() {
-                return;
-            }
-            if let Some(sid) = sess.lock().unwrap().clone() {
-                let _ = tx.send(net::FromUi::SendChat {
-                    session_id: sid,
-                    text: text.clone(),
-                });
-                if let Some(ui) = ui_weak.upgrade() {
-                    let log = ui.get_controlled_chat_log().to_string();
-                    ui.set_controlled_chat_log(append_line(&log, "我", &text).into());
-                }
             }
         });
     }
