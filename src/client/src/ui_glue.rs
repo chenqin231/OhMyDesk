@@ -334,7 +334,58 @@ pub fn wire_ui_callbacks(
             }
         });
     }
-    // on_key_ev / on_text 在 Task 3 中绑定（IME 双通道）
+    {
+        let tx = from_ui_tx.clone();
+        let sess = cur_session.clone();
+        // 采集侧键盘：分类器决定走 Key 通道还是交 TextInput 出 Text。
+        // 返回 true → Slint accept（吃掉不本地编辑）；false → reject（交 edited→on_text）。
+        ui.on_on_key_ev(move |text, ctrl, alt, meta, down| -> bool {
+            match crate::key_route::key_route(&text, ctrl, alt, meta) {
+                crate::key_route::KeyRoute::Key(code) => {
+                    let sid = sess.lock().unwrap().clone();
+                    tracing::info!(
+                        "主控采集·键 code={code:?} down={down} session={}",
+                        sid.as_deref().unwrap_or("<无>")
+                    );
+                    if let Some(sid) = sid {
+                        let _ = tx.send(net::FromUi::Input {
+                            session_id: sid,
+                            event: protocol::InputEvent::Key { code, down },
+                        });
+                    }
+                    true // 已作为 Key 发出，吃掉本地编辑
+                }
+                // 吃掉但不转发（未支持功能键，防注入怪字符）
+                crate::key_route::KeyRoute::Ignore => true,
+                // 可打印字符：交给 TextInput 编辑，稍后 edited→on_text 出 Text
+                crate::key_route::KeyRoute::Text => false,
+            }
+        });
+    }
+    {
+        let tx = from_ui_tx.clone();
+        let sess = cur_session.clone();
+        // IME/文本上屏串 → InputEvent::Text（被控 enigo.text() Unicode 直塞）
+        ui.on_on_text(move |text| {
+            if text.is_empty() {
+                return;
+            }
+            let sid = sess.lock().unwrap().clone();
+            tracing::info!(
+                "主控采集·文本 len={} session={}",
+                text.len(),
+                sid.as_deref().unwrap_or("<无>")
+            );
+            if let Some(sid) = sid {
+                let _ = tx.send(net::FromUi::Input {
+                    session_id: sid,
+                    event: protocol::InputEvent::Text {
+                        text: text.to_string(),
+                    },
+                });
+            }
+        });
+    }
     // 复制 ID/密码到剪贴板（ID 分组带空格，先去白）
     {
         ui.on_copy_text(move |s| {
