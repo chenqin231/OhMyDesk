@@ -762,18 +762,10 @@ export component AppWindow inherits Window {
     callback on_pointer_move(int /*x*/, int /*y*/);
     callback on_pointer_button(int /*x*/, int /*y*/, int /*btn 0左1中2右*/, bool /*down*/);
     callback on_pointer_scroll(float /*dx_px*/, float /*dy_px*/);
-    callback on_key(string /*code*/, bool /*down*/);
-
-    // Slint 把修饰键（Ctrl/Shift/Alt/Meta）的 ev.text 给成特殊控制字符，被控端无法识别为修饰键，
-    // 导致组合键（Ctrl+C/V）的修饰态不被跟踪。这里把修饰键归一成被控端认得的名字串；
-    // 其余按键（字母/数字/Enter/Backspace 等控制符）原样透传，被控端 code_to_key 已能处理。
-    pure function key_code(t: string) -> string {
-        return (t == Key.Control || t == Key.ControlR) ? "Control"
-            : (t == Key.Shift || t == Key.ShiftR) ? "Shift"
-            : (t == Key.Alt || t == Key.AltGr) ? "Alt"
-            : (t == Key.Meta || t == Key.MetaR) ? "Meta"
-            : t;
-    }
+    // 采集侧键盘：on_key_ev 返回 true=已作为 Key 事件发出(Slint 应 accept 吃掉)，
+    // false=可打印字符(reject 交 TextInput→edited→Text)。on_text=IME/文本上屏串。
+    callback on_key_ev(string /*text*/, bool /*ctrl*/, bool /*alt*/, bool /*meta*/, bool /*down*/) -> bool;
+    callback on_text(string /*上屏串*/);
 
     // ── 登录认证（客户端账号登录 + 归属绑定）──
     in-out property <bool> logged_in: false;           // 已登录门控（false → 显示 S1 登录页）
@@ -1345,16 +1337,37 @@ export component AppWindow inherits Window {
                         height: root.cursor_h * 1px;
                     }
 
-                    // 键盘焦点捕获
-                    fs := FocusScope {
-                        width: 0px;
+                    // 键盘焦点 + IME 上屏接收器（主控端输入法为准）。
+                    // TextInput 获焦才开 IME；组字期让位 IME；具名/组合键走 on_key_ev→Key，
+                    // 可打印字符/中文上屏走 edited→Text。底部 2px 透明条给 OS 候选框一个锚点。
+                    fs := TextInput {
+                        x: parent.frame_display_x;
+                        y: parent.frame_display_y + parent.frame_display_h - 2px;
+                        width: parent.frame_display_w;
+                        height: 2px;
+                        color: transparent;
+                        text-cursor-width: 0px;
+                        single-line: true;
                         key-pressed(ev) => {
-                            root.on_key(root.key_code(ev.text), true);
-                            accept
+                            // 组字中：拼音/退格/空格/回车全交 IME，不转发、不吃
+                            if (self.preedit-text != "") {
+                                return reject;
+                            }
+                            return root.on_key_ev(ev.text, ev.modifiers.control, ev.modifiers.alt, ev.modifiers.meta, true)
+                                ? EventResult.accept : EventResult.reject;
                         }
                         key-released(ev) => {
-                            root.on_key(root.key_code(ev.text), false);
-                            accept
+                            if (self.preedit-text != "") {
+                                return reject;
+                            }
+                            return root.on_key_ev(ev.text, ev.modifiers.control, ev.modifiers.alt, ev.modifiers.meta, false)
+                                ? EventResult.accept : EventResult.reject;
+                        }
+                        edited => {
+                            if (self.text != "") {
+                                root.on_text(self.text);
+                                self.text = "";  // 清空，永不累积；programmatic 赋值不触发 edited
+                            }
                         }
                     }
                 }

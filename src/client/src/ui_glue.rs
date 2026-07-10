@@ -334,26 +334,7 @@ pub fn wire_ui_callbacks(
             }
         });
     }
-    {
-        let tx = from_ui_tx.clone();
-        let sess = cur_session.clone();
-        ui.on_on_key(move |code, down| {
-            let sid = sess.lock().unwrap().clone();
-            tracing::info!(
-                "主控采集·键盘 code={code:?} down={down} session={}",
-                sid.as_deref().unwrap_or("<无>")
-            );
-            if let Some(sid) = sid {
-                let _ = tx.send(net::FromUi::Input {
-                    session_id: sid,
-                    event: protocol::InputEvent::Key {
-                        code: code.to_string(),
-                        down,
-                    },
-                });
-            }
-        });
-    }
+    // on_key_ev / on_text 在 Task 3 中绑定（IME 双通道）
     // 复制 ID/密码到剪贴板（ID 分组带空格，先去白）
     {
         ui.on_copy_text(move |s| {
