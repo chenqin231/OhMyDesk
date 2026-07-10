@@ -37,9 +37,7 @@ pub(super) fn handle_frame(
     let is_first_frame = last_frame_dims.is_none();
     let dims_changed = *last_frame_dims != Some((w, h));
     if dims_changed {
-        tracing::info!(
-            "主控收到帧分辨率={w}x{h}（流畅档≤1280×720 / 高清档≤1920×1080）"
-        );
+        tracing::info!("主控收到帧分辨率={w}x{h}（流畅档≤1280×720 / 高清档≤1920×1080）");
         *last_frame_dims = Some((w, h));
     }
     // 统一会话态：收到帧即把 cur_session 设为该会话——保证「有画面时输入一定有目标」，
@@ -62,8 +60,7 @@ pub(super) fn handle_frame(
         let ui_weak = ui_weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                let mut buffer =
-                    slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(iw, ih);
+                let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(iw, ih);
                 buffer.make_mut_bytes().copy_from_slice(&rgba);
                 ui.set_frame_w(w as i32);
                 ui.set_frame_h(h as i32);
@@ -85,11 +82,7 @@ pub(super) fn handle_frame(
                 // 不受 adaptive 降档抖动影响，避免窗口风暴/最大化字体割裂（见 900-946 注释）。
                 let want_refit =
                     is_first_frame || super::REFIT_PENDING.load(AtomicOrdering::Relaxed);
-                if want_refit
-                    && dims_changed
-                    && !win.is_maximized()
-                    && !win.is_fullscreen()
-                {
+                if want_refit && dims_changed && !win.is_maximized() && !win.is_fullscreen() {
                     let sf = win.scale_factor().max(1.0);
                     let win_w = (w.min(1920) as f32) / sf;
                     let win_h = (h.min(1080) as f32) / sf;
@@ -120,8 +113,7 @@ pub(super) fn handle_cursor(
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_cursor_visible(visible);
             if let Some((bytes, cw, ch, hx, hy)) = decoded {
-                let mut buffer =
-                    slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(cw, ch);
+                let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(cw, ch);
                 buffer.make_mut_bytes().copy_from_slice(&bytes);
                 ui.set_cursor_img(slint::Image::from_rgba8(buffer));
                 ui.set_cursor_w(cw as i32);

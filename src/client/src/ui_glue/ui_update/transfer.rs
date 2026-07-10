@@ -49,9 +49,7 @@ pub(super) fn handle_remote_entries(
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = ui_weak.upgrade() {
             match error {
-                Some(reason) => {
-                    ui.set_file_notice(format!("远端目录读取失败：{reason}").into())
-                }
+                Some(reason) => ui.set_file_notice(format!("远端目录读取失败：{reason}").into()),
                 None => {
                     ui.set_remote_path(path.into());
                     ui.set_remote_entries(build_file_model(&entries));

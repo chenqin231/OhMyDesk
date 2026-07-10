@@ -55,17 +55,35 @@ pub async fn consume_to_ui(
                 session_id,
                 source,
             } => {
-                conn::handle_control_request(&ui_weak, &ctrl_session, requester, session_id, source);
+                conn::handle_control_request(
+                    &ui_weak,
+                    &ctrl_session,
+                    requester,
+                    session_id,
+                    source,
+                );
             }
             net::ToUi::BeingControlled {
                 peer_name,
                 forced,
                 session_id,
             } => {
-                conn::handle_being_controlled(&ui_weak, &ctrl_session, peer_name, forced, session_id);
+                conn::handle_being_controlled(
+                    &ui_weak,
+                    &ctrl_session,
+                    peer_name,
+                    forced,
+                    session_id,
+                );
             }
             net::ToUi::RemoteAck { session_id } => {
-                conn::handle_remote_ack(&ui_weak, &cur_session, &ended_session, &activity, session_id);
+                conn::handle_remote_ack(
+                    &ui_weak,
+                    &cur_session,
+                    &ended_session,
+                    &activity,
+                    session_id,
+                );
             }
             net::ToUi::RemoteRejected { reason } => {
                 conn::handle_remote_rejected(&ui_weak, &cur_session, &activity, reason);
@@ -120,7 +138,14 @@ pub async fn consume_to_ui(
                 duration_ms,
                 ..
             } => {
-                transfer::handle_exec_result(&ui_weak, exit_code, stdout, stderr, truncated, duration_ms);
+                transfer::handle_exec_result(
+                    &ui_weak,
+                    exit_code,
+                    stdout,
+                    stderr,
+                    truncated,
+                    duration_ms,
+                );
             }
             // ── 远程文件：远端目录列表 → 右栏渲染 ──
             net::ToUi::RemoteEntries {
