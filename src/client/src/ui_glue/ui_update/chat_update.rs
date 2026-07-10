@@ -40,8 +40,7 @@ pub(super) fn handle_chat_incoming(
     session_id: String,
     text: String,
 ) {
-    let is_controlling =
-        cur_session.lock().unwrap().as_deref() == Some(session_id.as_str());
+    let is_controlling = cur_session.lock().unwrap().as_deref() == Some(session_id.as_str());
     let chat_notice_weak = chat_notice_weak.clone();
     let ui_weak = ui_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
@@ -86,11 +85,7 @@ pub(super) fn handle_update_available(
     });
 }
 
-pub(super) fn handle_update_status(
-    ui_weak: &slint::Weak<AppWindow>,
-    text: String,
-    phase: u8,
-) {
+pub(super) fn handle_update_status(ui_weak: &slint::Weak<AppWindow>, text: String, phase: u8) {
     let ui_weak = ui_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = ui_weak.upgrade() {

@@ -3,11 +3,7 @@
 use crate::{AppWindow, SharedSession};
 use slint::ComponentHandle;
 
-pub(super) fn handle_registered(
-    ui_weak: &slint::Weak<AppWindow>,
-    id: String,
-    password: String,
-) {
+pub(super) fn handle_registered(ui_weak: &slint::Weak<AppWindow>, id: String, password: String) {
     let id_disp = super::super::util::group_digits(&id);
     let ui_weak = ui_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
