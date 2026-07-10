@@ -25,6 +25,7 @@ mod framediff;
 mod geom;
 mod history;
 mod inject;
+mod key_route;
 mod login;
 mod net;
 mod render_mode;
