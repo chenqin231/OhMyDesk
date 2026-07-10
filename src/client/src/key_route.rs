@@ -37,7 +37,10 @@ mod tests {
         assert_eq!(key_route("\u{F700}", false, false, false), key("ArrowUp"));
         assert_eq!(key_route("\u{F701}", false, false, false), key("ArrowDown"));
         assert_eq!(key_route("\u{F702}", false, false, false), key("ArrowLeft"));
-        assert_eq!(key_route("\u{F703}", false, false, false), key("ArrowRight"));
+        assert_eq!(
+            key_route("\u{F703}", false, false, false),
+            key("ArrowRight")
+        );
         assert_eq!(key_route("\u{F727}", false, false, false), key("Insert"));
         assert_eq!(key_route("\u{F729}", false, false, false), key("Home"));
         assert_eq!(key_route("\u{F72B}", false, false, false), key("End"));
@@ -79,7 +82,8 @@ mod tests {
     fn 未支持功能键_归ignore_不注入怪字符() {
         assert_eq!(key_route("\u{14}", false, false, false), KeyRoute::Ignore); // CapsLock
         assert_eq!(key_route("\u{F708}", false, false, false), KeyRoute::Ignore); // F5
-        assert_eq!(key_route("\u{F708}", true, false, false), KeyRoute::Ignore); // Ctrl+F5 也 Ignore
+        assert_eq!(key_route("\u{F708}", true, false, false), KeyRoute::Ignore);
+        // Ctrl+F5 也 Ignore
     }
 }
 
@@ -97,9 +101,9 @@ fn slint_named_key(text: &str) -> Option<&'static str> {
         '\u{1b}' => "Escape",
         '\u{7f}' => "Delete",
         '\u{10}' | '\u{15}' => "Shift",   // Shift / ShiftR
-        '\u{11}' | '\u{16}' => "Control",  // Control / ControlR
-        '\u{12}' | '\u{13}' => "Alt",      // Alt / AltGr
-        '\u{17}' | '\u{18}' => "Meta",     // Meta / MetaR
+        '\u{11}' | '\u{16}' => "Control", // Control / ControlR
+        '\u{12}' | '\u{13}' => "Alt",     // Alt / AltGr
+        '\u{17}' | '\u{18}' => "Meta",    // Meta / MetaR
         '\u{F700}' => "ArrowUp",
         '\u{F701}' => "ArrowDown",
         '\u{F702}' => "ArrowLeft",
