@@ -766,6 +766,19 @@ export component AppWindow inherits Window {
     // false=可打印字符(reject 交 TextInput→edited→Text)。on_text=IME/文本上屏串。
     callback on_key_ev(string /*text*/, bool /*ctrl*/, bool /*alt*/, bool /*meta*/, bool /*down*/) -> bool;
     callback on_text(string /*上屏串*/);
+    // Linux/X11 主控无 IME 分支：所有键(含可打印)原样走 Key 通道(0.6.0 行为)。
+    // 之所以分两套：TextInput 获焦即触发 winit X11 IME 焦点交互，会冻死整个桌面(见 v0.6.1-linux-x11-ime-freeze)。
+    callback on_key(string /*code*/, bool /*down*/);
+    pure function key_code(t: string) -> string {
+        return (t == Key.Control || t == Key.ControlR) ? "Control"
+            : (t == Key.Shift || t == Key.ShiftR) ? "Shift"
+            : (t == Key.Alt || t == Key.AltGr) ? "Alt"
+            : (t == Key.Meta || t == Key.MetaR) ? "Meta"
+            : t;
+    }
+    // 采集端是否启用 IME 文本捕获：Windows 主控=true(TextInput 开 IME 收中文)；
+    // Linux/X11=false(FocusScope 走 Key,不开 IME,规避 winit X11 IME 冻死桌面)。Rust 按 cfg!(windows) 设。
+    in property <bool> ime_capture: false;
 
     // ── 登录认证（客户端账号登录 + 归属绑定）──
     in-out property <bool> logged_in: false;           // 已登录门控（false → 显示 S1 登录页）
@@ -1230,7 +1243,7 @@ export component AppWindow inherits Window {
                     background: #050506;
                     // 进入主控画面即把焦点交给键盘 FocusScope；否则它永不获焦、key-pressed 不触发、
                     // 主控端一个 Input::Key 都不发 → 表现为「画面正常但任何键都输不进去」。
-                    init => { fs.focus(); }
+                    init => { if (root.ime_capture) { fs.focus(); } else { fs_key.focus(); } }
                     property <float> frame_scale: root.frame_w <= 1 || root.frame_h <= 1 ? 1 : (
                         (self.width / (root.frame_w * 1px)) < (self.height / (root.frame_h * 1px))
                             ? ((self.width / (root.frame_w * 1px)) < 1 ? (self.width / (root.frame_w * 1px)) : 1)
@@ -1308,7 +1321,8 @@ export component AppWindow inherits Window {
                         }
                         pointer-event(ev) => {
                             if (ev.kind == PointerEventKind.down) {
-                                fs.focus();  // 点画面即重新抓键盘焦点（窗口切换后兜底）
+                                // 点画面重抓键盘焦点（窗口切换后兜底）；平台分支各焦各的接收器
+                                if (root.ime_capture) { fs.focus(); } else { fs_key.focus(); }
                             }
                             if (ev.kind == PointerEventKind.down || ev.kind == PointerEventKind.up) {
                                 root.on_pointer_button(
@@ -1348,6 +1362,8 @@ export component AppWindow inherits Window {
                         color: transparent;
                         text-cursor-width: 0px;
                         single-line: true;
+                        // 仅 Windows 主控启用；Linux 下 disabled=不获焦、不开 IME、点 2px 条也不误触。
+                        enabled: root.ime_capture;
                         key-pressed(ev) => {
                             // 组字中：拼音/退格/空格/回车全交 IME，不转发、不吃
                             if (self.preedit-text != "") {
@@ -1368,6 +1384,20 @@ export component AppWindow inherits Window {
                                 root.on_text(self.text);
                                 self.text = "";  // 清空，永不累积；programmatic 赋值不触发 edited
                             }
+                        }
+                    }
+
+                    // Linux/X11 无 IME 分支：0px FocusScope 收所有键走 Key 通道(0.6.0 行为)。
+                    // 不开 IME，规避 winit X11 IME 焦点交互冻死桌面。仅 ime_capture=false 时被聚焦。
+                    fs_key := FocusScope {
+                        width: 0px;
+                        key-pressed(ev) => {
+                            root.on_key(root.key_code(ev.text), true);
+                            accept
+                        }
+                        key-released(ev) => {
+                            root.on_key(root.key_code(ev.text), false);
+                            accept
                         }
                     }
                 }

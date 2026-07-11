@@ -6,8 +6,9 @@ use slint::ComponentHandle;
 /// 假设上一帧像素仍在缓冲里。Windows 最小化→恢复不重建表面(age 仍有效),但窗口内容已被 OS 清空,
 /// 于是渲染器只重绘「新脏区」(如点中的控件)、其余留白 = 白板+局部。仅 request_redraw 无效(脏区为空)。
 /// 根治：恢复瞬间把窗口逻辑高度 +1px 再复原,强制 winit 重建 softbuffer 表面(buffer age=0 → 整窗重绘)。
-/// 触发门：最小化态→非最小化态(Windows)或 Occluded(false)(X11/Wayland/macOS);最大化/全屏不 nudge
-/// (winit 忽略尺寸变更,且此类恢复通常自带 Resized 会整窗重绘)。
+/// 触发门：仅「最小化态→非最小化态」边沿(is_minimized，Windows 准确)才做 set_size 重建；最大化/全屏不 nudge。
+/// 注意：set_size 重建**不能**挂在 Occluded(false) 上——X11 拖窗会狂发该事件，导致尺寸抖动+重绘风暴=拖动卡顿。
+/// Occluded(false) 只用来 request_redraw(廉价)。白板 bug 本是 Windows 专属，X11 无此症。
 pub fn wire_repaint_on_restore(ui: &AppWindow) {
     use i_slint_backend_winit::winit::event::WindowEvent;
     use i_slint_backend_winit::{EventResult, WinitWindowAccessor};
@@ -21,8 +22,16 @@ pub fn wire_repaint_on_restore(ui: &AppWindow) {
         let restored = was_minimized.get() && !now_min;
         was_minimized.set(now_min);
 
+        // 任意「恢复可见」信号都请求重绘：廉价、无副作用，X11 拖窗时的重绘本就该发生。
         if restored || matches!(ev, WindowEvent::Occluded(false)) {
             win.request_redraw();
+        }
+        // 仅「真·最小化→恢复」边沿才强制重建 softbuffer 表面(+1px 抖动代价大)。
+        // 关键修复：不再挂在 Occluded(false) 上——X11 拖窗会狂发 VisibilityNotify→Occluded(false)，
+        // 每次都 set_size 风暴 = 窗口尺寸抖动 + buffer age 清零整窗重绘 = 拖动极卡。
+        // 原白板 bug 是 Windows 专属(见 winbug-minimize-blank-restore)，Windows is_minimized 边沿能准确捕获；
+        // X11 无此白板 bug，request_redraw 足矣。
+        if restored {
             if let Some(ui) = ui_weak.upgrade() {
                 let w = ui.window();
                 if !w.is_maximized() && !w.is_fullscreen() {

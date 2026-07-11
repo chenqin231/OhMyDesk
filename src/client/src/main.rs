@@ -125,6 +125,9 @@ fn main() -> anyhow::Result<()> {
     let ui = AppWindow::new()?;
     let chat_notice = ChatNoticeWindow::new()?;
     ui.set_app_version(env!("CARGO_PKG_VERSION").into()); // 标题栏「OhMyDesk v{版本} 极速远控」
+    // 远控采集端 IME 门控：仅 Windows 主控开 IME TextInput 收中文；Linux/X11 走 FocusScope+Key，
+    // 规避 winit X11 IME 焦点交互冻死整个桌面（见 v0.6.1-linux-x11-ime-freeze）。编译期定死，零运行时开销。
+    ui.set_ime_capture(cfg!(target_os = "windows"));
     ui.set_self_id(ui_glue::group_digits(&self_id).into());
     // 登录门初始态：有有效凭据 → 已登录（自动上线）；否则显示登录页。
     ui.set_logged_in(creds0.is_some());
