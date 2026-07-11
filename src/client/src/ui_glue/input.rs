@@ -8,7 +8,7 @@ pub(super) fn wire(ui: &AppWindow, cx: &UiCtx) {
     {
         let tx = cx.from_ui_tx.clone();
         let sess = cx.cur_session.clone();
-        ui.on_set_display_params(move |res, clarity, fps| {
+        ui.on_set_display_params(move |res, clarity, fps, adaptive| {
             if let Some(sid) = sess.lock().unwrap().clone() {
                 // 分辨率轴变化 → 请求主控窗口重贴合（清晰度/帧率不改帧尺寸，不触发）。
                 if super::LAST_RES_TIER.swap(res, std::sync::atomic::Ordering::Relaxed) != res {
@@ -41,6 +41,7 @@ pub(super) fn wire(ui: &AppWindow, cx: &UiCtx) {
                     resolution: Some(resolution),
                     clarity: Some(clarity_t),
                     fps: Some(fps_t),
+                    adaptive: Some(adaptive),
                 });
             }
         });

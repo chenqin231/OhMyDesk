@@ -219,13 +219,19 @@ pub(super) async fn handle_downlink(
             resolution,
             clarity,
             fps,
+            adaptive,
         } => {
             let controlled =
                 session.lock().await.controlled.as_deref() == Some(session_id.as_str());
             tracing::info!(
-                "被控收到画质切换 mode={mode:?} res={resolution:?} clarity={clarity:?} fps={fps:?} controlled={controlled} session={session_id}"
+                "被控收到画质切换 mode={mode:?} res={resolution:?} clarity={clarity:?} fps={fps:?} adaptive={adaptive:?} controlled={controlled} session={session_id}"
             );
             if controlled {
+                // 主控「自适应」开关：Some(false)=关(手动画质说了算,adaptive 不再拉回)；Some(true)=开；
+                // None=旧主控不发/本次不改,保持当前态。须在 request_reset 之前设,让本次切档即按新态生效。
+                if let Some(on) = adaptive {
+                    crate::adaptive::set_enabled(on);
+                }
                 let (r, c, f) =
                     crate::capture::tiers_from_set_quality(mode, resolution, clarity, fps);
                 crate::capture::set_tiers(r, c, f);
@@ -718,6 +724,7 @@ pub(super) async fn handle_uplink(
             resolution,
             clarity,
             fps,
+            adaptive,
         } => Envelope {
             from: self_id.to_string(),
             to: None, // server 按 session_id 路由给被控端
@@ -728,6 +735,7 @@ pub(super) async fn handle_uplink(
                 resolution,
                 clarity,
                 fps,
+                adaptive,
             },
         },
         FromUi::ClipboardSync { session_id, text } => Envelope {

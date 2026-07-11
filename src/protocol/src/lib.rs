@@ -265,6 +265,10 @@ pub enum Message {
         clarity: Option<ClarityTier>,
         #[serde(default)]
         fps: Option<FpsTier>,
+        /// 主控→被控:过载自适应开关(v0.6.3 起)。Some(false)=关，手动画质说了算，adaptive 不再拉回；
+        /// Some(true)=开(默认)。None=旧主控不发/本次不改，被控保持当前自适应态。
+        #[serde(default)]
+        adaptive: Option<bool>,
     },
     /// 主控→被控:会话内帧推流开关(懒推流——主控仅在「远程桌面」标签需要帧)。
     /// active=false 暂停采集推帧, true 恢复。按 session 对端路由(同 SetQuality);不审计(纯传输优化)。
