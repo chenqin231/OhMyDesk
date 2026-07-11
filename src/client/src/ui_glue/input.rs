@@ -165,4 +165,26 @@ pub(super) fn wire(ui: &AppWindow, cx: &UiCtx) {
             }
         });
     }
+    // Linux/X11 主控无 IME 分支：FocusScope 收所有键(含可打印)原样走 Key 通道(0.6.0 行为)。
+    // 仅在 ime_capture=false(非 Windows) 时该接收器被聚焦并触发；被控 code_to_key 认得裸字符。
+    {
+        let tx = cx.from_ui_tx.clone();
+        let sess = cx.cur_session.clone();
+        ui.on_on_key(move |code, down| {
+            let sid = sess.lock().unwrap().clone();
+            tracing::debug!(
+                "主控采集·键(无IME) code={code:?} down={down} session={}",
+                sid.as_deref().unwrap_or("<无>")
+            );
+            if let Some(sid) = sid {
+                let _ = tx.send(net::FromUi::Input {
+                    session_id: sid,
+                    event: protocol::InputEvent::Key {
+                        code: code.to_string(),
+                        down,
+                    },
+                });
+            }
+        });
+    }
 }
