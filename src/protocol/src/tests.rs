@@ -255,6 +255,7 @@ fn set_quality_三轴字段_序列化往返() {
             resolution: Some(ResolutionTier::Native),
             clarity: Some(ClarityTier::High),
             fps: Some(FpsTier::Saver),
+            adaptive: None,
         },
     };
     let json = serde_json::to_string(&env).unwrap();
@@ -271,6 +272,45 @@ fn set_quality_三轴字段_序列化往返() {
             resolution: Some(ResolutionTier::Native),
             clarity: Some(ClarityTier::High),
             fps: Some(FpsTier::Saver),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn set_quality_旧json无adaptive字段_缺省none() {
+    // 旧主控不发 adaptive:新被控解析为 None(不改被控当前自适应态,向后兼容)。
+    let json = r#"{"from":"a","to":null,"ts":1,"payload":{"type":"set_quality","session_id":"s","mode":"smooth"}}"#;
+    let env: Envelope = serde_json::from_str(json).unwrap();
+    match env.payload {
+        Message::SetQuality { adaptive, .. } => assert!(adaptive.is_none()),
+        _ => panic!("应判别为 SetQuality"),
+    }
+}
+
+#[test]
+fn set_quality_adaptive字段_序列化往返() {
+    // 主控关自适应:adaptive=Some(false) 往返保真。
+    let env = Envelope {
+        from: "a".into(),
+        to: None,
+        ts: 1,
+        payload: Message::SetQuality {
+            session_id: "s".into(),
+            mode: QualityMode::Smooth,
+            resolution: None,
+            clarity: None,
+            fps: None,
+            adaptive: Some(false),
+        },
+    };
+    let json = serde_json::to_string(&env).unwrap();
+    assert!(json.contains("\"adaptive\":false"), "序列化含 adaptive: {json}");
+    let back: Envelope = serde_json::from_str(&json).unwrap();
+    assert!(matches!(
+        back.payload,
+        Message::SetQuality {
+            adaptive: Some(false),
             ..
         }
     ));

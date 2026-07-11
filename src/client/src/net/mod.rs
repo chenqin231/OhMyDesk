@@ -177,6 +177,7 @@ pub enum FromUi {
         resolution: Option<protocol::ResolutionTier>,
         clarity: Option<protocol::ClarityTier>,
         fps: Option<protocol::FpsTier>,
+        adaptive: Option<bool>,
     },
     /// 主动断开当前会话。
     Disconnect { session_id: String },
